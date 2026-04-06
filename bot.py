@@ -25,12 +25,12 @@ if not BOT_TOKEN:
 bot = telebot.TeleBot(BOT_TOKEN)
 OWNER_ID = 7021542402
 
-# ========== 1. تحميل الخط العالمي ==========
-FONT_URL = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf"
-FONT_PATH = "NotoSans-Regular.ttf"
+# ========== 1. تحميل الخط العربي ==========
+FONT_URL = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansArabic/NotoSansArabic-Regular.ttf"
+FONT_PATH = "NotoSansArabic-Regular.ttf"
 if not os.path.exists(FONT_PATH):
     try:
-        print("Downloading font...")
+        print("Downloading Arabic font...")
         r = requests.get(FONT_URL, timeout=30)
         with open(FONT_PATH, "wb") as f:
             f.write(r.content)
@@ -57,33 +57,14 @@ def update_progress(user_id, msg_id, stage, percent, details=""):
     except:
         pass
 
-# ========== 2. اللهجات ==========
+# ========== 2. اللهجات (للعرض فقط - الترجمة إلى الفصحى) ==========
 DIALECTS = {
-    "iraqi": "اللهجة العراقية",
-    "egyptian": "اللهجة المصرية",
-    "syrian": "اللهجة السورية",
-    "gulf": "اللهجة الخليجية",
-    "fusha": "الفصحى"
+    "iraqi": "🇮🇶 اللهجة العراقية",
+    "egyptian": "🇪🇬 اللهجة المصرية",
+    "syrian": "🇸🇾 اللهجة السورية",
+    "gulf": "🇦🇪 اللهجة الخليجية",
+    "fusha": "📖 الفصحى"
 }
-
-DIALECT_FLAGS = {
-    "iraqi": "🇮🇶",
-    "egyptian": "🇪🇬",
-    "syrian": "🇸🇾",
-    "gulf": "🇦🇪",
-    "fusha": "📖"
-}
-
-def translate_to_dialect(text, dialect):
-    """ترجمة النص إلى اللهجة المختارة"""
-    if dialect == "fusha":
-        return text
-    try:
-        translator = GoogleTranslator(source='auto', target='ar')
-        translated = translator.translate(text[:3000])
-        return translated
-    except:
-        return text
 
 # ========== 3. استخراج النص من الملفات ==========
 def extract_text_from_file(file_path, user_id, progress_msg_id):
@@ -124,11 +105,10 @@ def extract_text_from_file(file_path, user_id, progress_msg_id):
         return None
 
 # ========== 4. تحليل المحاضرة ==========
-def analyze_lecture(text, dialect, user_id, progress_msg_id):
+def analyze_lecture(text, user_id, progress_msg_id):
     update_progress(user_id, progress_msg_id, "🔍 تحليل المحاضرة", 20)
     
     basics = text[:500] + "..." if len(text) > 500 else text
-    basics_dialect = translate_to_dialect(basics, dialect)
     
     update_progress(user_id, progress_msg_id, "✂️ تقسيم المحاضرة", 30)
     
@@ -151,43 +131,53 @@ def analyze_lecture(text, dialect, user_id, progress_msg_id):
     total_sections = len(sections)
     analyzed = []
     
+    # ترجمة النص إلى العربية الفصحى
+    translator = GoogleTranslator(source='auto', target='ar')
+    
     for i, section in enumerate(sections):
         percent = 30 + int((i + 1) / total_sections * 30)
         update_progress(user_id, progress_msg_id, f"📝 معالجة القسم {i+1}/{total_sections}", percent)
         
-        # ترجمة القسم إلى اللهجة المختارة
-        translated = translate_to_dialect(section, dialect)
+        try:
+            translated = translator.translate(section[:2000])
+            time.sleep(0.3)
+        except:
+            translated = section
         
         # شرح مبسط للقسم
         explanation = f"📌 يتناول هذا القسم: {section[:150]}..."
-        explanation_dialect = translate_to_dialect(explanation, dialect)
+        try:
+            explanation_ar = translator.translate(explanation[:1000])
+        except:
+            explanation_ar = explanation
         
         analyzed.append({
             "part": i + 1,
             "original": section,
             "translated": translated,
-            "explanation": explanation_dialect
+            "explanation": explanation_ar
         })
     
     update_progress(user_id, progress_msg_id, "📝 كتابة الملخص", 85)
     summary = f"📚 تحتوي هذه المحاضرة على {total_sections} أقسام. ملخص عام: {text[:400]}..."
-    summary_dialect = translate_to_dialect(summary, dialect)
+    try:
+        summary_ar = translator.translate(summary[:1500])
+    except:
+        summary_ar = summary
     
     update_progress(user_id, progress_msg_id, "✅ اكتمل التحليل", 95)
     
     return {
         "basics": basics,
-        "basics_dialect": basics_dialect,
+        "basics_ar": translator.translate(basics[:2000]) if basics else basics,
         "sections": analyzed,
         "summary": summary,
-        "summary_dialect": summary_dialect,
-        "total_sections": total_sections,
-        "dialect_name": DIALECTS[dialect],
-        "dialect_flag": DIALECT_FLAGS[dialect]
+        "summary_ar": summary_ar,
+        "total_sections": total_sections
     }
 
 # ========== 5. إنشاء PDF ==========
-class GlobalPDF(FPDF):
+class ArabicPDF(FPDF):
     def __init__(self):
         super().__init__()
         if FONT_PATH and os.path.exists(FONT_PATH):
@@ -214,13 +204,13 @@ class GlobalPDF(FPDF):
         self.set_text_color(color[0], color[1], color[2])
         self.multi_cell(0, 7, reshape_arabic(text))
 
-def create_lecture_pdf(title, analysis, user_id, progress_msg_id):
+def create_lecture_pdf(title, analysis, dialect_name, user_id, progress_msg_id):
     update_progress(user_id, progress_msg_id, "📄 إنشاء PDF", 97)
     
-    pdf = GlobalPDF()
+    pdf = ArabicPDF()
     pdf.add_page()
     
-    # ========== الصفحة الأولى: العنوان والمعلومات ==========
+    # ========== الصفحة الأولى ==========
     pdf.set_font(pdf.font_name, '', 20)
     pdf.set_text_color(0, 51, 102)
     pdf.cell(0, 20, f"📚 تحليل المحاضرة: {title}", 0, 1, 'C')
@@ -228,7 +218,7 @@ def create_lecture_pdf(title, analysis, user_id, progress_msg_id):
     pdf.set_font_size(11)
     pdf.set_text_color(100, 100, 100)
     pdf.cell(0, 10, f"📅 التاريخ: {datetime.now().strftime('%Y/%m/%d - %H:%M')}", 0, 1, 'C')
-    pdf.cell(0, 10, f"{analysis['dialect_flag']} لغة الشرح: {analysis['dialect_name']}", 0, 1, 'C')
+    pdf.cell(0, 10, f"🌍 لغة الشرح: {dialect_name}", 0, 1, 'C')
     pdf.cell(0, 10, f"📊 عدد الأقسام: {analysis['total_sections']}", 0, 1, 'C')
     pdf.ln(10)
     
@@ -248,8 +238,8 @@ def create_lecture_pdf(title, analysis, user_id, progress_msg_id):
     pdf.ln(3)
     
     pdf.set_text_color(0, 100, 0)
-    pdf.cell(0, 8, f"{analysis['dialect_flag']} الترجمة إلى {analysis['dialect_name']}:", 0, 1, 'L')
-    pdf.write_text(analysis["basics_dialect"], 10, (0,0,0))
+    pdf.cell(0, 8, "🌍 الترجمة إلى العربية:", 0, 1, 'L')
+    pdf.write_text(analysis["basics_ar"], 10, (0,0,0))
     pdf.ln(10)
     
     # ========== الأقسام ==========
@@ -263,27 +253,23 @@ def create_lecture_pdf(title, analysis, user_id, progress_msg_id):
         if pdf.get_y() > 250:
             pdf.add_page()
         
-        # عنوان القسم
         pdf.set_font(pdf.font_name, '', 14)
         pdf.set_text_color(0, 51, 102)
         pdf.cell(0, 10, f"📖 القسم {item['part']}", 0, 1, 'L')
         
-        # النص الأصلي
         pdf.set_font(pdf.font_name, '', 11)
         pdf.set_text_color(0, 0, 150)
         pdf.cell(0, 8, "📜 النص الأصلي:", 0, 1, 'L')
         pdf.write_text(item['original'][:500], 10, (0,0,0))
         pdf.ln(3)
         
-        # الترجمة إلى اللهجة
         if pdf.get_y() > 250:
             pdf.add_page()
         pdf.set_text_color(0, 100, 0)
-        pdf.cell(0, 8, f"{analysis['dialect_flag']} الترجمة إلى {analysis['dialect_name']}:", 0, 1, 'L')
+        pdf.cell(0, 8, "🌍 الترجمة إلى العربية:", 0, 1, 'L')
         pdf.write_text(item['translated'][:500], 10, (0,0,0))
         pdf.ln(3)
         
-        # الشرح
         if pdf.get_y() > 250:
             pdf.add_page()
         pdf.set_text_color(150, 100, 0)
@@ -291,7 +277,6 @@ def create_lecture_pdf(title, analysis, user_id, progress_msg_id):
         pdf.write_text(item['explanation'], 10, (0,0,0))
         pdf.ln(8)
         
-        # فاصل
         pdf.set_draw_color(200, 200, 200)
         pdf.line(30, pdf.get_y(), 180, pdf.get_y())
         pdf.ln(5)
@@ -310,8 +295,8 @@ def create_lecture_pdf(title, analysis, user_id, progress_msg_id):
     pdf.ln(3)
     
     pdf.set_text_color(0, 100, 0)
-    pdf.cell(0, 8, f"{analysis['dialect_flag']} الملخص بـ {analysis['dialect_name']}:", 0, 1, 'L')
-    pdf.write_text(analysis["summary_dialect"], 10, (0,0,0))
+    pdf.cell(0, 8, "🌍 الملخص بالعربية:", 0, 1, 'L')
+    pdf.write_text(analysis["summary_ar"], 10, (0,0,0))
     
     path = tempfile.mktemp(suffix='.pdf')
     pdf.output(path)
@@ -465,28 +450,29 @@ def process_content(message):
     
     markup = InlineKeyboardMarkup(row_width=2)
     for key, name in DIALECTS.items():
-        markup.add(InlineKeyboardButton(f"{DIALECT_FLAGS[key]} {name}", callback_data=f"dialect_{key}"))
+        markup.add(InlineKeyboardButton(name, callback_data=f"dialect_{key}"))
     bot.send_message(user_id, "🌍 اختر لهجة الشرح", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("dialect_"))
 def process_dialect(call):
     user_id = call.message.chat.id
     dialect_key = call.data.split("_")[1]
+    dialect_name = DIALECTS[dialect_key]
     
     data = temp_data.get(user_id)
     if not data:
         bot.answer_callback_query(call.id, "انتهت الجلسة، ابدأ من جديد", True)
         return
     
-    bot.answer_callback_query(call.id, f"جاري التحليل إلى {DIALECTS[dialect_key]}...")
+    bot.answer_callback_query(call.id, f"جاري تحليل المحاضرة إلى {dialect_name}...")
     bot.delete_message(user_id, call.message.message_id)
     
     progress_msg_id = data.get("progress_msg_id")
     
     try:
         update_points(user_id, -1)
-        analysis = analyze_lecture(data["content"], dialect_key, user_id, progress_msg_id)
-        pdf_path = create_lecture_pdf(data["title"], analysis, user_id, progress_msg_id)
+        analysis = analyze_lecture(data["content"], user_id, progress_msg_id)
+        pdf_path = create_lecture_pdf(data["title"], analysis, dialect_name, user_id, progress_msg_id)
         new_user = get_user(user_id)
         
         try:
@@ -495,7 +481,7 @@ def process_dialect(call):
             pass
         
         with open(pdf_path, 'rb') as f:
-            bot.send_document(user_id, f, caption=f"✨✅ تم تحليل المحاضرة بنجاح! ✅✨\n\n📚 العنوان: {data['title']}\n{analysis['dialect_flag']} لغة الشرح: {analysis['dialect_name']}\n📊 عدد الأقسام: {analysis['total_sections']}\n⭐ النقاط المتبقية: {new_user['points']}\n\n✨ @zakros_probot ✨", visible_file_name=f"lecture_{data['title'][:30]}.pdf")
+            bot.send_document(user_id, f, caption=f"✨✅ تم تحليل المحاضرة بنجاح! ✅✨\n\n📚 العنوان: {data['title']}\n🌍 لغة الشرح: {dialect_name}\n📊 عدد الأقسام: {analysis['total_sections']}\n⭐ النقاط المتبقية: {new_user['points']}\n\n✨ @zakros_probot ✨", visible_file_name=f"lecture_{data['title'][:30]}.pdf")
         
         os.unlink(pdf_path)
         del temp_data[user_id]
