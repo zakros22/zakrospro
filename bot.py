@@ -2,17 +2,8 @@ import os
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
-import tempfile
-from datetime import datetime
-import time
-import re
-import requests
-from fpdf import FPDF
-import arabic_reshaper
-from bidi.algorithm import get_display
-from deep_translator import GoogleTranslator
-import PyPDF2
-import docx
+from art import text2art, art
+import random
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
@@ -21,259 +12,165 @@ if not BOT_TOKEN:
 bot = telebot.TeleBot(BOT_TOKEN)
 OWNER_ID = 7021542402
 
-# ========== 1. تحميل الخط ==========
-FONT_URL = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf"
-FONT_PATH = "NotoSans-Regular.ttf"
-if not os.path.exists(FONT_PATH):
-    try:
-        r = requests.get(FONT_URL, timeout=30)
-        with open(FONT_PATH, "wb") as f:
-            f.write(r.content)
-    except:
-        FONT_PATH = None
-
-def reshape_arabic(text):
-    if any('\u0600' <= c <= '\u06FF' for c in text):
-        try:
-            reshaped = arabic_reshaper.reshape(text)
-            return get_display(reshaped)
-        except:
-            return text
-    return text
-
-# ========== 2. قاعدة البيانات ==========
-conn = sqlite3.connect("lecture.db", check_same_thread=False)
+# ========== قاعدة البيانات ==========
+conn = sqlite3.connect("art_bot.db", check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
-    points INTEGER DEFAULT 1
+    points INTEGER DEFAULT 3,
+    total_uses INTEGER DEFAULT 0
 )''')
 conn.commit()
 
 def get_user(user_id):
-    c.execute("SELECT points FROM users WHERE user_id=?", (user_id,))
+    c.execute("SELECT points, total_uses FROM users WHERE user_id=?", (user_id,))
     row = c.fetchone()
     if not row:
-        c.execute("INSERT INTO users (user_id, points) VALUES (?,?)", (user_id, 1))
+        c.execute("INSERT INTO users (user_id, points, total_uses) VALUES (?,?,?)", (user_id, 3, 0))
         conn.commit()
-        return 1
-    return row[0]
+        return {"points": 3, "total_uses": 0}
+    return {"points": row[0], "total_uses": row[1]}
 
 def update_points(user_id, delta):
     c.execute("UPDATE users SET points = points + ? WHERE user_id=?", (delta, user_id))
     conn.commit()
 
-# ========== 3. استخراج النص ==========
-def extract_text(file_path):
-    ext = os.path.splitext(file_path)[1].lower()
-    try:
-        if ext == '.txt':
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return f.read()
-        elif ext == '.pdf':
-            text = ""
-            with open(file_path, 'rb') as f:
-                reader = PyPDF2.PdfReader(f)
-                for page in reader.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += page_text + "\n"
-            return text.strip()
-        elif ext == '.docx':
-            doc = docx.Document(file_path)
-            return "\n".join([para.text for para in doc.paragraphs])
-        else:
-            return None
-    except:
-        return None
+def add_use(user_id):
+    c.execute("UPDATE users SET total_uses = total_uses + 1 WHERE user_id=?", (user_id,))
+    conn.commit()
 
-# ========== 4. تحليل المحاضرة ==========
-def analyze_lecture(text):
-    # تقسيم النص إلى فقرات
-    paragraphs = text.split('\n')
-    paragraphs = [p.strip() for p in paragraphs if len(p.strip()) > 30]
-    
-    if not paragraphs:
-        paragraphs = [text[:500]]
-    
-    result = []
-    translator = GoogleTranslator(source='auto', target='ar')
-    
-    for i, para in enumerate(paragraphs[:15]):  # حد أقصى 15 فقرة
-        try:
-            translated = translator.translate(para[:1500])
-        except:
-            translated = para
-        
-        result.append({
-            "num": i + 1,
-            "original": para[:400],
-            "translated": translated[:400]
-        })
-    
-    return result
+# ========== أنماط الرسم ==========
+FONTS = [
+    'block', 'bubble', 'digital', '3d', '3d_diagonal', '4x4', '5lineoblique',
+    'acrobatic', 'alligator', 'alligator2', 'alphabet', 'arrows', 'ascii',
+    'ascii_new_roman', 'avatar', 'banner', 'banner3-D', 'banner3', 'banner4',
+    'barbwire', 'basic', 'bell', 'big', 'bigchief', 'binary', 'block',
+    'bubble', 'bulbhead', 'caligraphy', 'cards', 'catwalk', 'chunky',
+    'coinstak', 'colossal', 'computer', 'contessa', 'contrast', 'cosmic',
+    'crawford', 'cricket', 'cursive', 'cyberlarge', 'cybermedium', 'cybersmall',
+    'diamond', 'digital', 'doh', 'doom', 'dotmatrix', 'drpepper', 'eftichess',
+    'eftifont', 'eftipiti', 'eftiroboto', 'eftitalic', 'eftiwall', 'epic',
+    'fender', 'fire', 'fourtops', 'fuzzy', 'georgia11', 'ghost', 'gothic',
+    'graffiti', 'happy', 'harry_p', 'heart', 'henry3d', 'hex', 'hollywood',
+    'horizontal', 'ivrit', 'jazmine', 'jerusalem', 'katakana', 'kawii',
+    'keyboard', 'krak', 'larry3d', 'lcd', 'lean', 'letters', 'linux', 'lockergnome',
+    'madrid', 'marquee', 'maxfour', 'merlin1', 'merlin2', 'mike', 'mini',
+    'mirror', 'mnemonic', 'morse', 'moscow', 'nancyj', 'nipples', 'nscript',
+    'ntgreek', 'o8', 'octal', 'ogre', 'oldbanner', 'os2', 'pawp', 'peaks',
+    'pebbles', 'pepper', 'poison', 'puffy', 'pyramid', 'rectangles', 'relief',
+    'relief2', 'rev', 'rnd', 'roman', 'rot13', 'rotated', 'rounded', 'rowancap',
+    'rozzo', 'runic', 'santa', 'sblood', 'script', 'serifcap', 'shadow',
+    'shimrod', 'short', 'slant', 'slide', 'slscript', 'small', 'smisome1',
+    'smkeyboard', 'smscript', 'smshadow', 'smslant', 'smtengwar', 'speed',
+    'stampatello', 'standard', 'starwars', 'stellar', 'stop', 'straight',
+    'stretched', 'sub-zero', 'swampland', 'swinging', 'tanja', 'tengwar',
+    'term', 'thick', 'thin', 'threepoint', 'ticks', 'ticksslant', 'tiles',
+    'times', 'tombstone', 'trek', 'tsalagi', 'twisted', 'univers', 'usaflag',
+    'utopia', 'varsity', 'wavy', 'weird', 'wetletter', 'whimsy', 'wikipedia'
+]
 
-# ========== 5. إنشاء PDF ==========
-def create_pdf(title, analysis, output_path):
-    pdf = FPDF()
-    pdf.add_page()
-    
-    if FONT_PATH and os.path.exists(FONT_PATH):
-        pdf.add_font('Noto', '', FONT_PATH, uni=True)
-        pdf.set_font('Noto', '', 16)
-    else:
-        pdf.set_font("Helvetica", "", 16)
-    
-    # العنوان
-    pdf.set_text_color(0, 51, 102)
-    pdf.cell(0, 15, f"تحليل المحاضرة: {title}", 0, 1, 'C')
-    pdf.ln(5)
-    
-    # التاريخ
-    pdf.set_font_size(10)
-    pdf.set_text_color(100, 100, 100)
-    pdf.cell(0, 8, f"التاريخ: {datetime.now().strftime('%Y-%m-%d %H:%M')}", 0, 1, 'C')
-    pdf.ln(10)
-    
-    for item in analysis:
-        if pdf.get_y() > 250:
-            pdf.add_page()
-        
-        # عنوان القسم
-        pdf.set_font_size(12)
-        pdf.set_text_color(0, 51, 102)
-        pdf.cell(0, 10, f"القسم {item['num']}", 0, 1, 'L')
-        
-        # النص الأصلي
-        pdf.set_font_size(10)
-        pdf.set_text_color(0, 0, 150)
-        pdf.cell(0, 8, "النص الأصلي:", 0, 1, 'L')
-        pdf.set_text_color(0, 0, 0)
-        pdf.multi_cell(0, 6, reshape_arabic(item['original']))
-        pdf.ln(3)
-        
-        # الترجمة
-        pdf.set_text_color(0, 100, 0)
-        pdf.cell(0, 8, "الترجمة:", 0, 1, 'L')
-        pdf.set_text_color(0, 0, 0)
-        pdf.multi_cell(0, 6, reshape_arabic(item['translated']))
-        pdf.ln(8)
-        
-        # فاصل
-        pdf.set_draw_color(200, 200, 200)
-        pdf.line(30, pdf.get_y(), 180, pdf.get_y())
-        pdf.ln(5)
-    
-    # حقوق البوت
-    pdf.set_y(-20)
-    pdf.set_font_size(9)
-    pdf.set_text_color(128, 128, 128)
-    pdf.cell(0, 8, "@zakros_probot", 0, 0, 'C')
-    
-    pdf.output(output_path)
-
-# ========== 6. أوامر البوت ==========
+# ========== أوامر البوت ==========
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.chat.id
-    points = get_user(user_id)
+    user = get_user(user_id)
     
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("📚 تحليل محاضرة", callback_data="analyze"))
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🎨 رسم نصي", callback_data="new_art"),
+        InlineKeyboardButton("🎁 مشاركة الرابط", callback_data="share_link")
+    )
     if user_id == OWNER_ID:
-        markup.add(InlineKeyboardButton("🔧 لوحة التحكم", callback_data="admin"))
+        markup.add(InlineKeyboardButton("🔧 لوحة التحكم", callback_data="admin_panel"))
     
     bot.send_message(user_id,
-        f"📚 بوت تحليل المحاضرات\n\n"
-        f"⭐ رصيدك: {points} نقطة\n"
-        f"• كل تحليل يستهلك نقطة واحدة\n\n"
-        f"@zakros_probot",
-        reply_markup=markup)
+        f"🎨 *بوت الرسم النصي (ASCII Art)*\n\n"
+        f"⭐ رصيدك: {user['points']} نقطة\n"
+        f"• كل رسمة تستهلك نقطة واحدة\n"
+        f"• يمكنك الحصول على نقاط مجانية عبر مشاركة الرابط (كل مشاركة = نقطة)\n\n"
+        f"🔗 رابط إحالتك:\nhttps://t.me/{bot.get_me().username}?start={user_id}\n\n"
+        f"📌 @zakros_probot",
+        parse_mode="Markdown", reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data == "analyze")
-def analyze_start(call):
+@bot.callback_query_handler(func=lambda call: call.data == "share_link")
+def share_link(call):
     user_id = call.message.chat.id
-    points = get_user(user_id)
-    if points < 1:
-        bot.answer_callback_query(call.id, "ليس لديك نقاط كافية!", True)
-        return
-    
-    bot.send_message(user_id, "📌 أرسل عنوان المحاضرة:")
-    bot.register_next_step_handler(call.message, get_title)
+    bot.answer_callback_query(call.id)
+    bot.send_message(user_id, f"🎁 رابط إحالتك:\nhttps://t.me/{bot.get_me().username}?start={user_id}\n\nكل مشاركة = نقطة إضافية!")
 
-def get_title(message):
-    user_id = message.chat.id
-    title = message.text.strip()
-    bot.send_message(user_id, f"عنوان: {title}\n\n📚 أرسل المحاضرة (نص أو ملف PDF/Word/TXT):")
-    bot.register_next_step_handler(message, get_content, title)
+@bot.callback_query_handler(func=lambda call: call.data == "new_art")
+def new_art(call):
+    user_id = call.message.chat.id
+    user = get_user(user_id)
+    if user["points"] < 1:
+        bot.answer_callback_query(call.id, f"⚠️ ليس لديك نقاط كافية! رصيدك: {user['points']} نقطة\nشارك الرابط لتحصل على نقاط!", show_alert=True)
+        return
+    
+    bot.edit_message_text("🎨 *أرسل النص الذي تريد تحويله إلى رسم نصي*\nمثال: ولد يلعب في الحديقة", user_id, call.message.message_id, parse_mode="Markdown")
+    bot.register_next_step_handler(call.message, process_text)
 
-def get_content(message, title):
+def process_text(message):
     user_id = message.chat.id
-    content = None
+    text = message.text.strip()
     
-    if message.text and not message.text.startswith('/'):
-        content = message.text.strip()
-    elif message.document:
-        file_name = message.document.file_name
-        ext = os.path.splitext(file_name)[1].lower()
-        if ext not in ['.txt', '.pdf', '.docx']:
-            bot.reply_to(message, "نوع الملف غير مدعوم. الأنواع: txt, pdf, docx")
-            return
-        
-        status = bot.reply_to(message, "جاري تحميل الملف...")
-        try:
-            file_info = bot.get_file(message.document.file_id)
-            downloaded = bot.download_file(file_info.file_path)
-            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-                tmp.write(downloaded)
-                tmp_path = tmp.name
-            content = extract_text(tmp_path)
-            os.unlink(tmp_path)
-            bot.delete_message(user_id, status.message_id)
-        except Exception as e:
-            bot.edit_message_text(f"خطأ: {e}", user_id, status.message_id)
-            return
-    else:
-        bot.reply_to(message, "أرسل نصاً أو ملفاً صالحاً")
+    if len(text) < 3:
+        bot.reply_to(message, "❌ النص قصير جداً (يحتاج 3 أحرف على الأقل)")
+        return
+    if len(text) > 50:
+        bot.reply_to(message, "❌ النص طويل جداً (الحد الأقصى 50 حرف)")
         return
     
-    if not content or len(content) < 50:
-        bot.reply_to(message, "النص قصير جداً")
-        return
-    
+    # استهلاك نقطة
     update_points(user_id, -1)
+    add_use(user_id)
     
-    status = bot.reply_to(message, "جاري تحليل المحاضرة...")
+    # إرسال رسالة المعالجة
+    status = bot.reply_to(message, "🎨 جاري إنشاء الرسم النصي...")
     
     try:
-        analysis = analyze_lecture(content)
-        pdf_path = tempfile.mktemp(suffix='.pdf')
-        create_pdf(title, analysis, pdf_path)
+        # اختيار خط عشوائي
+        font = random.choice(FONTS)
         
+        # إنشاء الرسم النصي
+        ascii_art = text2art(text, font=font)
+        
+        # تنظيف النتيجة
+        ascii_art = ascii_art.strip()
+        
+        # إرسال الرسم
         new_points = get_user(user_id)
-        with open(pdf_path, 'rb') as f:
-            bot.send_document(user_id, f, caption=f"✅ تم التحليل\n📚 {title}\n⭐ النقاط المتبقية: {new_points}\n\n@zakros_probot", visible_file_name=f"{title}.pdf")
+        bot.send_message(user_id, f"🎨 *الرسم النصي لـ:* `{text}`\n```\n{ascii_art}\n```\n✨ الخط المستخدم: `{font}`\n⭐ النقاط المتبقية: {new_points['points']}", parse_mode="Markdown")
         
-        os.unlink(pdf_path)
         bot.delete_message(user_id, status.message_id)
+        
     except Exception as e:
-        bot.edit_message_text(f"❌ فشل: {e}", user_id, status.message_id)
-        update_points(user_id, 1)
+        # محاولة باستخدام خط بسيط
+        try:
+            ascii_art = text2art(text, font='block')
+            new_points = get_user(user_id)
+            bot.send_message(user_id, f"🎨 *الرسم النصي لـ:* `{text}`\n```\n{ascii_art}\n```\n⭐ النقاط المتبقية: {new_points['points']}", parse_mode="Markdown")
+            bot.delete_message(user_id, status.message_id)
+        except:
+            bot.edit_message_text("❌ فشل إنشاء الرسم النصي. حاول بنص أبسط.", user_id, status.message_id)
+            update_points(user_id, 1)
 
-# ========== 7. لوحة تحكم المالك ==========
-@bot.callback_query_handler(func=lambda call: call.data == "admin")
+# ========== لوحة تحكم المالك ==========
+@bot.callback_query_handler(func=lambda call: call.data == "admin_panel")
 def admin_panel(call):
     if call.message.chat.id != OWNER_ID:
-        bot.answer_callback_query(call.id, "غير مصرح", True)
+        bot.answer_callback_query(call.id, "🔒 غير مصرح", True)
         return
-    
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("➕ إضافة نقاط", callback_data="add_points"))
-    markup.add(InlineKeyboardButton("📊 إحصائيات", callback_data="stats"))
-    bot.send_message(OWNER_ID, "🔧 لوحة التحكم", reply_markup=markup)
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("➕ إضافة نقاط", callback_data="admin_add_points"),
+        InlineKeyboardButton("➖ خصم نقاط", callback_data="admin_remove_points"),
+        InlineKeyboardButton("📊 إحصائيات", callback_data="admin_stats"),
+        InlineKeyboardButton("📢 إذاعة", callback_data="admin_broadcast")
+    )
+    bot.send_message(OWNER_ID, "🔧 لوحة تحكم المالك", reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data == "add_points")
-def add_points(call):
+@bot.callback_query_handler(func=lambda call: call.data == "admin_add_points")
+def admin_add_points(call):
     if call.message.chat.id != OWNER_ID:
         return
     msg = bot.send_message(OWNER_ID, "أرسل معرف المستخدم وعدد النقاط (مثال: 123456789 5):")
@@ -285,19 +182,58 @@ def add_points_step(message):
         update_points(uid, pts)
         bot.send_message(OWNER_ID, f"✅ تم إضافة {pts} نقطة للمستخدم {uid}")
     except:
-        bot.send_message(OWNER_ID, "صيغة غير صحيحة")
+        bot.send_message(OWNER_ID, "❌ صيغة غير صحيحة. أرسل: user_id points")
 
-@bot.callback_query_handler(func=lambda call: call.data == "stats")
-def stats(call):
+@bot.callback_query_handler(func=lambda call: call.data == "admin_remove_points")
+def admin_remove_points(call):
+    if call.message.chat.id != OWNER_ID:
+        return
+    msg = bot.send_message(OWNER_ID, "أرسل معرف المستخدم وعدد النقاط (مثال: 123456789 3):")
+    bot.register_next_step_handler(msg, remove_points_step)
+
+def remove_points_step(message):
+    try:
+        uid, pts = map(int, message.text.split())
+        update_points(uid, -pts)
+        bot.send_message(OWNER_ID, f"✅ تم خصم {pts} نقطة من المستخدم {uid}")
+    except:
+        bot.send_message(OWNER_ID, "❌ صيغة غير صحيحة")
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_stats")
+def admin_stats(call):
     if call.message.chat.id != OWNER_ID:
         return
     c.execute("SELECT COUNT(*) FROM users")
     users = c.fetchone()[0]
     c.execute("SELECT SUM(points) FROM users")
     points = c.fetchone()[0] or 0
-    bot.send_message(OWNER_ID, f"📊 إحصائيات\n👥 المستخدمون: {users}\n⭐ النقاط: {points}")
+    c.execute("SELECT SUM(total_uses) FROM users")
+    uses = c.fetchone()[0] or 0
+    bot.send_message(OWNER_ID, f"📊 *إحصائيات البوت*\n\n👥 المستخدمون: {users}\n⭐ مجموع النقاط: {points}\n🎨 عدد الرسومات: {uses}", parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_broadcast")
+def admin_broadcast(call):
+    if call.message.chat.id != OWNER_ID:
+        bot.answer_callback_query(call.id, "🔒 غير مصرح", True)
+        return
+    msg = bot.send_message(OWNER_ID, "📢 أرسل الرسالة التي تريد إذاعتها:")
+    bot.register_next_step_handler(msg, send_broadcast)
+
+def send_broadcast(message):
+    broadcast_text = message.text
+    c.execute("SELECT user_id FROM users")
+    users = c.fetchall()
+    success = 0
+    for (uid,) in users:
+        try:
+            bot.send_message(uid, f"📢 *إذاعة من المالك*\n\n{broadcast_text}\n\n✨ @zakros_probot ✨", parse_mode="Markdown")
+            success += 1
+        except:
+            pass
+        time.sleep(0.05)
+    bot.send_message(OWNER_ID, f"✅ تم إرسال الإذاعة إلى {success} مستخدم.")
 
 if __name__ == "__main__":
-    print("✅ البوت يعمل...")
+    print("✅ بوت الرسم النصي يعمل...")
     bot.remove_webhook()
     bot.infinity_polling()
