@@ -10,6 +10,8 @@ import time
 import threading
 import re
 import requests
+import zipfile
+import io
 from fpdf import FPDF
 import arabic_reshaper
 from bidi.algorithm import get_display
@@ -25,15 +27,18 @@ if not BOT_TOKEN:
 bot = telebot.TeleBot(BOT_TOKEN)
 OWNER_ID = 7021542402
 
-# ========== 1. تحميل خط عالمي (يدعم العربية واللاتينية) ==========
-FONT_URL = "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf"
-FONT_PATH = "DejaVuSans.ttf"
+# ========== 1. تحميل خط عالمي (يدعم العربية واللاتينية) من مصدر موثوق ==========
+FONT_URL = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf"
+FONT_PATH = "NotoSans-Regular.ttf"
 if not os.path.exists(FONT_PATH):
     try:
+        print("Downloading font...")
         r = requests.get(FONT_URL, timeout=30)
         with open(FONT_PATH, "wb") as f:
             f.write(r.content)
-    except:
+        print("Font downloaded successfully.")
+    except Exception as e:
+        print(f"Font download failed: {e}")
         FONT_PATH = None
 
 def reshape_arabic(text):
@@ -132,7 +137,6 @@ def analyze_lecture(text, user_id, progress_msg_id):
     analyzed = []
     
     # الكشف عن اللغة
-    has_arabic = any('\u0600' <= c <= '\u06FF' for c in text[:500])
     has_latin = any(c.isalpha() and ord(c) < 128 for c in text[:500])
     
     for i, section in enumerate(sections):
@@ -174,18 +178,31 @@ def analyze_lecture(text, user_id, progress_msg_id):
 
 # ========== 5. إنشاء PDF ==========
 class GlobalPDF(FPDF):
+    def __init__(self):
+        super().__init__()
+        if FONT_PATH and os.path.exists(FONT_PATH):
+            self.add_font('Noto', '', FONT_PATH, uni=True)
+            self.font_name = 'Noto'
+        else:
+            self.font_name = 'Helvetica'
+    
     def header(self):
         if self.page_no() > 1:
-            self.set_font('DejaVu', '', 9)
+            self.set_font(self.font_name, '', 9)
             self.set_text_color(100, 100, 100)
             self.cell(0, 10, f"📄 صفحة {self.page_no()}", 0, 0, 'C')
             self.ln(8)
     
     def footer(self):
         self.set_y(-15)
-        self.set_font('DejaVu', '', 8)
+        self.set_font(self.font_name, '', 8)
         self.set_text_color(128, 128, 128)
         self.cell(0, 10, "✨ @zakros_probot ✨", 0, 0, 'C')
+    
+    def write_text(self, text, size=11, color=(0,0,0)):
+        self.set_font(self.font_name, '', size)
+        self.set_text_color(color[0], color[1], color[2])
+        self.multi_cell(0, 7, reshape_arabic(text))
 
 def create_lecture_pdf(title, analysis, dialect_name, user_id, progress_msg_id):
     update_progress(user_id, progress_msg_id, "📄 إنشاء PDF", 97)
@@ -193,13 +210,8 @@ def create_lecture_pdf(title, analysis, dialect_name, user_id, progress_msg_id):
     pdf = GlobalPDF()
     pdf.add_page()
     
-    if FONT_PATH and os.path.exists(FONT_PATH):
-        pdf.add_font('DejaVu', '', FONT_PATH, uni=True)
-        pdf.set_font('DejaVu', '', 20)
-    else:
-        pdf.set_font("Helvetica", "", 20)
-    
     # ========== الصفحة الأولى ==========
+    pdf.set_font(pdf.font_name, '', 20)
     pdf.set_text_color(0, 51, 102)
     pdf.cell(0, 20, f"📚 تحليل المحاضرة: {title}", 0, 1, 'C')
     
@@ -214,17 +226,15 @@ def create_lecture_pdf(title, analysis, dialect_name, user_id, progress_msg_id):
     pdf.ln(15)
     
     # ========== الأساسيات ==========
-    pdf.set_font_size(16)
+    pdf.set_font(pdf.font_name, '', 16)
     pdf.set_text_color(0, 51, 102)
     pdf.cell(0, 10, "📌 الأساسيات", 0, 1, 'L')
-    pdf.set_font_size(11)
-    pdf.set_text_color(0, 0, 0)
-    pdf.multi_cell(0, 7, reshape_arabic(analysis["basics"]))
+    pdf.write_text(analysis["basics"], 11, (0,0,0))
     pdf.ln(10)
     
     # ========== الأقسام ==========
     pdf.add_page()
-    pdf.set_font_size(16)
+    pdf.set_font(pdf.font_name, '', 16)
     pdf.set_text_color(0, 51, 102)
     pdf.cell(0, 10, f"📚 تقسيم المحاضرة ({analysis['total_sections']} أقسام)", 0, 1, 'L')
     pdf.ln(5)
@@ -234,16 +244,15 @@ def create_lecture_pdf(title, analysis, dialect_name, user_id, progress_msg_id):
             pdf.add_page()
         
         # عنوان القسم
-        pdf.set_font_size(14)
+        pdf.set_font(pdf.font_name, '', 14)
         pdf.set_text_color(0, 51, 102)
         pdf.cell(0, 10, f"📖 القسم {item['part']}", 0, 1, 'L')
         
         # النص الأصلي
-        pdf.set_font_size(11)
+        pdf.set_font(pdf.font_name, '', 11)
         pdf.set_text_color(0, 0, 150)
         pdf.cell(0, 8, "📜 النص الأصلي:", 0, 1, 'L')
-        pdf.set_text_color(0, 0, 0)
-        pdf.multi_cell(0, 6, reshape_arabic(item['original'][:500]))
+        pdf.write_text(item['original'][:500], 10, (0,0,0))
         pdf.ln(3)
         
         # الترجمة (إذا كان هناك لاتيني)
@@ -252,8 +261,7 @@ def create_lecture_pdf(title, analysis, dialect_name, user_id, progress_msg_id):
                 pdf.add_page()
             pdf.set_text_color(0, 100, 0)
             pdf.cell(0, 8, "🌍 الترجمة:", 0, 1, 'L')
-            pdf.set_text_color(0, 0, 0)
-            pdf.multi_cell(0, 6, reshape_arabic(item['translated'][:500]))
+            pdf.write_text(item['translated'][:500], 10, (0,0,0))
             pdf.ln(3)
         
         # الشرح
@@ -261,8 +269,7 @@ def create_lecture_pdf(title, analysis, dialect_name, user_id, progress_msg_id):
             pdf.add_page()
         pdf.set_text_color(150, 100, 0)
         pdf.cell(0, 8, "💡 الشرح:", 0, 1, 'L')
-        pdf.set_text_color(0, 0, 0)
-        pdf.multi_cell(0, 6, reshape_arabic(item['explanation']))
+        pdf.write_text(item['explanation'], 10, (0,0,0))
         pdf.ln(8)
         
         # فاصل
@@ -272,13 +279,11 @@ def create_lecture_pdf(title, analysis, dialect_name, user_id, progress_msg_id):
     
     # ========== الملخص ==========
     pdf.add_page()
-    pdf.set_font_size(16)
+    pdf.set_font(pdf.font_name, '', 16)
     pdf.set_text_color(0, 51, 102)
     pdf.cell(0, 10, "📝 الملخص النهائي", 0, 1, 'L')
     pdf.ln(5)
-    pdf.set_font_size(12)
-    pdf.set_text_color(0, 0, 0)
-    pdf.multi_cell(0, 7, reshape_arabic(analysis["summary"]))
+    pdf.write_text(analysis["summary"], 12, (0,0,0))
     
     path = tempfile.mktemp(suffix='.pdf')
     pdf.output(path)
