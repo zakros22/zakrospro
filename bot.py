@@ -4,10 +4,8 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
 import json
 import tempfile
-import random
 from datetime import datetime
 import time
-import threading
 import re
 import requests
 from fpdf import FPDF
@@ -17,6 +15,7 @@ from deep_translator import GoogleTranslator
 import PyPDF2
 import docx
 from pptx import Presentation
+from langdetect import detect
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
@@ -25,16 +24,15 @@ if not BOT_TOKEN:
 bot = telebot.TeleBot(BOT_TOKEN)
 OWNER_ID = 7021542402
 
-# ========== 1. تحميل الخط العربي ==========
-FONT_URL = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansArabic/NotoSansArabic-Regular.ttf"
-FONT_PATH = "NotoSansArabic-Regular.ttf"
+# ========== 1. تحميل الخط ==========
+FONT_URL = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf"
+FONT_PATH = "NotoSans-Regular.ttf"
 if not os.path.exists(FONT_PATH):
     try:
-        print("Downloading Arabic font...")
+        print("Downloading font...")
         r = requests.get(FONT_URL, timeout=30)
         with open(FONT_PATH, "wb") as f:
             f.write(r.content)
-        print("Font downloaded.")
     except:
         FONT_PATH = None
 
@@ -47,23 +45,45 @@ def reshape_arabic(text):
             return text
     return text
 
-def update_progress(user_id, msg_id, stage, percent, details=""):
+def detect_language(text):
+    """تحديد لغة النص"""
+    try:
+        lang = detect(text[:500])
+        if lang == 'ar':
+            return 'arabic', 'العربية'
+        else:
+            return 'english', 'English'
+    except:
+        return 'unknown', 'غير معروف'
+
+def translate_text(text, source_lang, target_lang):
+    """ترجمة النص"""
+    try:
+        translator = GoogleTranslator(source=source_lang, target=target_lang)
+        return translator.translate(text[:3000])
+    except:
+        return text
+
+def clean_text(text):
+    """تنظيف النص"""
+    text = re.sub(r'\n+', '\n', text)
+    text = re.sub(r' +', ' ', text)
+    return text.strip()
+
+def update_progress(user_id, msg_id, stage, percent):
     bar_length = 20
     filled = int(bar_length * percent // 100)
     bar = "█" * filled + "░" * (bar_length - filled)
-    text = f"✨ {stage} ✨\n[{bar}] {percent}%\n{details}"
+    text = f"✨ {stage} ✨\n[{bar}] {percent}%"
     try:
         bot.edit_message_text(text, user_id, msg_id)
     except:
         pass
 
-# ========== 2. اللهجات (للعرض فقط - الترجمة إلى الفصحى) ==========
+# ========== 2. اللهجات ==========
 DIALECTS = {
-    "iraqi": "🇮🇶 اللهجة العراقية",
-    "egyptian": "🇪🇬 اللهجة المصرية",
-    "syrian": "🇸🇾 اللهجة السورية",
-    "gulf": "🇦🇪 اللهجة الخليجية",
-    "fusha": "📖 الفصحى"
+    "arabic": "🇸🇦 العربية",
+    "english": "🇬🇧 English"
 }
 
 # ========== 3. استخراج النص من الملفات ==========
@@ -83,8 +103,8 @@ def extract_text_from_file(file_path, user_id, progress_msg_id):
                     page_text = page.extract_text()
                     if page_text:
                         text += page_text + "\n"
-                    percent = 10 + int((i + 1) / total_pages * 10)
-                    update_progress(user_id, progress_msg_id, "📄 استخراج من PDF", percent, f"📑 صفحة {i+1}/{total_pages}")
+                    percent = 10 + int((i + 1) / total_pages * 20)
+                    update_progress(user_id, progress_msg_id, "📄 استخراج من PDF", percent)
             return text.strip() if text else None
         elif ext == '.docx':
             doc = docx.Document(file_path)
@@ -96,7 +116,6 @@ def extract_text_from_file(file_path, user_id, progress_msg_id):
                 for shape in slide.shapes:
                     if hasattr(shape, "text"):
                         text += shape.text + "\n"
-                update_progress(user_id, progress_msg_id, "📊 استخراج من PPTX", 10 + int((i + 1) / len(prs.slides) * 10))
             return text.strip() if text else None
         else:
             return None
@@ -105,79 +124,70 @@ def extract_text_from_file(file_path, user_id, progress_msg_id):
         return None
 
 # ========== 4. تحليل المحاضرة ==========
-def analyze_lecture(text, user_id, progress_msg_id):
-    update_progress(user_id, progress_msg_id, "🔍 تحليل المحاضرة", 20)
+def analyze_lecture(text, target_lang, user_id, progress_msg_id):
+    update_progress(user_id, progress_msg_id, "🔍 تحليل المحاضرة", 30)
     
-    basics = text[:500] + "..." if len(text) > 500 else text
+    text = clean_text(text)
+    source_lang, source_name = detect_language(text)
     
-    update_progress(user_id, progress_msg_id, "✂️ تقسيم المحاضرة", 30)
+    update_progress(user_id, progress_msg_id, f"🌍 اللغة المكتشفة: {source_name}", 40)
     
-    sentences = re.split(r'(?<=[.!?؟])\s+', text)
-    sections = []
-    current = ""
-    for sent in sentences:
-        if len(current) + len(sent) + 2 <= 600:
-            current += sent + " "
-        else:
-            if current:
-                sections.append(current.strip())
-            current = sent + " "
-    if current:
-        sections.append(current.strip())
+    # تقسيم النص إلى فقرات
+    paragraphs = text.split('\n')
+    paragraphs = [p for p in paragraphs if len(p.strip()) > 20]
     
-    if not sections:
-        sections = [text[:500]]
+    if not paragraphs:
+        paragraphs = [text[:500]]
     
-    total_sections = len(sections)
+    total = len(paragraphs)
     analyzed = []
     
-    # ترجمة النص إلى العربية الفصحى
-    translator = GoogleTranslator(source='auto', target='ar')
-    
-    for i, section in enumerate(sections):
-        percent = 30 + int((i + 1) / total_sections * 30)
-        update_progress(user_id, progress_msg_id, f"📝 معالجة القسم {i+1}/{total_sections}", percent)
+    for i, para in enumerate(paragraphs[:30]):  # حد أقصى 30 فقرة
+        percent = 40 + int((i + 1) / total * 50)
+        update_progress(user_id, progress_msg_id, f"📝 معالجة الفقرة {i+1}/{total}", percent)
         
-        try:
-            translated = translator.translate(section[:2000])
-            time.sleep(0.3)
-        except:
-            translated = section
+        # ترجمة النص
+        if target_lang == 'arabic':
+            translated = translate_text(para, 'en', 'ar')
+        else:
+            translated = translate_text(para, 'ar', 'en')
         
-        # شرح مبسط للقسم
-        explanation = f"📌 يتناول هذا القسم: {section[:150]}..."
-        try:
-            explanation_ar = translator.translate(explanation[:1000])
-        except:
-            explanation_ar = explanation
+        # شرح مبسط
+        explanation = f"📌 هذه الفقرة تتحدث عن: {para[:100]}..."
+        if target_lang == 'arabic':
+            explanation_ar = translate_text(explanation, 'en', 'ar')
+        else:
+            explanation_ar = translate_text(explanation, 'ar', 'en')
         
         analyzed.append({
             "part": i + 1,
-            "original": section,
+            "original": para,
             "translated": translated,
             "explanation": explanation_ar
         })
     
-    update_progress(user_id, progress_msg_id, "📝 كتابة الملخص", 85)
-    summary = f"📚 تحتوي هذه المحاضرة على {total_sections} أقسام. ملخص عام: {text[:400]}..."
-    try:
-        summary_ar = translator.translate(summary[:1500])
-    except:
-        summary_ar = summary
+    update_progress(user_id, progress_msg_id, "📝 كتابة الملخص", 90)
+    
+    # ملخص
+    summary = text[:500] + "..." if len(text) > 500 else text
+    if target_lang == 'arabic':
+        summary_translated = translate_text(summary, 'en', 'ar')
+    else:
+        summary_translated = translate_text(summary, 'ar', 'en')
     
     update_progress(user_id, progress_msg_id, "✅ اكتمل التحليل", 95)
     
     return {
-        "basics": basics,
-        "basics_ar": translator.translate(basics[:2000]) if basics else basics,
-        "sections": analyzed,
+        "source_lang": source_name,
+        "target_lang": "العربية" if target_lang == 'arabic' else "English",
+        "total_paragraphs": len(analyzed),
+        "paragraphs": analyzed,
         "summary": summary,
-        "summary_ar": summary_ar,
-        "total_sections": total_sections
+        "summary_translated": summary_translated
     }
 
 # ========== 5. إنشاء PDF ==========
-class ArabicPDF(FPDF):
+class BilingualPDF(FPDF):
     def __init__(self):
         super().__init__()
         if FONT_PATH and os.path.exists(FONT_PATH):
@@ -199,89 +209,65 @@ class ArabicPDF(FPDF):
         self.set_text_color(128, 128, 128)
         self.cell(0, 10, "✨ @zakros_probot ✨", 0, 0, 'C')
     
-    def write_text(self, text, size=11, color=(0,0,0)):
-        self.set_font(self.font_name, '', size)
-        self.set_text_color(color[0], color[1], color[2])
-        self.multi_cell(0, 7, reshape_arabic(text))
+    def add_section(self, title, original_text, translated_text, explanation):
+        self.set_font(self.font_name, '', 14)
+        self.set_text_color(0, 51, 102)
+        self.cell(0, 10, title, 0, 1, 'L')
+        
+        self.set_font(self.font_name, '', 11)
+        self.set_text_color(0, 0, 150)
+        self.cell(0, 8, "📖 النص الأصلي:", 0, 1, 'L')
+        self.set_text_color(0, 0, 0)
+        self.multi_cell(0, 6, reshape_arabic(original_text))
+        self.ln(3)
+        
+        self.set_text_color(0, 100, 0)
+        self.cell(0, 8, "🌍 الترجمة:", 0, 1, 'L')
+        self.set_text_color(0, 0, 0)
+        self.multi_cell(0, 6, reshape_arabic(translated_text))
+        self.ln(3)
+        
+        self.set_text_color(150, 100, 0)
+        self.cell(0, 8, "💡 الشرح:", 0, 1, 'L')
+        self.set_text_color(0, 0, 0)
+        self.multi_cell(0, 6, reshape_arabic(explanation))
+        self.ln(8)
+        
+        self.set_draw_color(200, 200, 200)
+        self.line(30, self.get_y(), 180, self.get_y())
+        self.ln(5)
 
-def create_lecture_pdf(title, analysis, dialect_name, user_id, progress_msg_id):
+def create_lecture_pdf(title, analysis, user_id, progress_msg_id):
     update_progress(user_id, progress_msg_id, "📄 إنشاء PDF", 97)
     
-    pdf = ArabicPDF()
+    pdf = BilingualPDF()
     pdf.add_page()
     
-    # ========== الصفحة الأولى ==========
+    # العنوان
     pdf.set_font(pdf.font_name, '', 20)
     pdf.set_text_color(0, 51, 102)
     pdf.cell(0, 20, f"📚 تحليل المحاضرة: {title}", 0, 1, 'C')
     
+    # المعلومات
     pdf.set_font_size(11)
     pdf.set_text_color(100, 100, 100)
     pdf.cell(0, 10, f"📅 التاريخ: {datetime.now().strftime('%Y/%m/%d - %H:%M')}", 0, 1, 'C')
-    pdf.cell(0, 10, f"🌍 لغة الشرح: {dialect_name}", 0, 1, 'C')
-    pdf.cell(0, 10, f"📊 عدد الأقسام: {analysis['total_sections']}", 0, 1, 'C')
+    pdf.cell(0, 10, f"🌍 اللغة المصدر: {analysis['source_lang']}", 0, 1, 'C')
+    pdf.cell(0, 10, f"🎯 اللغة الهدف: {analysis['target_lang']}", 0, 1, 'C')
+    pdf.cell(0, 10, f"📊 عدد الفقرات: {analysis['total_paragraphs']}", 0, 1, 'C')
     pdf.ln(10)
     
     pdf.set_draw_color(0, 102, 204)
-    pdf.line(30, 85, 180, 85)
+    pdf.line(30, 100, 180, 100)
     pdf.ln(15)
     
-    # ========== الأساسيات ==========
-    pdf.set_font(pdf.font_name, '', 16)
-    pdf.set_text_color(0, 51, 102)
-    pdf.cell(0, 10, "📌 الأساسيات", 0, 1, 'L')
-    
-    pdf.set_font(pdf.font_name, '', 11)
-    pdf.set_text_color(0, 0, 150)
-    pdf.cell(0, 8, "📖 النص الأصلي:", 0, 1, 'L')
-    pdf.write_text(analysis["basics"], 10, (0,0,0))
-    pdf.ln(3)
-    
-    pdf.set_text_color(0, 100, 0)
-    pdf.cell(0, 8, "🌍 الترجمة إلى العربية:", 0, 1, 'L')
-    pdf.write_text(analysis["basics_ar"], 10, (0,0,0))
-    pdf.ln(10)
-    
-    # ========== الأقسام ==========
-    pdf.add_page()
-    pdf.set_font(pdf.font_name, '', 16)
-    pdf.set_text_color(0, 51, 102)
-    pdf.cell(0, 10, f"📚 تقسيم المحاضرة ({analysis['total_sections']} أقسام)", 0, 1, 'L')
-    pdf.ln(5)
-    
-    for item in analysis["sections"]:
+    # الأقسام
+    for item in analysis["paragraphs"]:
         if pdf.get_y() > 250:
             pdf.add_page()
-        
-        pdf.set_font(pdf.font_name, '', 14)
-        pdf.set_text_color(0, 51, 102)
-        pdf.cell(0, 10, f"📖 القسم {item['part']}", 0, 1, 'L')
-        
-        pdf.set_font(pdf.font_name, '', 11)
-        pdf.set_text_color(0, 0, 150)
-        pdf.cell(0, 8, "📜 النص الأصلي:", 0, 1, 'L')
-        pdf.write_text(item['original'][:500], 10, (0,0,0))
-        pdf.ln(3)
-        
-        if pdf.get_y() > 250:
-            pdf.add_page()
-        pdf.set_text_color(0, 100, 0)
-        pdf.cell(0, 8, "🌍 الترجمة إلى العربية:", 0, 1, 'L')
-        pdf.write_text(item['translated'][:500], 10, (0,0,0))
-        pdf.ln(3)
-        
-        if pdf.get_y() > 250:
-            pdf.add_page()
-        pdf.set_text_color(150, 100, 0)
-        pdf.cell(0, 8, "💡 الشرح:", 0, 1, 'L')
-        pdf.write_text(item['explanation'], 10, (0,0,0))
-        pdf.ln(8)
-        
-        pdf.set_draw_color(200, 200, 200)
-        pdf.line(30, pdf.get_y(), 180, pdf.get_y())
-        pdf.ln(5)
+        pdf.add_section(f"📖 القسم {item['part']}", item['original'], item['translated'], item['explanation'])
     
-    # ========== الملخص ==========
+    # الملخص
     pdf.add_page()
     pdf.set_font(pdf.font_name, '', 16)
     pdf.set_text_color(0, 51, 102)
@@ -291,12 +277,14 @@ def create_lecture_pdf(title, analysis, dialect_name, user_id, progress_msg_id):
     pdf.set_font(pdf.font_name, '', 11)
     pdf.set_text_color(0, 0, 150)
     pdf.cell(0, 8, "📖 الملخص الأصلي:", 0, 1, 'L')
-    pdf.write_text(analysis["summary"], 10, (0,0,0))
+    pdf.set_text_color(0, 0, 0)
+    pdf.multi_cell(0, 6, reshape_arabic(analysis["summary"]))
     pdf.ln(3)
     
     pdf.set_text_color(0, 100, 0)
-    pdf.cell(0, 8, "🌍 الملخص بالعربية:", 0, 1, 'L')
-    pdf.write_text(analysis["summary_ar"], 10, (0,0,0))
+    pdf.cell(0, 8, "🌍 الملخص المترجم:", 0, 1, 'L')
+    pdf.set_text_color(0, 0, 0)
+    pdf.multi_cell(0, 6, reshape_arabic(analysis["summary_translated"]))
     
     path = tempfile.mktemp(suffix='.pdf')
     pdf.output(path)
@@ -372,7 +360,7 @@ def start(message):
         markup.add(InlineKeyboardButton("🔧 لوحة التحكم", callback_data="admin_panel"))
     
     bot.send_message(user_id,
-        f"✨📚 بوت تحليل المحاضرات 📚✨\n\n"
+        f"✨📚 بوت تحليل المحاضرات ثنائي اللغة 📚✨\n\n"
         f"⭐ رصيدك: {user['points']} نقطة\n"
         f"• كل تحليل محاضرة يستهلك نقطة واحدة.\n"
         f"• احصل على نقاط مجانية عبر مشاركة الرابط (كل 4 مشاركات = نقطة).\n\n"
@@ -401,8 +389,24 @@ def new_lecture(call):
 def process_title(message):
     user_id = message.chat.id
     temp_data[user_id]["title"] = message.text.strip()
+    temp_data[user_id]["step"] = "target_lang"
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🇸🇦 العربية", callback_data="target_arabic"),
+        InlineKeyboardButton("🇬🇧 English", callback_data="target_english")
+    )
+    bot.send_message(user_id, "🌍 اختر اللغة التي تريد الترجمة إليها:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("target_"))
+def process_target_lang(call):
+    user_id = call.message.chat.id
+    target_lang = call.data.split("_")[1]
+    temp_data[user_id]["target_lang"] = target_lang
     temp_data[user_id]["step"] = "content"
-    bot.send_message(user_id, "📚 أرسل المحاضرة (نص أو ملف PDF/Word/PPTX/TXT)")
+    
+    bot.edit_message_text("📚 أرسل المحاضرة (نص أو ملف PDF/Word/PPTX/TXT)", user_id, call.message.message_id)
+    bot.register_next_step_handler(call.message, process_content)
 
 @bot.message_handler(content_types=['document', 'text'])
 def process_content(message):
@@ -440,54 +444,32 @@ def process_content(message):
         bot.edit_message_text("❌ أرسل نصاً أو ملفاً صالحاً.", user_id, progress_msg.message_id)
         return
     
-    if not content or len(content.strip()) < 20:
-        bot.edit_message_text("❌ النص قصير جداً أو لا يمكن قراءته (يحتاج 20 حرفاً على الأقل).", user_id, progress_msg.message_id)
+    if not content or len(content.strip()) < 50:
+        bot.edit_message_text("❌ النص قصير جداً أو لا يمكن قراءته (يحتاج 50 حرفاً على الأقل).", user_id, progress_msg.message_id)
         return
     
     temp_data[user_id]["content"] = content
     temp_data[user_id]["progress_msg_id"] = progress_msg.message_id
-    temp_data[user_id]["step"] = "dialect"
-    
-    markup = InlineKeyboardMarkup(row_width=2)
-    for key, name in DIALECTS.items():
-        markup.add(InlineKeyboardButton(name, callback_data=f"dialect_{key}"))
-    bot.send_message(user_id, "🌍 اختر لهجة الشرح", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("dialect_"))
-def process_dialect(call):
-    user_id = call.message.chat.id
-    dialect_key = call.data.split("_")[1]
-    dialect_name = DIALECTS[dialect_key]
-    
-    data = temp_data.get(user_id)
-    if not data:
-        bot.answer_callback_query(call.id, "انتهت الجلسة، ابدأ من جديد", True)
-        return
-    
-    bot.answer_callback_query(call.id, f"جاري تحليل المحاضرة إلى {dialect_name}...")
-    bot.delete_message(user_id, call.message.message_id)
-    
-    progress_msg_id = data.get("progress_msg_id")
     
     try:
         update_points(user_id, -1)
-        analysis = analyze_lecture(data["content"], user_id, progress_msg_id)
-        pdf_path = create_lecture_pdf(data["title"], analysis, dialect_name, user_id, progress_msg_id)
+        analysis = analyze_lecture(content, data["target_lang"], user_id, progress_msg.message_id)
+        pdf_path = create_lecture_pdf(data["title"], analysis, user_id, progress_msg.message_id)
         new_user = get_user(user_id)
         
         try:
-            bot.delete_message(user_id, progress_msg_id)
+            bot.delete_message(user_id, progress_msg.message_id)
         except:
             pass
         
         with open(pdf_path, 'rb') as f:
-            bot.send_document(user_id, f, caption=f"✨✅ تم تحليل المحاضرة بنجاح! ✅✨\n\n📚 العنوان: {data['title']}\n🌍 لغة الشرح: {dialect_name}\n📊 عدد الأقسام: {analysis['total_sections']}\n⭐ النقاط المتبقية: {new_user['points']}\n\n✨ @zakros_probot ✨", visible_file_name=f"lecture_{data['title'][:30]}.pdf")
+            bot.send_document(user_id, f, caption=f"✨✅ تم تحليل المحاضرة بنجاح! ✅✨\n\n📚 العنوان: {data['title']}\n🌍 اللغة المصدر: {analysis['source_lang']}\n🎯 اللغة الهدف: {analysis['target_lang']}\n📊 عدد الفقرات: {analysis['total_paragraphs']}\n⭐ النقاط المتبقية: {new_user['points']}\n\n✨ @zakros_probot ✨", visible_file_name=f"lecture_{data['title'][:30]}.pdf")
         
         os.unlink(pdf_path)
         del temp_data[user_id]
         
     except Exception as e:
-        bot.edit_message_text(f"❌ فشل التحليل: {str(e)[:200]}", user_id, progress_msg_id)
+        bot.edit_message_text(f"❌ فشل التحليل: {str(e)[:200]}", user_id, progress_msg.message_id)
         update_points(user_id, 1)
 
 # ========== 8. لوحة تحكم المالك ==========
@@ -570,6 +552,6 @@ def send_broadcast(message):
     bot.send_message(OWNER_ID, f"✅ تم إرسال الإذاعة إلى {success} مستخدم.")
 
 if __name__ == "__main__":
-    print("✅ بوت تحليل المحاضرات يعمل...")
+    print("✅ بوت تحليل المحاضرات ثنائي اللغة يعمل...")
     bot.remove_webhook()
     bot.infinity_polling()
