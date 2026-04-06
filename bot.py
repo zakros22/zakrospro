@@ -2,8 +2,8 @@ import os
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
-from art import text2art, art
 import random
+import time
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
@@ -18,62 +18,99 @@ c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     points INTEGER DEFAULT 3,
-    total_uses INTEGER DEFAULT 0
+    total_shares INTEGER DEFAULT 0
 )''')
 conn.commit()
 
 def get_user(user_id):
-    c.execute("SELECT points, total_uses FROM users WHERE user_id=?", (user_id,))
+    c.execute("SELECT points, total_shares FROM users WHERE user_id=?", (user_id,))
     row = c.fetchone()
     if not row:
-        c.execute("INSERT INTO users (user_id, points, total_uses) VALUES (?,?,?)", (user_id, 3, 0))
+        c.execute("INSERT INTO users (user_id, points, total_shares) VALUES (?,?,?)", (user_id, 3, 0))
         conn.commit()
-        return {"points": 3, "total_uses": 0}
-    return {"points": row[0], "total_uses": row[1]}
+        return {"points": 3, "total_shares": 0}
+    return {"points": row[0], "total_shares": row[1]}
 
 def update_points(user_id, delta):
     c.execute("UPDATE users SET points = points + ? WHERE user_id=?", (delta, user_id))
     conn.commit()
 
-def add_use(user_id):
-    c.execute("UPDATE users SET total_uses = total_uses + 1 WHERE user_id=?", (user_id,))
+def add_share(user_id):
+    c.execute("UPDATE users SET total_shares = total_shares + 1 WHERE user_id=?", (user_id,))
+    c.execute("SELECT total_shares FROM users WHERE user_id=?", (user_id,))
+    shares = c.fetchone()[0]
+    if shares % 1 == 0:
+        c.execute("UPDATE users SET points = points + 1 WHERE user_id=?", (user_id,))
     conn.commit()
 
+def add_referral(referrer_id, referred_id):
+    c.execute("SELECT * FROM referrals WHERE referred_id=?", (referred_id,))
+    if c.fetchone():
+        return False
+    c.execute("INSERT INTO referrals (referrer_id, referred_id, date) VALUES (?,?,?)", 
+              (referrer_id, referred_id, time.time()))
+    update_points(referrer_id, 1)
+    conn.commit()
+    return True
+
 # ========== أنماط الرسم ==========
-FONTS = [
+ART_STYLES = [
     'block', 'bubble', 'digital', '3d', '3d_diagonal', '4x4', '5lineoblique',
-    'acrobatic', 'alligator', 'alligator2', 'alphabet', 'arrows', 'ascii',
-    'ascii_new_roman', 'avatar', 'banner', 'banner3-D', 'banner3', 'banner4',
-    'barbwire', 'basic', 'bell', 'big', 'bigchief', 'binary', 'block',
-    'bubble', 'bulbhead', 'caligraphy', 'cards', 'catwalk', 'chunky',
-    'coinstak', 'colossal', 'computer', 'contessa', 'contrast', 'cosmic',
-    'crawford', 'cricket', 'cursive', 'cyberlarge', 'cybermedium', 'cybersmall',
+    'acrobatic', 'alligator', 'alphabet', 'arrows', 'ascii_new_roman',
+    'avatar', 'banner', 'banner3-D', 'banner3', 'banner4', 'barbwire',
+    'basic', 'bell', 'big', 'bigchief', 'binary', 'block', 'bubble',
+    'bulbhead', 'caligraphy', 'cards', 'catwalk', 'chunky', 'coinstak',
+    'colossal', 'computer', 'contessa', 'contrast', 'cosmic', 'crawford',
+    'cricket', 'cursive', 'cyberlarge', 'cybermedium', 'cybersmall',
     'diamond', 'digital', 'doh', 'doom', 'dotmatrix', 'drpepper', 'eftichess',
     'eftifont', 'eftipiti', 'eftiroboto', 'eftitalic', 'eftiwall', 'epic',
     'fender', 'fire', 'fourtops', 'fuzzy', 'georgia11', 'ghost', 'gothic',
     'graffiti', 'happy', 'harry_p', 'heart', 'henry3d', 'hex', 'hollywood',
     'horizontal', 'ivrit', 'jazmine', 'jerusalem', 'katakana', 'kawii',
-    'keyboard', 'krak', 'larry3d', 'lcd', 'lean', 'letters', 'linux', 'lockergnome',
-    'madrid', 'marquee', 'maxfour', 'merlin1', 'merlin2', 'mike', 'mini',
-    'mirror', 'mnemonic', 'morse', 'moscow', 'nancyj', 'nipples', 'nscript',
-    'ntgreek', 'o8', 'octal', 'ogre', 'oldbanner', 'os2', 'pawp', 'peaks',
-    'pebbles', 'pepper', 'poison', 'puffy', 'pyramid', 'rectangles', 'relief',
-    'relief2', 'rev', 'rnd', 'roman', 'rot13', 'rotated', 'rounded', 'rowancap',
-    'rozzo', 'runic', 'santa', 'sblood', 'script', 'serifcap', 'shadow',
-    'shimrod', 'short', 'slant', 'slide', 'slscript', 'small', 'smisome1',
-    'smkeyboard', 'smscript', 'smshadow', 'smslant', 'smtengwar', 'speed',
-    'stampatello', 'standard', 'starwars', 'stellar', 'stop', 'straight',
-    'stretched', 'sub-zero', 'swampland', 'swinging', 'tanja', 'tengwar',
-    'term', 'thick', 'thin', 'threepoint', 'ticks', 'ticksslant', 'tiles',
-    'times', 'tombstone', 'trek', 'tsalagi', 'twisted', 'univers', 'usaflag',
-    'utopia', 'varsity', 'wavy', 'weird', 'wetletter', 'whimsy', 'wikipedia'
+    'keyboard', 'krak', 'larry3d', 'lcd', 'lean', 'letters', 'linux',
+    'lockergnome', 'madrid', 'marquee', 'maxfour', 'merlin1', 'merlin2',
+    'mike', 'mini', 'mirror', 'mnemonic', 'morse', 'moscow', 'nancyj',
+    'nipples', 'nscript', 'ntgreek', 'o8', 'octal', 'ogre', 'oldbanner',
+    'os2', 'pawp', 'peaks', 'pebbles', 'pepper', 'poison', 'puffy',
+    'pyramid', 'rectangles', 'relief', 'relief2', 'rev', 'rnd', 'roman',
+    'rot13', 'rotated', 'rounded', 'rowancap', 'rozzo', 'runic', 'santa',
+    'sblood', 'script', 'serifcap', 'shadow', 'shimrod', 'short', 'slant',
+    'slide', 'slscript', 'small', 'smisome1', 'smkeyboard', 'smscript',
+    'smshadow', 'smslant', 'smtengwar', 'speed', 'stampatello', 'standard',
+    'starwars', 'stellar', 'stop', 'straight', 'stretched', 'sub-zero',
+    'swampland', 'swinging', 'tanja', 'tengwar', 'term', 'thick', 'thin',
+    'threepoint', 'ticks', 'ticksslant', 'tiles', 'times', 'tombstone',
+    'trek', 'tsalagi', 'twisted', 'univers', 'usaflag', 'utopia', 'varsity',
+    'wavy', 'weird', 'wetletter', 'whimsy', 'wikipedia'
 ]
+
+# ========== دالة الرسم ==========
+def create_ascii_art(text):
+    try:
+        from art import text2art
+        style = random.choice(ART_STYLES)
+        art_text = text2art(text, font=style)
+        return art_text, style
+    except Exception as e:
+        try:
+            from art import text2art
+            art_text = text2art(text, font='standard')
+            return art_text, 'standard'
+        except:
+            return None, None
 
 # ========== أوامر البوت ==========
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.chat.id
     user = get_user(user_id)
+    
+    if len(message.text.split()) > 1:
+        ref = message.text.split()[1]
+        if ref.isdigit() and int(ref) != user_id:
+            if add_referral(int(ref), user_id):
+                bot.send_message(user_id, "✅ تم تفعيل الإحالة! +1 نقطة للداعم.")
+                bot.send_message(int(ref), "🎉 مستخدم جديد سجل عبر رابطك! +1 نقطة.")
     
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -87,7 +124,7 @@ def start(message):
         f"🎨 *بوت الرسم النصي (ASCII Art)*\n\n"
         f"⭐ رصيدك: {user['points']} نقطة\n"
         f"• كل رسمة تستهلك نقطة واحدة\n"
-        f"• يمكنك الحصول على نقاط مجانية عبر مشاركة الرابط (كل مشاركة = نقطة)\n\n"
+        f"• احصل على نقاط مجانية عبر مشاركة الرابط (كل مشاركة = نقطة)\n\n"
         f"🔗 رابط إحالتك:\nhttps://t.me/{bot.get_me().username}?start={user_id}\n\n"
         f"📌 @zakros_probot",
         parse_mode="Markdown", reply_markup=markup)
@@ -96,7 +133,7 @@ def start(message):
 def share_link(call):
     user_id = call.message.chat.id
     bot.answer_callback_query(call.id)
-    bot.send_message(user_id, f"🎁 رابط إحالتك:\nhttps://t.me/{bot.get_me().username}?start={user_id}\n\nكل مشاركة = نقطة إضافية!")
+    bot.send_message(user_id, f"🎁 رابط إحالتك:\nhttps://t.me/{bot.get_me().username}?start={user_id}\n\nكل مشاركة = 1 نقطة!")
 
 @bot.callback_query_handler(func=lambda call: call.data == "new_art")
 def new_art(call):
@@ -106,53 +143,41 @@ def new_art(call):
         bot.answer_callback_query(call.id, f"⚠️ ليس لديك نقاط كافية! رصيدك: {user['points']} نقطة\nشارك الرابط لتحصل على نقاط!", show_alert=True)
         return
     
-    bot.edit_message_text("🎨 *أرسل النص الذي تريد تحويله إلى رسم نصي*\nمثال: ولد يلعب في الحديقة", user_id, call.message.message_id, parse_mode="Markdown")
+    bot.edit_message_text("🎨 *أرسل النص الذي تريد تحويله إلى رسم نصي*\n\n📝 ملاحظة: النصوص الإنجليزية تعمل بشكل أفضل\nمثال: HELLO أو LOVE أو CAT", user_id, call.message.message_id, parse_mode="Markdown")
     bot.register_next_step_handler(call.message, process_text)
 
 def process_text(message):
     user_id = message.chat.id
-    text = message.text.strip()
+    text = message.text.strip().upper()
     
-    if len(text) < 3:
-        bot.reply_to(message, "❌ النص قصير جداً (يحتاج 3 أحرف على الأقل)")
+    if len(text) < 2:
+        bot.reply_to(message, "❌ النص قصير جداً (يحتاج 2 أحرف على الأقل)")
         return
-    if len(text) > 50:
-        bot.reply_to(message, "❌ النص طويل جداً (الحد الأقصى 50 حرف)")
+    if len(text) > 20:
+        bot.reply_to(message, "❌ النص طويل جداً (الحد الأقصى 20 حرف)")
         return
     
     # استهلاك نقطة
     update_points(user_id, -1)
-    add_use(user_id)
+    add_share(user_id)
     
-    # إرسال رسالة المعالجة
     status = bot.reply_to(message, "🎨 جاري إنشاء الرسم النصي...")
     
     try:
-        # اختيار خط عشوائي
-        font = random.choice(FONTS)
+        ascii_art, style = create_ascii_art(text)
         
-        # إنشاء الرسم النصي
-        ascii_art = text2art(text, font=font)
-        
-        # تنظيف النتيجة
-        ascii_art = ascii_art.strip()
-        
-        # إرسال الرسم
-        new_points = get_user(user_id)
-        bot.send_message(user_id, f"🎨 *الرسم النصي لـ:* `{text}`\n```\n{ascii_art}\n```\n✨ الخط المستخدم: `{font}`\n⭐ النقاط المتبقية: {new_points['points']}", parse_mode="Markdown")
-        
-        bot.delete_message(user_id, status.message_id)
-        
-    except Exception as e:
-        # محاولة باستخدام خط بسيط
-        try:
-            ascii_art = text2art(text, font='block')
-            new_points = get_user(user_id)
-            bot.send_message(user_id, f"🎨 *الرسم النصي لـ:* `{text}`\n```\n{ascii_art}\n```\n⭐ النقاط المتبقية: {new_points['points']}", parse_mode="Markdown")
+        if ascii_art:
+            new_user = get_user(user_id)
+            
+            bot.send_message(user_id, f"🎨 *الرسم النصي لـ:* `{text}`\n```\n{ascii_art}\n```\n✨ الخط: `{style}`\n⭐ النقاط المتبقية: {new_user['points']}", parse_mode="Markdown")
             bot.delete_message(user_id, status.message_id)
-        except:
-            bot.edit_message_text("❌ فشل إنشاء الرسم النصي. حاول بنص أبسط.", user_id, status.message_id)
+        else:
+            bot.edit_message_text("❌ فشل إنشاء الرسم النصي. حاول بنص مختلف.", user_id, status.message_id)
             update_points(user_id, 1)
+            
+    except Exception as e:
+        bot.edit_message_text(f"❌ حدث خطأ: {str(e)[:100]}", user_id, status.message_id)
+        update_points(user_id, 1)
 
 # ========== لوحة تحكم المالك ==========
 @bot.callback_query_handler(func=lambda call: call.data == "admin_panel")
@@ -207,9 +232,7 @@ def admin_stats(call):
     users = c.fetchone()[0]
     c.execute("SELECT SUM(points) FROM users")
     points = c.fetchone()[0] or 0
-    c.execute("SELECT SUM(total_uses) FROM users")
-    uses = c.fetchone()[0] or 0
-    bot.send_message(OWNER_ID, f"📊 *إحصائيات البوت*\n\n👥 المستخدمون: {users}\n⭐ مجموع النقاط: {points}\n🎨 عدد الرسومات: {uses}", parse_mode="Markdown")
+    bot.send_message(OWNER_ID, f"📊 *إحصائيات البوت*\n\n👥 المستخدمون: {users}\n⭐ مجموع النقاط: {points}", parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_broadcast")
 def admin_broadcast(call):
