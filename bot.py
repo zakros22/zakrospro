@@ -26,7 +26,7 @@ if not BOT_TOKEN:
 bot = telebot.TeleBot(BOT_TOKEN)
 OWNER_ID = 7021542402
 
-# ========== 1. تحميل خط يدعم اللغة العربية ==========
+# ========== 1. تحميل الخط العربي ==========
 FONT_URL = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansArabic/NotoSansArabic-Regular.ttf"
 FONT_PATH = "NotoSansArabic-Regular.ttf"
 if not os.path.exists(FONT_PATH):
@@ -39,26 +39,28 @@ if not os.path.exists(FONT_PATH):
 
 def reshape_arabic(text):
     if any('\u0600' <= c <= '\u06FF' for c in text):
-        reshaped = arabic_reshaper.reshape(text)
-        return get_display(reshaped)
+        try:
+            reshaped = arabic_reshaper.reshape(text)
+            return get_display(reshaped)
+        except:
+            return text
     return text
 
 # ========== 2. اللهجات ==========
 DIALECTS = {
-    "iraqi": "اللهجة العراقية",
-    "egyptian": "اللهجة المصرية",
-    "syrian": "اللهجة السورية",
-    "gulf": "اللهجة الخليجية",
-    "fusha": "الفصحى"
+    "iraqi": "🇮🇶 اللهجة العراقية",
+    "egyptian": "🇪🇬 اللهجة المصرية",
+    "syrian": "🇸🇾 اللهجة السورية",
+    "gulf": "🇦🇪 اللهجة الخليجية",
+    "fusha": "📖 الفصحى"
 }
 
 def translate_to_dialect(text, dialect):
-    """ترجمة النص إلى اللهجة المطلوبة"""
     if dialect == "fusha":
         return text
     try:
         translator = GoogleTranslator(source='auto', target='ar')
-        translated = translator.translate(text)
+        translated = translator.translate(text[:3000])
         return translated
     except:
         return text
@@ -66,104 +68,111 @@ def translate_to_dialect(text, dialect):
 # ========== 3. استخراج النص من الملفات ==========
 def extract_text_from_file(file_path):
     ext = os.path.splitext(file_path)[1].lower()
-    if ext == '.txt':
-        with open(file_path, 'r', encoding='utf-8') as f:
-            return f.read()
-    elif ext == '.pdf':
-        text = ""
-        with open(file_path, 'rb') as f:
-            reader = PyPDF2.PdfReader(f)
-            for page in reader.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
-        return text.strip()
-    elif ext == '.docx':
-        doc = docx.Document(file_path)
-        return "\n".join([para.text for para in doc.paragraphs])
-    elif ext == '.pptx':
-        text = ""
-        prs = Presentation(file_path)
-        for slide in prs.slides:
-            for shape in slide.shapes:
-                if hasattr(shape, "text"):
-                    text += shape.text + "\n"
-        return text.strip()
-    else:
+    try:
+        if ext == '.txt':
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        elif ext == '.pdf':
+            text = ""
+            with open(file_path, 'rb') as f:
+                reader = PyPDF2.PdfReader(f)
+                for page in reader.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n"
+            return text.strip() if text else None
+        elif ext == '.docx':
+            doc = docx.Document(file_path)
+            return "\n".join([para.text for para in doc.paragraphs])
+        elif ext == '.pptx':
+            text = ""
+            prs = Presentation(file_path)
+            for slide in prs.slides:
+                for shape in slide.shapes:
+                    if hasattr(shape, "text"):
+                        text += shape.text + "\n"
+            return text.strip() if text else None
+        else:
+            return None
+    except Exception as e:
+        print(f"Extract error: {e}")
         return None
 
 # ========== 4. تحليل المحاضرة ==========
 def analyze_lecture(text):
-    """تقسيم المحاضرة إلى أقسام وشرحها"""
+    """تقسيم المحاضرة إلى أقسام وتحليلها"""
+    if not text or len(text) < 20:
+        return None
+    
+    # تقسيم إلى جمل
     sentences = re.split(r'(?<=[.!?؟])\s+', text)
     sections = []
-    current_section = ""
+    current = ""
     for sent in sentences:
-        if len(current_section) + len(sent) + 2 <= 800:
-            current_section += sent + " "
+        if len(current) + len(sent) + 2 <= 600:
+            current += sent + " "
         else:
-            if current_section:
-                sections.append(current_section.strip())
-            current_section = sent + " "
-    if current_section:
-        sections.append(current_section.strip())
+            if current:
+                sections.append(current.strip())
+            current = sent + " "
+    if current:
+        sections.append(current.strip())
+    
+    if not sections:
+        sections = [text[:500]]
     
     analyzed = []
     for i, section in enumerate(sections):
-        # ترجمة القسم إلى العربية
         try:
             translator = GoogleTranslator(source='auto', target='ar')
-            translated = translator.translate(section)
+            translated = translator.translate(section[:2000])
         except:
             translated = section
         
-        # شرح مبسط
-        summary = f"هذا القسم يتحدث عن: {section[:150]}..."
+        # استخراج النقاط الرئيسية
+        words = section.split()[:30]
+        key_points = " ".join(words) + "..."
         
         analyzed.append({
+            "part": i + 1,
             "original": section,
             "translated": translated,
-            "summary": summary,
-            "part": i + 1
+            "key_points": key_points
         })
     return analyzed
 
 # ========== 5. إنشاء PDF ==========
-def create_lecture_pdf(lecture_title, analyzed, dialect_name, user_id):
+def create_lecture_pdf(title, analyzed, dialect_name, user_id):
     pdf = FPDF()
     pdf.add_page()
     
     if FONT_PATH and os.path.exists(FONT_PATH):
         pdf.add_font('Noto', '', FONT_PATH, uni=True)
-        pdf.set_font('Noto', '', 20)
+        pdf.set_font('Noto', '', 18)
     else:
-        pdf.set_font("Helvetica", "", 20)
+        pdf.set_font("Helvetica", "", 18)
     
     # العنوان
     pdf.set_text_color(0, 51, 102)
-    title_text = reshape_arabic(f"تحليل المحاضرة: {lecture_title}")
+    title_text = reshape_arabic(f"تحليل المحاضرة: {title}")
     pdf.cell(0, 20, title_text, 0, 1, 'C')
-    pdf.ln(5)
     
-    # تاريخ
+    # معلومات
     pdf.set_font_size(10)
     pdf.set_text_color(100, 100, 100)
     date_text = reshape_arabic(f"التاريخ: {datetime.now().strftime('%Y/%m/%d')}")
     pdf.cell(0, 8, date_text, 0, 1, 'C')
+    dialect_text = reshape_arabic(f"لغة الشرح: {dialect_name}")
+    pdf.cell(0, 8, dialect_text, 0, 1, 'C')
     pdf.ln(5)
-    
-    # اللغة المستخدمة في الشرح
-    lang_text = reshape_arabic(f"لغة الشرح: {dialect_name}")
-    pdf.cell(0, 8, lang_text, 0, 1, 'C')
-    pdf.ln(10)
     
     # خط فاصل
     pdf.set_draw_color(0, 102, 204)
-    pdf.line(30, 60, 180, 60)
+    pdf.line(30, 55, 180, 55)
     pdf.ln(10)
     
-    for i, item in enumerate(analyzed):
-        # القسم
+    for item in analyzed:
+        # عنوان القسم
         pdf.set_font_size(14)
         pdf.set_text_color(0, 51, 102)
         part_text = reshape_arabic(f"القسم {item['part']}")
@@ -172,26 +181,26 @@ def create_lecture_pdf(lecture_title, analyzed, dialect_name, user_id):
         # النص الأصلي
         pdf.set_font_size(11)
         pdf.set_text_color(0, 0, 150)
-        pdf.cell(0, 8, reshape_arabic("النص الأصلي:"), 0, 1, 'L')
+        pdf.cell(0, 8, reshape_arabic("📖 النص الأصلي:"), 0, 1, 'L')
         pdf.set_text_color(0, 0, 0)
-        pdf.multi_cell(0, 6, reshape_arabic(item['original'][:500]))
+        pdf.multi_cell(0, 6, reshape_arabic(item['original'][:400]))
         pdf.ln(3)
         
         # الترجمة
         pdf.set_text_color(0, 100, 0)
-        pdf.cell(0, 8, reshape_arabic("الترجمة:"), 0, 1, 'L')
+        pdf.cell(0, 8, reshape_arabic("🌍 الترجمة:"), 0, 1, 'L')
         pdf.set_text_color(0, 0, 0)
-        pdf.multi_cell(0, 6, reshape_arabic(item['translated'][:500]))
+        pdf.multi_cell(0, 6, reshape_arabic(item['translated'][:400]))
         pdf.ln(3)
         
-        # الشرح
+        # النقاط الرئيسية
         pdf.set_text_color(150, 100, 0)
-        pdf.cell(0, 8, reshape_arabic("الشرح:"), 0, 1, 'L')
+        pdf.cell(0, 8, reshape_arabic("📌 النقاط الرئيسية:"), 0, 1, 'L')
         pdf.set_text_color(0, 0, 0)
-        pdf.multi_cell(0, 6, reshape_arabic(item['summary']))
+        pdf.multi_cell(0, 6, reshape_arabic(item['key_points']))
         pdf.ln(8)
         
-        # فاصل بين الأقسام
+        # فاصل
         pdf.set_draw_color(200, 200, 200)
         pdf.line(30, pdf.get_y(), 180, pdf.get_y())
         pdf.ln(5)
@@ -200,7 +209,7 @@ def create_lecture_pdf(lecture_title, analyzed, dialect_name, user_id):
             pdf.add_page()
     
     # حقوق البوت
-    pdf.set_y(-25)
+    pdf.set_y(-20)
     pdf.set_font_size(9)
     pdf.set_text_color(128, 128, 128)
     pdf.cell(0, 8, reshape_arabic("@zakros_probot"), 0, 0, 'C')
@@ -268,7 +277,7 @@ def start(message):
         ref = message.text.split()[1]
         if ref.isdigit() and int(ref) != user_id:
             if add_referral(int(ref), user_id):
-                bot.send_message(user_id, "✅ تم تفعيل الإحالة! حصل الداعم على نقطة.")
+                bot.send_message(user_id, "✅ تم تفعيل الإحالة! +1 نقطة للداعم.")
                 bot.send_message(int(ref), "🎉 مستخدم جديد سجل عبر رابطك! +1 نقطة.")
     
     markup = InlineKeyboardMarkup(row_width=2)
@@ -283,7 +292,7 @@ def start(message):
         f"📚 *بوت تحليل المحاضرات*\n\n"
         f"⭐ رصيدك: {user['points']} نقطة\n"
         f"• كل تحليل محاضرة يستهلك نقطة واحدة.\n"
-        f"• يمكنك الحصول على نقاط مجانية عبر مشاركة الرابط (كل 4 مشاركات = نقطة).\n\n"
+        f"• احصل على نقاط مجانية عبر مشاركة الرابط (كل 4 مشاركات = نقطة).\n\n"
         f"🔗 رابط إحالتك:\nhttps://t.me/{bot.get_me().username}?start={user_id}\n\n"
         f"📌 @zakros_probot",
         parse_mode="Markdown", reply_markup=markup)
@@ -312,16 +321,21 @@ def process_title(message):
     temp_data[user_id]["step"] = "content"
     bot.send_message(user_id, "📚 *أرسل المحاضرة (نص أو ملف PDF/Word/PPTX/TXT)*", parse_mode="Markdown")
 
-@bot.message_handler(func=lambda m: m.chat.id in temp_data and temp_data.get(m.chat.id, {}).get("step") == "content")
+@bot.message_handler(content_types=['document', 'text'])
 def process_content(message):
     user_id = message.chat.id
-    text = None
+    data = temp_data.get(user_id)
+    if not data or data.get("step") != "content":
+        return
+    
+    content = None
     
     if message.text and not message.text.startswith('/'):
-        text = message.text.strip()
+        content = message.text.strip()
     elif message.document:
         file_name = message.document.file_name
         ext = os.path.splitext(file_name)[1].lower()
+        
         if ext not in ['.txt', '.pdf', '.docx', '.pptx']:
             bot.send_message(user_id, "❌ نوع الملف غير مدعوم. الأنواع المدعومة: txt, pdf, docx, pptx")
             return
@@ -333,21 +347,21 @@ def process_content(message):
             with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
                 tmp.write(downloaded)
                 tmp_path = tmp.name
-            text = extract_text_from_file(tmp_path)
+            content = extract_text_from_file(tmp_path)
             os.unlink(tmp_path)
             bot.delete_message(user_id, status.message_id)
         except Exception as e:
-            bot.edit_message_text(f"❌ فشل قراءة الملف: {e}", user_id, status.message_id)
+            bot.edit_message_text(f"❌ فشل قراءة الملف: {str(e)[:100]}", user_id, status.message_id)
             return
     else:
         bot.send_message(user_id, "❌ أرسل نصاً أو ملفاً صالحاً.")
         return
     
-    if not text or len(text.strip()) < 20:
-        bot.send_message(user_id, "❌ النص قصير جداً أو لا يمكن قراءته.")
+    if not content or len(content.strip()) < 20:
+        bot.send_message(user_id, "❌ النص قصير جداً أو لا يمكن قراءته (يحتاج 20 حرفاً على الأقل).")
         return
     
-    temp_data[user_id]["content"] = text
+    temp_data[user_id]["content"] = content
     temp_data[user_id]["step"] = "dialect"
     
     markup = InlineKeyboardMarkup(row_width=2)
@@ -369,7 +383,7 @@ def process_dialect(call):
     bot.answer_callback_query(call.id, f"جاري تحليل المحاضرة إلى {dialect_name}...")
     bot.edit_message_reply_markup(user_id, call.message.message_id, reply_markup=None)
     
-    status = bot.send_message(user_id, "🔄 جاري تحليل المحاضرة...")
+    status = bot.send_message(user_id, "🔄 جاري تحليل المحاضرة... (قد يستغرق 30-60 ثانية)")
     
     try:
         # استهلاك نقطة
@@ -377,6 +391,10 @@ def process_dialect(call):
         
         # تحليل المحاضرة
         analyzed = analyze_lecture(data["content"])
+        if not analyzed:
+            bot.edit_message_text("❌ فشل تحليل المحاضرة. تأكد من أن النص يحتوي على محتوى كافٍ.", user_id, status.message_id)
+            update_points(user_id, 1)
+            return
         
         # إنشاء PDF
         pdf_path = create_lecture_pdf(data["title"], analyzed, dialect_name, user_id)
@@ -385,13 +403,14 @@ def process_dialect(call):
         bot.delete_message(user_id, status.message_id)
         
         with open(pdf_path, 'rb') as f:
-            bot.send_document(user_id, f, caption=f"✅ تم تحليل المحاضرة\n📚 {data['title']}\n🌍 اللهجة: {dialect_name}\n⭐ النقاط المتبقية: {new_user['points']}\n\n@zakros_probot", visible_file_name=f"lecture_{data['title']}.pdf")
+            bot.send_document(user_id, f, caption=f"✅ *تم تحليل المحاضرة بنجاح!*\n\n📚 *العنوان:* {data['title']}\n🌍 *اللهجة:* {dialect_name}\n📊 *عدد الأقسام:* {len(analyzed)}\n⭐ *النقاط المتبقية:* {new_user['points']}\n\n📌 @zakros_probot", parse_mode="Markdown", visible_file_name=f"lecture_{data['title'][:30]}.pdf")
         
         os.unlink(pdf_path)
         del temp_data[user_id]
         
     except Exception as e:
         bot.edit_message_text(f"❌ فشل التحليل: {str(e)[:200]}", user_id, status.message_id)
+        update_points(user_id, 1)
 
 # ========== 8. لوحة تحكم المالك ==========
 @bot.callback_query_handler(func=lambda call: call.data == "admin_panel")
@@ -455,7 +474,7 @@ def admin_broadcast(call):
     if call.message.chat.id != OWNER_ID:
         bot.answer_callback_query(call.id, "🔒 غير مصرح", True)
         return
-    msg = bot.send_message(OWNER_ID, "📢 أرسل الرسالة التي تريد إذاعتها:")
+    msg = bot.send_message(OWNER_ID, "📢 أرسل الرسالة التي تريد إذاعتها لجميع المستخدمين:")
     bot.register_next_step_handler(msg, send_broadcast)
 
 def send_broadcast(message):
@@ -465,7 +484,7 @@ def send_broadcast(message):
     success = 0
     for (uid,) in users:
         try:
-            bot.send_message(uid, f"📢 إذاعة من المالك:\n\n{broadcast_text}\n\n@zakros_probot")
+            bot.send_message(uid, f"📢 *إذاعة من المالك*\n\n{broadcast_text}\n\n📌 @zakros_probot", parse_mode="Markdown")
             success += 1
         except:
             pass
