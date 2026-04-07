@@ -1,317 +1,262 @@
 import os
-import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-import sqlite3
-import tempfile
-from datetime import datetime
-import time
-import re
-import requests
-from deep_translator import GoogleTranslator
-import PyPDF2
-import docx
-from pptx import Presentation
-from fpdf import FPDF
-import arabic_reshaper
-from bidi.algorithm import get_display
+import uuid
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from docx import Document
+import asyncio
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise Exception("BOT_TOKEN not set")
+# إعداد التسجيل للأخطاء
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-bot = telebot.TeleBot(BOT_TOKEN)
-OWNER_ID = 7021542402
+# توكن البوت - ضع التوكن الخاص بك هنا
+TOKEN = 'ضع_التوكن_هنا'
 
-# ========== 1. الخط العربي ==========
-FONT_URL = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansArabic/NotoSansArabic-Regular.ttf"
-FONT_PATH = "NotoSansArabic-Regular.ttf"
-if not os.path.exists(FONT_PATH):
-    try:
-        r = requests.get(FONT_URL, timeout=30)
-        with open(FONT_PATH, "wb") as f:
-            f.write(r.content)
-    except:
-        FONT_PATH = None
+# مجلد لحفظ الملفات المؤقتة
+DOWNLOAD_FOLDER = 'downloads'
+os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
-def reshape_arabic(text):
-    if any('\u0600' <= c <= '\u06FF' for c in text):
-        try:
-            reshaped = arabic_reshaper.reshape(text)
-            return get_display(reshaped)
-        except:
-            return text
-    return text
+# قاموس لتخزين حالة المستخدم (اللهجة المختارة)
+user_dialects = {}
 
-# ========== 2. اللهجات ==========
+# اللهجات المدعومة
 DIALECTS = {
-    "fusha": "📖 الفصحى",
-    "egyptian": "🇪🇬 المصري",
-    "iraqi": "🇮🇶 العراقي",
-    "syrian": "🇸🇾 السوري",
-    "gulf": "🇦🇪 الخليجي",
-    "moroccan": "🇲🇦 المغربي",
-    "algerian": "🇩🇿 الجزائري",
-    "tunisian": "🇹🇳 التونسي",
-    "libyan": "🇱🇾 الليبي",
-    "jordanian": "🇯🇴 الأردني",
-    "palestinian": "🇵🇸 الفلسطيني",
-    "lebanese": "🇱🇧 اللبناني",
-    "yemeni": "🇾🇪 اليمني",
-    "sudanese": "🇸🇩 السوداني",
-    "omani": "🇴🇲 العماني"
+    'fusha': '📖 الفصحى',
+    'egyptian': '🇪🇬 مصري',
+    'iraqi': '🇮🇶 عراقي',
+    'gulf': '🇦🇪 خليجي',
+    'syrian': '🇸🇾 شامي'
 }
 
-# ========== 3. قاعدة البيانات ==========
-conn = sqlite3.connect("translate.db", check_same_thread=False)
-c = conn.cursor()
-c.execute('''CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    points INTEGER DEFAULT 3
-)''')
-conn.commit()
+# كلمات اللهجات للتحويل
+DIALECT_WORDS = {
+    'iraqi': {
+        'ماذا': 'شكو', 'كيف': 'شلون', 'لماذا': 'ليش', 'هذا': 'هذاي',
+        'جيد': 'زين', 'أريد': 'أريد', 'ذهب': 'راح', 'أكل': 'چال',
+        'الان': 'هلگه', 'كبير': 'كبير', 'صغير': 'زغير', 'جميل': 'حلو',
+        'قليل': 'شويه', 'كثير': 'هوايه', 'بسرعة': 'بسرعه', 'بطيء': 'بطيء'
+    },
+    'egyptian': {
+        'ماذا': 'إيه', 'كيف': 'إزاي', 'لماذا': 'ليه', 'هذا': 'دا',
+        'جيد': 'كويّس', 'أريد': 'عايز', 'ذهب': 'راح', 'أكل': 'أكل',
+        'الان': 'دلوقتي', 'كبير': 'كبير', 'صغير': 'صغير', 'جميل': 'جميل',
+        'قليل': 'شوية', 'كثير': 'كتير', 'بسرعة': 'بسرعه', 'بطيء': 'بطيء'
+    },
+    'gulf': {
+        'ماذا': 'شو', 'كيف': 'كيف', 'لماذا': 'ليش', 'هذا': 'هذا',
+        'جيد': 'زين', 'أريد': 'أبي', 'ذهب': 'راح', 'أكل': 'أكل',
+        'الان': 'الحين', 'كبير': 'كبير', 'صغير': 'صغير', 'جميل': 'حلو',
+        'قليل': 'شوي', 'كثير': 'وايد', 'بسرعة': 'بسرعه', 'بطيء': 'بطيء'
+    },
+    'syrian': {
+        'ماذا': 'شو', 'كيف': 'كيف', 'لماذا': 'ليش', 'هذا': 'هيدا',
+        'جيد': 'منيح', 'أريد': 'بدي', 'ذهب': 'راح', 'أكل': 'أكل',
+        'الان': 'هلأ', 'كبير': 'كبير', 'صغير': 'زغير', 'جميل': 'حلو',
+        'قليل': 'شوي', 'كثير': 'كتير', 'بسرعة': 'بسرعه', 'بطيء': 'بطيء'
+    },
+    'fusha': {}
+}
 
-def get_user(user_id):
-    c.execute("SELECT points FROM users WHERE user_id=?", (user_id,))
-    row = c.fetchone()
-    if not row:
-        c.execute("INSERT INTO users (user_id, points) VALUES (?,?)", (user_id, 3))
-        conn.commit()
-        return 3
-    return row[0]
-
-def update_points(user_id, delta):
-    c.execute("UPDATE users SET points = points + ? WHERE user_id=?", (delta, user_id))
-    conn.commit()
-
-# ========== 4. استخراج النص من الملفات ==========
-def extract_text_from_file(file_path):
-    ext = os.path.splitext(file_path)[1].lower()
-    try:
-        if ext == '.txt':
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return f.read()
-        elif ext == '.pdf':
-            text = ""
-            with open(file_path, 'rb') as f:
-                reader = PyPDF2.PdfReader(f)
-                for page in reader.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += page_text + "\n"
-            return text.strip()
-        elif ext == '.docx':
-            doc = docx.Document(file_path)
-            return "\n".join([para.text for para in doc.paragraphs])
-        elif ext == '.pptx':
-            text = ""
-            prs = Presentation(file_path)
-            for slide in prs.slides:
-                for shape in slide.shapes:
-                    if hasattr(shape, "text"):
-                        text += shape.text + "\n"
-            return text.strip()
-        else:
-            return None
-    except Exception as e:
-        print(f"Extract error: {e}")
-        return None
-
-# ========== 5. إنشاء ملف مترجم ==========
-def create_translated_file(original_path, translated_text, output_path):
-    ext = os.path.splitext(original_path)[1].lower()
-    try:
-        if ext == '.txt':
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(translated_text)
-        elif ext == '.pdf':
-            pdf = FPDF()
-            pdf.add_page()
-            if FONT_PATH and os.path.exists(FONT_PATH):
-                pdf.add_font('Noto', '', FONT_PATH, uni=True)
-                pdf.set_font('Noto', '', 12)
-            else:
-                pdf.set_font("Helvetica", "", 12)
-            pdf.multi_cell(0, 6, reshape_arabic(translated_text))
-            pdf.output(output_path)
-        elif ext == '.docx':
-            doc = docx.Document()
-            doc.add_paragraph(translated_text)
-            doc.save(output_path)
-        elif ext == '.pptx':
-            from pptx import Presentation as Pres
-            prs = Pres()
-            slide = prs.slides.add_slide(prs.slide_layouts[1])
-            slide.shapes.title.text = "الترجمة"
-            slide.placeholders[1].text = translated_text
-            prs.save(output_path)
-        else:
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(translated_text)
-        return True
-    except Exception as e:
-        print(f"Create file error: {e}")
-        return False
-
-# ========== 6. ترجمة النص ==========
-def translate_text(text, dialect):
-    """ترجمة النص إلى اللهجة المختارة"""
-    try:
-        translator = GoogleTranslator(source='auto', target='ar')
-        translated = translator.translate(text[:3000])
-        return translated
-    except:
+def translate_to_dialect(text, dialect):
+    """تحويل النص إلى اللهجة المختارة"""
+    if dialect == 'fusha' or dialect not in DIALECT_WORDS:
         return text
-
-# ========== 7. تخزين مؤقت ==========
-user_data = {}
-
-# ========== 8. أوامر البوت ==========
-@bot.message_handler(commands=['start'])
-def start(message):
-    user_id = message.chat.id
-    points = get_user(user_id)
     
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🌍 ترجمة ملف", callback_data="translate_file"))
+    words = DIALECT_WORDS[dialect]
+    result = text
     
-    bot.send_message(user_id,
-        f"🌍 *بوت ترجمة الملفات*\n\n"
-        f"⭐ رصيدك: {points} نقطة\n"
-        f"• كل ترجمة = 1 نقطة\n"
-        f"• أرسل أي ملف (txt, pdf, docx, pptx)\n"
-        f"• سأقوم بترجمته إلى اللهجة التي تختارها\n\n"
-        f"📌 @zakros_probot",
-        parse_mode="Markdown", reply_markup=markup)
+    for original, translated in words.items():
+        result = result.replace(original, translated)
+    
+    return result
 
-@bot.callback_query_handler(func=lambda call: call.data == "translate_file")
-def translate_file(call):
-    user_id = call.message.chat.id
-    points = get_user(user_id)
-    if points < 1:
-        bot.answer_callback_query(call.id, "ليس لديك نقاط كافية!", True)
-        return
+def process_docx(file_path, dialect):
+    """معالجة ملف Word وترجمته"""
+    doc = Document(file_path)
+    new_doc = Document()
     
-    # عرض اللهجات
-    markup = InlineKeyboardMarkup(row_width=3)
+    for para in doc.paragraphs:
+        translated_text = translate_to_dialect(para.text, dialect)
+        new_doc.add_paragraph(translated_text)
+    
+    output_path = os.path.join(DOWNLOAD_FOLDER, f'translated_{uuid.uuid4().hex}.docx')
+    new_doc.save(output_path)
+    return output_path
+
+def process_txt(file_path, dialect):
+    """معالجة ملف نصي وترجمته"""
+    with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    translated = translate_to_dialect(content, dialect)
+    
+    output_path = os.path.join(DOWNLOAD_FOLDER, f'translated_{uuid.uuid4().hex}.txt')
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(translated)
+    
+    return output_path
+
+# ============= أوامر البوت =============
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """رسالة الترحيب"""
+    welcome_text = """
+🌍 *مرحباً بك في بوت ترجمة اللهجات العربية!*
+
+📌 *الإمكانيات:*
+• ترجمة النصوص إلى اللهجات العربية
+• ترجمة ملفات (txt, docx)
+
+🗣️ *اللهجات المدعومة:*
+• 🇮🇶 عراقي
+• 🇪🇬 مصري  
+• 🇦🇪 خليجي
+• 🇸🇾 شامي
+• 📖 فصحى
+
+📝 *كيفية الاستخدام:*
+1️⃣ اختر اللهجة من القائمة
+2️⃣ أرسل نصاً أو ملفاً
+3️⃣ سأعيد لك النص/الملف مترجماً
+
+👉 استخدم /dialect لاختيار اللهجة
+👉 استخدم /help للمساعدة
+    """
+    await update.message.reply_text(welcome_text, parse_mode='Markdown')
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر المساعدة"""
+    help_text = """
+*🔧 أوامر البوت:*
+
+/dialect - اختيار اللهجة
+/start - إعادة تشغيل البوت
+/help - عرض هذه المساعدة
+
+*📁 الملفات المدعومة:*
+• .txt - ملفات نصية
+• .docx - مستندات Word
+
+💡 *نصيحة:* اختر اللهجة أولاً ثم أرسل النص أو الملف
+    """
+    await update.message.reply_text(help_text, parse_mode='Markdown')
+
+async def select_dialect(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عرض قائمة اللهجات للاختيار"""
+    keyboard = []
     for key, name in DIALECTS.items():
-        markup.add(InlineKeyboardButton(name, callback_data=f"dialect_{key}"))
+        keyboard.append([InlineKeyboardButton(name, callback_data=f'dialect_{key}')])
     
-    bot.edit_message_text("🌍 *اختر اللهجة التي تريد الترجمة إليها:*", user_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text('🗣️ *اختر اللهجة:*', reply_markup=reply_markup, parse_mode='Markdown')
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("dialect_"))
-def select_dialect(call):
-    user_id = call.message.chat.id
-    dialect_key = call.data.split("_")[1]
-    dialect_name = DIALECTS[dialect_key]
+async def dialect_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة اختيار اللهجة"""
+    query = update.callback_query
+    await query.answer()
     
-    user_data[user_id] = {"dialect": dialect_key, "dialect_name": dialect_name}
+    dialect_key = query.data.replace('dialect_', '')
+    user_id = query.from_user.id
     
-    bot.edit_message_text(f"🌍 اللهجة: {dialect_name}\n\n📤 *أرسل الملف الذي تريد ترجمته*\n(يدعم: txt, pdf, docx, pptx)", user_id, call.message.message_id, parse_mode="Markdown")
+    user_dialects[user_id] = dialect_key
+    dialect_name = DIALECTS.get(dialect_key, 'غير معروف')
+    
+    await query.edit_message_text(f'✅ تم اختيار اللهجة: *{dialect_name}*\n\nالآن أرسل النص أو الملف الذي تريد ترجمته.', parse_mode='Markdown')
 
-@bot.message_handler(content_types=['document'])
-def handle_file(message):
-    user_id = message.chat.id
-    data = user_data.get(user_id)
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة النصوص المرسلة"""
+    user_id = update.message.from_user.id
+    text = update.message.text
     
-    if not data:
-        bot.reply_to(message, "❌ ابدأ أولاً بـ /start ثم اختر اللهجة")
+    # التحقق من اختيار اللهجة
+    if user_id not in user_dialects:
+        await update.message.reply_text('⚠️ يرجى اختيار اللهجة أولاً باستخدام /dialect')
         return
     
-    file_name = message.document.file_name
-    file_ext = os.path.splitext(file_name)[1].lower()
+    dialect = user_dialects[user_id]
+    dialect_name = DIALECTS.get(dialect, 'غير معروف')
     
-    allowed = ['.txt', '.pdf', '.docx', '.pptx']
-    if file_ext not in allowed:
-        bot.reply_to(message, f"❌ نوع الملف غير مدعوم.\nالأنواع المدعومة: {', '.join(allowed)}")
+    # إظهار رسالة انتظار
+    waiting_msg = await update.message.reply_text(f'🔄 جاري الترجمة إلى اللهجة {dialect_name}...')
+    
+    # ترجمة النص
+    translated = translate_to_dialect(text, dialect)
+    
+    # إرسال النتيجة
+    await waiting_msg.delete()
+    await update.message.reply_text(f'🗣️ *الترجمة إلى {dialect_name}:*\n\n{translated}', parse_mode='Markdown')
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة الملفات المرسلة"""
+    user_id = update.message.from_user.id
+    document = update.message.document
+    file_name = document.file_name
+    
+    # التحقق من اختيار اللهجة
+    if user_id not in user_dialects:
+        await update.message.reply_text('⚠️ يرجى اختيار اللهجة أولاً باستخدام /dialect')
         return
     
-    status = bot.reply_to(message, "🔄 جاري معالجة الملف...")
+    dialect = user_dialects[user_id]
+    dialect_name = DIALECTS.get(dialect, 'غير معروف')
     
-    try:
-        # تحميل الملف
-        file_info = bot.get_file(message.document.file_id)
-        downloaded = bot.download_file(file_info.file_path)
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_in:
-            tmp_in.write(downloaded)
-            input_path = tmp_in.name
-        
-        # استخراج النص
-        original_text = extract_text_from_file(input_path)
-        
-        if not original_text or len(original_text) < 10:
-            bot.edit_message_text("❌ لا يمكن قراءة الملف أو النص قصير جداً", user_id, status.message_id)
-            os.unlink(input_path)
-            return
-        
-        # ترجمة النص
-        translated_text = translate_text(original_text, data["dialect"])
-        
-        # إنشاء ملف مترجم
-        output_path = tempfile.mktemp(suffix=file_ext)
-        success = create_translated_file(input_path, translated_text, output_path)
-        
-        if success:
-            # استهلاك نقطة
-            update_points(user_id, -1)
-            new_points = get_user(user_id)
-            
-            # إرسال الملف المترجم
-            with open(output_path, 'rb') as f:
-                new_file_name = f"translated_{file_name}"
-                bot.send_document(user_id, f, caption=f"✅ تمت الترجمة بنجاح!\n\n📁 {file_name}\n🌍 اللهجة: {data['dialect_name']}\n⭐ النقاط المتبقية: {new_points}\n\n@zakros_probot", visible_file_name=new_file_name)
-        else:
-            bot.edit_message_text("❌ فشل إنشاء الملف المترجم", user_id, status.message_id)
-        
-        # تنظيف الملفات
-        os.unlink(input_path)
-        if os.path.exists(output_path):
-            os.unlink(output_path)
-        
-        bot.delete_message(user_id, status.message_id)
-        del user_data[user_id]
-        
-    except Exception as e:
-        bot.edit_message_text(f"❌ خطأ: {str(e)[:100]}", user_id, status.message_id)
-
-# ========== 9. لوحة تحكم المالك ==========
-@bot.message_handler(commands=['admin'])
-def admin(message):
-    if message.chat.id != OWNER_ID:
-        bot.reply_to(message, "غير مصرح")
+    # التحقق من نوع الملف
+    ext = file_name.rsplit('.', 1)[-1].lower()
+    if ext not in ['txt', 'docx']:
+        await update.message.reply_text('❌ نوع الملف غير مدعوم. يرجى إرسال ملف .txt أو .docx فقط')
         return
     
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("➕ إضافة نقاط", callback_data="add_points"))
-    markup.add(InlineKeyboardButton("📊 إحصائيات", callback_data="stats"))
-    bot.send_message(OWNER_ID, "🔧 لوحة التحكم", reply_markup=markup)
+    # إظهار رسالة انتظار
+    waiting_msg = await update.message.reply_text(f'📥 جاري تحميل الملف وترجمته إلى {dialect_name}...')
+    
+    # تحميل الملف
+    file = await document.get_file()
+    input_path = os.path.join(DOWNLOAD_FOLDER, f'input_{uuid.uuid4().hex}.{ext}')
+    await file.download_to_drive(input_path)
+    
+    # معالجة الملف حسب نوعه
+    if ext == 'txt':
+        output_path = process_txt(input_path, dialect)
+    else:  # docx
+        output_path = process_docx(input_path, dialect)
+    
+    # حذف الملف الأصلي
+    os.remove(input_path)
+    
+    # إرسال الملف المترجم
+    await waiting_msg.delete()
+    with open(output_path, 'rb') as f:
+        await update.message.reply_document(
+            document=f,
+            filename=f'translated_{file_name}',
+            caption=f'✅ تمت الترجمة إلى اللهجة {dialect_name}'
+        )
+    
+    # حذف الملف المترجم
+    os.remove(output_path)
 
-@bot.callback_query_handler(func=lambda call: call.data == "add_points")
-def add_points(call):
-    if call.message.chat.id != OWNER_ID:
-        return
-    msg = bot.send_message(OWNER_ID, "أرسل معرف المستخدم وعدد النقاط (مثال: 123456789 5):")
-    bot.register_next_step_handler(msg, add_points_step)
+# ============= تشغيل البوت =============
 
-def add_points_step(message):
-    try:
-        uid, pts = map(int, message.text.split())
-        update_points(uid, pts)
-        bot.send_message(OWNER_ID, f"✅ تم إضافة {pts} نقطة للمستخدم {uid}")
-    except:
-        bot.send_message(OWNER_ID, "صيغة غير صحيحة")
+def main():
+    """تشغيل البوت"""
+    # إنشاء التطبيق
+    application = Application.builder().token(TOKEN).build()
+    
+    # إضافة الأوامر
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("dialect", select_dialect))
+    
+    # معالجة الضغط على الأزرار
+    application.add_handler(CallbackQueryHandler(dialect_callback, pattern='^dialect_'))
+    
+    # معالجة الرسائل والملفات
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    
+    # تشغيل البوت
+    print("🤖 البوت يعمل...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-@bot.callback_query_handler(func=lambda call: call.data == "stats")
-def stats(call):
-    if call.message.chat.id != OWNER_ID:
-        return
-    c.execute("SELECT COUNT(*) FROM users")
-    users = c.fetchone()[0]
-    c.execute("SELECT SUM(points) FROM users")
-    points = c.fetchone()[0] or 0
-    bot.send_message(OWNER_ID, f"📊 إحصائيات\n👥 المستخدمون: {users}\n⭐ النقاط: {points}")
-
-if __name__ == "__main__":
-    print("✅ بوت ترجمة الملفات يعمل...")
-    bot.remove_webhook()
-    bot.infinity_polling()
+if __name__ == '__main__':
+    main()
