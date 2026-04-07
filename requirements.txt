@@ -1,9 +1,1 @@
 pyTelegramBotAPI==4.15.0
-moviepy==1.0.3
-Pillow==10.0.0
-PyPDF2==3.0.1
-python-docx==0.8.11
-numpy==1.24.3
-imageio==2.31.1
-imageio-ffmpeg==0.4.9
-requests==2.31.0
