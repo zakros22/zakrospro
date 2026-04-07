@@ -4,11 +4,6 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
 import tempfile
 import re
-import requests
-from PIL import Image, ImageDraw, ImageFont
-from moviepy.editor import ImageClip, concatenate_videoclips
-import PyPDF2
-import docx
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
@@ -18,7 +13,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 OWNER_ID = 7021542402
 
 # ========== 1. قاعدة البيانات ==========
-conn = sqlite3.connect("video.db", check_same_thread=False)
+conn = sqlite3.connect("data.db", check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
@@ -48,44 +43,12 @@ def add_image(keyword, file_id):
     c.execute("INSERT INTO images (keyword, file_id) VALUES (?,?)", (keyword, file_id))
     conn.commit()
 
-def get_image_by_keyword(text):
-    words = text.lower().split()
-    c.execute("SELECT keyword, file_id FROM images")
-    images = c.fetchall()
-    for keyword, file_id in images:
-        if keyword.lower() in text.lower() or keyword.lower() in words:
-            return file_id
-    return None
-
 def get_all_images():
     c.execute("SELECT keyword, file_id FROM images")
     return c.fetchall()
 
-# ========== 2. استخراج النص من الملفات ==========
-def extract_text(file_path):
-    ext = os.path.splitext(file_path)[1].lower()
-    try:
-        if ext == '.txt':
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return f.read()
-        elif ext == '.pdf':
-            text = ""
-            with open(file_path, 'rb') as f:
-                reader = PyPDF2.PdfReader(f)
-                for page in reader.pages:
-                    text += page.extract_text() + "\n"
-            return text
-        elif ext == '.docx':
-            doc = docx.Document(file_path)
-            return "\n".join([para.text for para in doc.paragraphs])
-        else:
-            return None
-    except:
-        return None
-
-# ========== 3. تحليل المحاضرة ==========
+# ========== 2. تحليل المحاضرة ==========
 def analyze_lecture(text):
-    """تقسيم المحاضرة إلى أقسام"""
     sentences = re.split(r'(?<=[.!?؟])\s+', text)
     parts = []
     current = ""
@@ -104,79 +67,10 @@ def analyze_lecture(text):
     
     return parts
 
-# ========== 4. إنشاء فيديو ==========
-def create_video(parts, output_path, duration_per_slide=3):
-    try:
-        clips = []
-        for part in parts:
-            # البحث عن صورة مناسبة
-            file_id = get_image_by_keyword(part)
-            
-            if file_id:
-                # تحميل الصورة من تلغرام
-                file_info = bot.get_file(file_id)
-                downloaded = bot.download_file(file_info.file_path)
-                img_path = tempfile.mktemp(suffix='.jpg')
-                with open(img_path, 'wb') as f:
-                    f.write(downloaded)
-            else:
-                # إنشاء صورة نصية
-                img_path = create_text_image(part)
-            
-            if img_path:
-                clip = ImageClip(img_path).set_duration(duration_per_slide).resize(height=720)
-                clips.append(clip)
-                if os.path.exists(img_path):
-                    os.unlink(img_path)
-        
-        if not clips:
-            return False
-        
-        video = concatenate_videoclips(clips, method="compose")
-        video.write_videofile(output_path, fps=24, codec='libx264', threads=2, logger=None)
-        video.close()
-        return True
-    except Exception as e:
-        print(f"Video error: {e}")
-        return False
-
-def create_text_image(text, width=1280, height=720):
-    try:
-        img_path = tempfile.mktemp(suffix='.png')
-        img = Image.new('RGB', (width, height), color=(30, 40, 80))
-        draw = ImageDraw.Draw(img)
-        try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 30)
-        except:
-            font = ImageFont.load_default()
-        
-        # تقسيم النص
-        lines = []
-        words = text.split()
-        line = ""
-        for w in words:
-            if len(line + " " + w) <= 35:
-                line += " " + w if line else w
-            else:
-                lines.append(line)
-                line = w
-        if line:
-            lines.append(line)
-        
-        y = 250
-        for l in lines:
-            draw.text((100, y), l, fill=(255, 255, 255), font=font)
-            y += 50
-        
-        img.save(img_path)
-        return img_path
-    except:
-        return None
-
-# ========== 5. تخزين مؤقت ==========
+# ========== 3. تخزين مؤقت ==========
 user_data = {}
 
-# ========== 6. أوامر البوت ==========
+# ========== 4. أوامر البوت ==========
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.chat.id
@@ -184,7 +78,7 @@ def start(message):
     
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("🎬 تحويل محاضرة", callback_data="convert"),
+        InlineKeyboardButton("🎬 تحليل محاضرة", callback_data="convert"),
         InlineKeyboardButton("📸 إضافة صورة", callback_data="add_image"),
         InlineKeyboardButton("🖼️ قائمة الصور", callback_data="list_images")
     )
@@ -192,18 +86,17 @@ def start(message):
         markup.add(InlineKeyboardButton("🔧 لوحة التحكم", callback_data="admin"))
     
     bot.send_message(user_id,
-        f"🎬 *بوت تحويل المحاضرات إلى فيديو*\n\n"
+        f"🎬 *بوت تحليل المحاضرات*\n\n"
         f"⭐ رصيدك: {points} نقطة\n"
-        f"• كل تحويل = 1 نقطة\n\n"
+        f"• كل تحليل = 1 نقطة\n\n"
         f"📸 *كيف يعمل؟*\n"
         f"1. أضف صوراً مع كلمات مفتاحية\n"
-        f"2. أرسل محاضرة (نص أو ملف)\n"
-        f"3. سأقوم بعرض الصور المناسبة\n"
-        f"4. سأرسل الشرح بعد الفيديو\n\n"
+        f"2. أرسل محاضرة (نص)\n"
+        f"3. سأقسم المحاضرة وأرسل الشرح\n\n"
         f"@zakros_probot",
         parse_mode="Markdown", reply_markup=markup)
 
-# ========== 7. إضافة الصور (للمالك فقط) ==========
+# ========== 5. إضافة الصور ==========
 @bot.callback_query_handler(func=lambda call: call.data == "add_image")
 def add_image_start(call):
     if call.message.chat.id != OWNER_ID:
@@ -211,7 +104,7 @@ def add_image_start(call):
         return
     
     user_data[call.message.chat.id] = {"step": "waiting_keyword"}
-    bot.edit_message_text("📝 *أرسل الكلمة المفتاحية لهذه الصورة*\nمثال: قلب، شجرة، ولد، سيارة", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+    bot.edit_message_text("📝 *أرسل الكلمة المفتاحية لهذه الصورة*\nمثال: قلب، شجرة، ولد", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: m.chat.id in user_data and user_data.get(m.chat.id, {}).get("step") == "waiting_keyword")
 def get_keyword(message):
@@ -235,7 +128,7 @@ def handle_image(message):
     
     add_image(keyword, file_id)
     
-    bot.reply_to(message, f"✅ تم حفظ الصورة\n📌 الكلمة المفتاحية: {keyword}")
+    bot.reply_to(message, f"✅ تم حفظ الصورة\n📌 الكلمة: {keyword}")
     del user_data[user_id]
 
 @bot.callback_query_handler(func=lambda call: call.data == "list_images")
@@ -249,13 +142,13 @@ def list_images(call):
         bot.send_message(call.message.chat.id, "📭 لا توجد صور مضافة بعد")
         return
     
-    text = "🖼️ *قائمة الصور والكلمات المفتاحية:*\n\n"
+    text = "🖼️ *قائمة الصور:*\n\n"
     for keyword, file_id in images:
         text += f"• {keyword}\n"
     
     bot.send_message(call.message.chat.id, text, parse_mode="Markdown")
 
-# ========== 8. تحويل المحاضرة إلى فيديو ==========
+# ========== 6. تحليل المحاضرة ==========
 @bot.callback_query_handler(func=lambda call: call.data == "convert")
 def convert_start(call):
     user_id = call.message.chat.id
@@ -265,9 +158,9 @@ def convert_start(call):
         return
     
     user_data[user_id] = {"step": "waiting_content"}
-    bot.edit_message_text("📝 *أرسل المحاضرة (نص أو ملف txt/pdf/docx)*", user_id, call.message.message_id, parse_mode="Markdown")
+    bot.edit_message_text("📝 *أرسل المحاضرة (نصاً)*", user_id, call.message.message_id, parse_mode="Markdown")
 
-@bot.message_handler(content_types=['text', 'document'])
+@bot.message_handler(func=lambda m: m.chat.id in user_data and user_data.get(m.chat.id, {}).get("step") == "waiting_content")
 def handle_lecture(message):
     user_id = message.chat.id
     data = user_data.get(user_id)
@@ -275,34 +168,9 @@ def handle_lecture(message):
     if not data or data.get("step") != "waiting_content":
         return
     
-    content = None
-    file_name = None
+    text = message.text.strip()
     
-    if message.text and not message.text.startswith('/'):
-        content = message.text.strip()
-        file_name = "text_lecture.txt"
-    elif message.document:
-        file_name = message.document.file_name
-        ext = os.path.splitext(file_name)[1].lower()
-        if ext not in ['.txt', '.pdf', '.docx']:
-            bot.reply_to(message, "❌ نوع غير مدعوم. الأنواع: txt, pdf, docx")
-            return
-        
-        try:
-            file_info = bot.get_file(message.document.file_id)
-            downloaded = bot.download_file(file_info.file_path)
-            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-                tmp.write(downloaded)
-                tmp_path = tmp.name
-            content = extract_text(tmp_path)
-            os.unlink(tmp_path)
-        except:
-            bot.reply_to(message, "❌ خطأ في قراءة الملف")
-            return
-    else:
-        return
-    
-    if not content or len(content) < 50:
+    if not text or len(text) < 50:
         bot.reply_to(message, "❌ المحتوى قصير جداً (يحتاج 50 حرفاً)")
         return
     
@@ -313,35 +181,32 @@ def handle_lecture(message):
     
     try:
         # تحليل المحاضرة
-        parts = analyze_lecture(content)
+        parts = analyze_lecture(text)
         
-        if not parts:
-            bot.edit_message_text("❌ لا يوجد محتوى صالح", user_id, status.message_id)
-            update_points(user_id, 1)
-            return
+        new_points = get_user(user_id)
         
-        bot.edit_message_text(f"📊 تم التقسيم إلى {len(parts)} أقسام\n🎬 جاري إنشاء الفيديو...", user_id, status.message_id)
+        # إرسال الشرح
+        explanation = f"✅ *تم تحليل المحاضرة*\n\n"
+        explanation += f"📊 عدد الأقسام: {len(parts)}\n"
+        explanation += f"⭐ النقاط المتبقية: {new_points}\n\n"
+        explanation += f"📝 *الأقسام:*\n"
         
-        # إنشاء الفيديو
-        video_path = tempfile.mktemp(suffix='.mp4')
+        for i, part in enumerate(parts):
+            explanation += f"\n{i+1}. {part}\n"
         
-        if create_video(parts, video_path, duration_per_slide=3):
-            new_points = get_user(user_id)
-            
-            # إرسال الفيديو
-            with open(video_path, 'rb') as f:
-                bot.send_video(user_id, f, caption=f"✅ تم إنشاء الفيديو\n📊 عدد الأقسام: {len(parts)}\n⭐ النقاط المتبقية: {new_points}", supports_streaming=True)
-            os.unlink(video_path)
-            
-            # إرسال الشرح النصي
-            explanation = f"📝 *شرح المحاضرة*\n\n"
-            for i, part in enumerate(parts):
-                explanation += f"{i+1}. {part}\n\n"
-            
-            bot.send_message(user_id, explanation, parse_mode="Markdown")
-        else:
-            bot.edit_message_text("❌ فشل إنشاء الفيديو", user_id, status.message_id)
-            update_points(user_id, 1)
+        # إرسال الصور المناسبة لكل قسم (اختياري)
+        bot.send_message(user_id, explanation, parse_mode="Markdown")
+        
+        # إرسال الصور المرتبطة بالكلمات المفتاحية
+        images = get_all_images()
+        if images:
+            bot.send_message(user_id, "🖼️ *الصور المرتبطة:*", parse_mode="Markdown")
+            for keyword, file_id in images:
+                if keyword in text.lower():
+                    try:
+                        bot.send_photo(user_id, file_id, caption=f"📌 صورة: {keyword}")
+                    except:
+                        pass
         
         bot.delete_message(user_id, status.message_id)
         del user_data[user_id]
@@ -350,7 +215,7 @@ def handle_lecture(message):
         bot.edit_message_text(f"❌ خطأ: {str(e)[:100]}", user_id, status.message_id)
         update_points(user_id, 1)
 
-# ========== 9. لوحة تحكم المالك ==========
+# ========== 7. لوحة تحكم المالك ==========
 @bot.callback_query_handler(func=lambda call: call.data == "admin")
 def admin_panel(call):
     if call.message.chat.id != OWNER_ID:
@@ -387,7 +252,7 @@ def show_stats(call):
     points = c.fetchone()[0] or 0
     c.execute("SELECT COUNT(*) FROM images")
     images = c.fetchone()[0]
-    bot.send_message(OWNER_ID, f"📊 إحصائيات\n👥 المستخدمون: {users}\n⭐ النقاط: {points}\n🖼️ الصور المحفوظة: {images}")
+    bot.send_message(OWNER_ID, f"📊 إحصائيات\n👥 المستخدمون: {users}\n⭐ النقاط: {points}\n🖼️ الصور: {images}")
 
 if __name__ == "__main__":
     print("✅ البوت يعمل...")
