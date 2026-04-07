@@ -1,7 +1,6 @@
 import os
 import telebot
 import tempfile
-from datetime import datetime
 from fpdf import FPDF
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -12,22 +11,24 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.send_message(message.chat.id,
-        "📄 أرسل لي نصاً وسأحوله إلى PDF\n\n@zakros_probot")
+    bot.send_message(message.chat.id, "أرسل لي نصاً وسأحوله إلى PDF")
 
 @bot.message_handler(func=lambda m: True)
-def handle_text(message):
+def convert_to_pdf(message):
     text = message.text.strip()
     
-    if len(text) < 10:
+    if len(text) < 5:
         bot.reply_to(message, "النص قصير جداً")
         return
     
-    # إنشاء PDF بسيط
+    # إنشاء PDF
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Helvetica", size=12)
-    pdf.multi_cell(0, 10, text)
+    
+    # تقسيم النص إلى أسطر
+    for line in text.split('\n'):
+        pdf.cell(0, 10, line, ln=1)
     
     # حفظ الملف
     path = tempfile.mktemp(suffix='.pdf')
@@ -35,11 +36,10 @@ def handle_text(message):
     
     # إرسال الملف
     with open(path, 'rb') as f:
-        bot.send_document(message.chat.id, f, visible_file_name="document.pdf")
+        bot.send_document(message.chat.id, f)
     
-    os.unlink(path)
+    os.remove(path)
 
 if __name__ == "__main__":
     print("Bot is running...")
-    bot.remove_webhook()
     bot.infinity_polling()
