@@ -1,262 +1,269 @@
 import os
-import uuid
-import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from docx import Document
-import asyncio
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+import sqlite3
+import tempfile
+import re
+import requests
+from PIL import Image, ImageDraw, ImageFont
+from moviepy.editor import ImageClip, concatenate_videoclips, CompositeVideoClip, TextClip
 
-# إعداد التسجيل للأخطاء
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise Exception("BOT_TOKEN not set")
 
-# توكن البوت - ضع التوكن الخاص بك هنا
-TOKEN = 'ضع_التوكن_هنا'
+bot = telebot.TeleBot(BOT_TOKEN)
+OWNER_ID = 7021542402
 
-# مجلد لحفظ الملفات المؤقتة
-DOWNLOAD_FOLDER = 'downloads'
-os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
+# ========== 1. قاعدة البيانات ==========
+conn = sqlite3.connect("video.db", check_same_thread=False)
+c = conn.cursor()
+c.execute('''CREATE TABLE IF NOT EXISTS images (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    keyword TEXT,
+    url TEXT
+)''')
+conn.commit()
 
-# قاموس لتخزين حالة المستخدم (اللهجة المختارة)
-user_dialects = {}
-
-# اللهجات المدعومة
-DIALECTS = {
-    'fusha': '📖 الفصحى',
-    'egyptian': '🇪🇬 مصري',
-    'iraqi': '🇮🇶 عراقي',
-    'gulf': '🇦🇪 خليجي',
-    'syrian': '🇸🇾 شامي'
-}
-
-# كلمات اللهجات للتحويل
-DIALECT_WORDS = {
-    'iraqi': {
-        'ماذا': 'شكو', 'كيف': 'شلون', 'لماذا': 'ليش', 'هذا': 'هذاي',
-        'جيد': 'زين', 'أريد': 'أريد', 'ذهب': 'راح', 'أكل': 'چال',
-        'الان': 'هلگه', 'كبير': 'كبير', 'صغير': 'زغير', 'جميل': 'حلو',
-        'قليل': 'شويه', 'كثير': 'هوايه', 'بسرعة': 'بسرعه', 'بطيء': 'بطيء'
-    },
-    'egyptian': {
-        'ماذا': 'إيه', 'كيف': 'إزاي', 'لماذا': 'ليه', 'هذا': 'دا',
-        'جيد': 'كويّس', 'أريد': 'عايز', 'ذهب': 'راح', 'أكل': 'أكل',
-        'الان': 'دلوقتي', 'كبير': 'كبير', 'صغير': 'صغير', 'جميل': 'جميل',
-        'قليل': 'شوية', 'كثير': 'كتير', 'بسرعة': 'بسرعه', 'بطيء': 'بطيء'
-    },
-    'gulf': {
-        'ماذا': 'شو', 'كيف': 'كيف', 'لماذا': 'ليش', 'هذا': 'هذا',
-        'جيد': 'زين', 'أريد': 'أبي', 'ذهب': 'راح', 'أكل': 'أكل',
-        'الان': 'الحين', 'كبير': 'كبير', 'صغير': 'صغير', 'جميل': 'حلو',
-        'قليل': 'شوي', 'كثير': 'وايد', 'بسرعة': 'بسرعه', 'بطيء': 'بطيء'
-    },
-    'syrian': {
-        'ماذا': 'شو', 'كيف': 'كيف', 'لماذا': 'ليش', 'هذا': 'هيدا',
-        'جيد': 'منيح', 'أريد': 'بدي', 'ذهب': 'راح', 'أكل': 'أكل',
-        'الان': 'هلأ', 'كبير': 'كبير', 'صغير': 'زغير', 'جميل': 'حلو',
-        'قليل': 'شوي', 'كثير': 'كتير', 'بسرعة': 'بسرعه', 'بطيء': 'بطيء'
-    },
-    'fusha': {}
-}
-
-def translate_to_dialect(text, dialect):
-    """تحويل النص إلى اللهجة المختارة"""
-    if dialect == 'fusha' or dialect not in DIALECT_WORDS:
-        return text
+# ========== 2. إضافة صور تجريبية ==========
+def add_sample_images():
+    images = [
+        ("قلب", "https://png.pngtree.com/png-vector/20240830/ourlarge/pngtree-cartoon-of-broken-heart-png-image_13744684.png"),
+        ("شجرة", "https://png.pngtree.com/png-vector/20240830/ourlarge/pngtree-cartoon-tree-png-image_13747696.png"),
+        ("ولد", "https://png.pngtree.com/png-vector/20240830/ourlarge/pngtree-a-little-boy-png-image_13747694.png")
+    ]
     
-    words = DIALECT_WORDS[dialect]
-    result = text
+    for keyword, url in images:
+        c.execute("SELECT * FROM images WHERE keyword=?", (keyword,))
+        if not c.fetchone():
+            c.execute("INSERT INTO images (keyword, url) VALUES (?,?)", (keyword, url))
+    conn.commit()
+
+add_sample_images()
+
+def get_image_url(keyword):
+    c.execute("SELECT url FROM images WHERE keyword=?", (keyword,))
+    row = c.fetchone()
+    return row[0] if row else None
+
+def download_image(url, output_path):
+    try:
+        response = requests.get(url, timeout=30)
+        with open(output_path, 'wb') as f:
+            f.write(response.content)
+        return True
+    except:
+        return False
+
+# ========== 3. إنشاء فيديو من الصور مع نص ==========
+def create_video_with_text(parts, output_path):
+    try:
+        clips = []
+        for part in parts:
+            # تحميل الصورة
+            img_url = get_image_url(part["keyword"])
+            if img_url:
+                img_path = tempfile.mktemp(suffix='.jpg')
+                download_image(img_url, img_path)
+            else:
+                # صورة افتراضية إذا لم توجد
+                img_path = create_fallback_image(part["text"])
+            
+            # إنشاء مقطع من الصورة
+            clip = ImageClip(img_path).set_duration(part["duration"]).resize(height=720)
+            
+            # إضافة النص على الصورة
+            txt_clip = TextClip(part["text"], fontsize=40, color='white', font='Arial', size=(800, 100))
+            txt_clip = txt_clip.set_position(('center', 'bottom')).set_duration(part["duration"])
+            
+            # دمج الصورة والنص
+            composite = CompositeVideoClip([clip, txt_clip])
+            clips.append(composite)
+            
+            # تنظيف
+            if os.path.exists(img_path):
+                os.unlink(img_path)
+        
+        # دمج جميع المقاطع
+        video = concatenate_videoclips(clips, method="compose")
+        video.write_videofile(output_path, fps=24, codec='libx264', threads=2)
+        video.close()
+        return True
+    except Exception as e:
+        print(f"Error: {e}")
+        return False
+
+def create_fallback_image(text):
+    img_path = tempfile.mktemp(suffix='.png')
+    img = Image.new('RGB', (1280, 720), color=(30, 40, 80))
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28)
+    except:
+        font = ImageFont.load_default()
     
-    for original, translated in words.items():
-        result = result.replace(original, translated)
+    # تقسيم النص
+    lines = []
+    words = text.split()
+    line = ""
+    for w in words:
+        if len(line + " " + w) <= 35:
+            line += " " + w if line else w
+        else:
+            lines.append(line)
+            line = w
+    if line:
+        lines.append(line)
     
-    return result
-
-def process_docx(file_path, dialect):
-    """معالجة ملف Word وترجمته"""
-    doc = Document(file_path)
-    new_doc = Document()
+    y = 250
+    for l in lines:
+        draw.text((100, y), l, fill=(255, 255, 255), font=font)
+        y += 50
     
-    for para in doc.paragraphs:
-        translated_text = translate_to_dialect(para.text, dialect)
-        new_doc.add_paragraph(translated_text)
+    img.save(img_path)
+    return img_path
+
+# ========== 4. تحليل المحاضرة ==========
+def analyze_lecture(text, duration_per_slide=3):
+    """تقسيم المحاضرة إلى أقسام وتحديد الكلمات المفتاحية"""
+    sentences = re.split(r'(?<=[.!?؟])\s+', text)
+    parts = []
     
-    output_path = os.path.join(DOWNLOAD_FOLDER, f'translated_{uuid.uuid4().hex}.docx')
-    new_doc.save(output_path)
-    return output_path
-
-def process_txt(file_path, dialect):
-    """معالجة ملف نصي وترجمته"""
-    with open(file_path, 'r', encoding='utf-8') as f:
-        content = f.read()
+    for sent in sentences:
+        if len(sent.strip()) < 10:
+            continue
+        
+        # تحديد الكلمة المفتاحية
+        keyword = None
+        if "قلب" in sent:
+            keyword = "قلب"
+        elif "شجرة" in sent:
+            keyword = "شجرة"
+        elif "ولد" in sent:
+            keyword = "ولد"
+        
+        parts.append({
+            "text": sent.strip(),
+            "keyword": keyword,
+            "duration": duration_per_slide
+        })
     
-    translated = translate_to_dialect(content, dialect)
+    return parts
+
+# ========== 5. أوامر البوت ==========
+@bot.message_handler(commands=['start'])
+def start(message):
+    user_id = message.chat.id
     
-    output_path = os.path.join(DOWNLOAD_FOLDER, f'translated_{uuid.uuid4().hex}.txt')
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(translated)
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🎬 تحويل محاضرة", callback_data="convert"))
+    if user_id == OWNER_ID:
+        markup.add(InlineKeyboardButton("🔧 لوحة التحكم", callback_data="admin"))
     
-    return output_path
+    bot.send_message(user_id,
+        f"🎬 *بوت تحويل المحاضرات إلى فيديو (تجريبي)*\n\n"
+        f"📸 *الصور المتوفرة:*\n"
+        f"• قلب ❤️ - عندما يتحدث النص عن القلب\n"
+        f"• شجرة 🌳 - عندما يتحدث النص عن الشجرة\n"
+        f"• ولد 👦 - عندما يتحدث النص عن الولد\n\n"
+        f"📝 أرسل محاضرة وسأقوم بعرض الصور المناسبة\n\n"
+        f"@zakros_probot",
+        parse_mode="Markdown", reply_markup=markup)
 
-# ============= أوامر البوت =============
+@bot.callback_query_handler(func=lambda call: call.data == "convert")
+def convert_start(call):
+    user_id = call.message.chat.id
+    bot.edit_message_text("📝 *أرسل المحاضرة (نصاً)*\n\nمثال:\nالولد كان يلعب في الحديقة. رأى شجرة كبيرة. قلبه فرح.", user_id, call.message.message_id, parse_mode="Markdown")
+    bot.register_next_step_handler(call.message, process_lecture)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """رسالة الترحيب"""
-    welcome_text = """
-🌍 *مرحباً بك في بوت ترجمة اللهجات العربية!*
-
-📌 *الإمكانيات:*
-• ترجمة النصوص إلى اللهجات العربية
-• ترجمة ملفات (txt, docx)
-
-🗣️ *اللهجات المدعومة:*
-• 🇮🇶 عراقي
-• 🇪🇬 مصري  
-• 🇦🇪 خليجي
-• 🇸🇾 شامي
-• 📖 فصحى
-
-📝 *كيفية الاستخدام:*
-1️⃣ اختر اللهجة من القائمة
-2️⃣ أرسل نصاً أو ملفاً
-3️⃣ سأعيد لك النص/الملف مترجماً
-
-👉 استخدم /dialect لاختيار اللهجة
-👉 استخدم /help للمساعدة
-    """
-    await update.message.reply_text(welcome_text, parse_mode='Markdown')
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر المساعدة"""
-    help_text = """
-*🔧 أوامر البوت:*
-
-/dialect - اختيار اللهجة
-/start - إعادة تشغيل البوت
-/help - عرض هذه المساعدة
-
-*📁 الملفات المدعومة:*
-• .txt - ملفات نصية
-• .docx - مستندات Word
-
-💡 *نصيحة:* اختر اللهجة أولاً ثم أرسل النص أو الملف
-    """
-    await update.message.reply_text(help_text, parse_mode='Markdown')
-
-async def select_dialect(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """عرض قائمة اللهجات للاختيار"""
-    keyboard = []
-    for key, name in DIALECTS.items():
-        keyboard.append([InlineKeyboardButton(name, callback_data=f'dialect_{key}')])
+def process_lecture(message):
+    user_id = message.chat.id
+    text = message.text.strip()
     
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text('🗣️ *اختر اللهجة:*', reply_markup=reply_markup, parse_mode='Markdown')
-
-async def dialect_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة اختيار اللهجة"""
-    query = update.callback_query
-    await query.answer()
-    
-    dialect_key = query.data.replace('dialect_', '')
-    user_id = query.from_user.id
-    
-    user_dialects[user_id] = dialect_key
-    dialect_name = DIALECTS.get(dialect_key, 'غير معروف')
-    
-    await query.edit_message_text(f'✅ تم اختيار اللهجة: *{dialect_name}*\n\nالآن أرسل النص أو الملف الذي تريد ترجمته.', parse_mode='Markdown')
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة النصوص المرسلة"""
-    user_id = update.message.from_user.id
-    text = update.message.text
-    
-    # التحقق من اختيار اللهجة
-    if user_id not in user_dialects:
-        await update.message.reply_text('⚠️ يرجى اختيار اللهجة أولاً باستخدام /dialect')
+    if len(text) < 20:
+        bot.reply_to(message, "❌ النص قصير جداً (يحتاج 20 حرفاً)")
         return
     
-    dialect = user_dialects[user_id]
-    dialect_name = DIALECTS.get(dialect, 'غير معروف')
+    status = bot.reply_to(message, "🎬 جاري إنشاء الفيديو...")
     
-    # إظهار رسالة انتظار
-    waiting_msg = await update.message.reply_text(f'🔄 جاري الترجمة إلى اللهجة {dialect_name}...')
-    
-    # ترجمة النص
-    translated = translate_to_dialect(text, dialect)
-    
-    # إرسال النتيجة
-    await waiting_msg.delete()
-    await update.message.reply_text(f'🗣️ *الترجمة إلى {dialect_name}:*\n\n{translated}', parse_mode='Markdown')
+    try:
+        # تحليل المحاضرة
+        parts = analyze_lecture(text, duration_per_slide=3)
+        
+        if not parts:
+            bot.edit_message_text("❌ لا يوجد محتوى صالح للتحويل", user_id, status.message_id)
+            return
+        
+        # إنشاء الفيديو
+        video_path = tempfile.mktemp(suffix='.mp4')
+        
+        if create_video_with_text(parts, video_path):
+            with open(video_path, 'rb') as f:
+                bot.send_video(user_id, f, caption=f"✅ تم إنشاء الفيديو\n\n📝 *نص المحاضرة:*\n{text[:500]}\n\n@zakros_probot", supports_streaming=True, parse_mode="Markdown")
+            os.unlink(video_path)
+        else:
+            bot.edit_message_text("❌ فشل إنشاء الفيديو", user_id, status.message_id)
+        
+        bot.delete_message(user_id, status.message_id)
+        
+    except Exception as e:
+        bot.edit_message_text(f"❌ خطأ: {str(e)[:100]}", user_id, status.message_id)
 
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة الملفات المرسلة"""
-    user_id = update.message.from_user.id
-    document = update.message.document
-    file_name = document.file_name
-    
-    # التحقق من اختيار اللهجة
-    if user_id not in user_dialects:
-        await update.message.reply_text('⚠️ يرجى اختيار اللهجة أولاً باستخدام /dialect')
+# ========== 6. لوحة تحكم المالك ==========
+@bot.callback_query_handler(func=lambda call: call.data == "admin")
+def admin_panel(call):
+    if call.message.chat.id != OWNER_ID:
+        bot.answer_callback_query(call.id, "غير مصرح", True)
         return
     
-    dialect = user_dialects[user_id]
-    dialect_name = DIALECTS.get(dialect, 'غير معروف')
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("📸 إضافة صورة", callback_data="add_image"))
+    markup.add(InlineKeyboardButton("🖼️ قائمة الصور", callback_data="list_images"))
+    bot.send_message(OWNER_ID, "🔧 لوحة التحكم", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "add_image")
+def add_image_start(call):
+    user_data[call.message.chat.id] = {"step": "waiting_keyword"}
+    bot.edit_message_text("📝 *أرسل الكلمة المفتاحية لهذه الصورة*\nمثال: قلب، شجرة، ولد", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+
+user_data = {}
+
+@bot.message_handler(func=lambda m: m.chat.id in user_data and user_data[m.chat.id].get("step") == "waiting_keyword")
+def get_keyword(message):
+    user_id = message.chat.id
+    keyword = message.text.strip()
+    user_data[user_id]["keyword"] = keyword
+    user_data[user_id]["step"] = "waiting_url"
+    bot.send_message(user_id, "🔗 *أرسل رابط الصورة*", parse_mode="Markdown")
+
+@bot.message_handler(func=lambda m: m.chat.id in user_data and user_data[m.chat.id].get("step") == "waiting_url")
+def get_url(message):
+    user_id = message.chat.id
+    url = message.text.strip()
+    keyword = user_data[user_id]["keyword"]
     
-    # التحقق من نوع الملف
-    ext = file_name.rsplit('.', 1)[-1].lower()
-    if ext not in ['txt', 'docx']:
-        await update.message.reply_text('❌ نوع الملف غير مدعوم. يرجى إرسال ملف .txt أو .docx فقط')
+    c.execute("INSERT INTO images (keyword, url) VALUES (?,?)", (keyword, url))
+    conn.commit()
+    
+    bot.send_message(user_id, f"✅ تم حفظ الصورة\n📌 الكلمة: {keyword}")
+    del user_data[user_id]
+
+@bot.callback_query_handler(func=lambda call: call.data == "list_images")
+def list_images(call):
+    c.execute("SELECT keyword, url FROM images")
+    images = c.fetchall()
+    
+    if not images:
+        bot.send_message(call.message.chat.id, "📭 لا توجد صور")
         return
     
-    # إظهار رسالة انتظار
-    waiting_msg = await update.message.reply_text(f'📥 جاري تحميل الملف وترجمته إلى {dialect_name}...')
+    text = "🖼️ *قائمة الصور:*\n\n"
+    for keyword, url in images:
+        text += f"• {keyword}\n"
     
-    # تحميل الملف
-    file = await document.get_file()
-    input_path = os.path.join(DOWNLOAD_FOLDER, f'input_{uuid.uuid4().hex}.{ext}')
-    await file.download_to_drive(input_path)
-    
-    # معالجة الملف حسب نوعه
-    if ext == 'txt':
-        output_path = process_txt(input_path, dialect)
-    else:  # docx
-        output_path = process_docx(input_path, dialect)
-    
-    # حذف الملف الأصلي
-    os.remove(input_path)
-    
-    # إرسال الملف المترجم
-    await waiting_msg.delete()
-    with open(output_path, 'rb') as f:
-        await update.message.reply_document(
-            document=f,
-            filename=f'translated_{file_name}',
-            caption=f'✅ تمت الترجمة إلى اللهجة {dialect_name}'
-        )
-    
-    # حذف الملف المترجم
-    os.remove(output_path)
+    bot.send_message(call.message.chat.id, text, parse_mode="Markdown")
 
-# ============= تشغيل البوت =============
-
-def main():
-    """تشغيل البوت"""
-    # إنشاء التطبيق
-    application = Application.builder().token(TOKEN).build()
-    
-    # إضافة الأوامر
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("dialect", select_dialect))
-    
-    # معالجة الضغط على الأزرار
-    application.add_handler(CallbackQueryHandler(dialect_callback, pattern='^dialect_'))
-    
-    # معالجة الرسائل والملفات
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    
-    # تشغيل البوت
-    print("🤖 البوت يعمل...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    print("✅ بوت تحويل المحاضرات إلى فيديو يعمل...")
+    bot.remove_webhook()
+    bot.infinity_polling()
