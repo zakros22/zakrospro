@@ -81,7 +81,63 @@ def _mark_exhausted(k):
     _current_google_idx += 1
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# استخراج الكلمات
+# دوال AI
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def _google_generate(prompt: str, max_tokens: int = 8192) -> str:
+    models = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
+    for _ in range(len(_google_keys) * 2):
+        key = _next_google_key()
+        if not key:
+            break
+        client = genai.Client(api_key=key)
+        for model in models:
+            try:
+                resp = await asyncio.to_thread(
+                    client.models.generate_content, model=model, contents=prompt,
+                    config=genai_types.GenerateContentConfig(temperature=0.8, max_output_tokens=max_tokens)
+                )
+                return resp.text.strip()
+            except Exception as e:
+                if "429" in str(e) or "quota" in str(e).lower():
+                    _mark_exhausted(key)
+                    break
+    raise Exception("Google failed")
+
+async def _groq_generate(prompt: str, max_tokens: int = 8192) -> str:
+    if not _groq_keys:
+        raise Exception("No Groq keys")
+    for key in _groq_keys:
+        for model in _GROQ_MODELS:
+            try:
+                headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+                payload = {"model": model, "messages": [{"role": "user", "content": prompt}],
+                          "max_tokens": min(max_tokens, 8192), "temperature": 0.8}
+                async with aiohttp.ClientSession() as s:
+                    async with s.post("https://api.groq.com/openai/v1/chat/completions",
+                                     headers=headers, json=payload, timeout=aiohttp.ClientTimeout(60)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            return data["choices"][0]["message"]["content"].strip()
+            except:
+                continue
+    raise Exception("Groq failed")
+
+async def _ai_generate(prompt: str, max_tokens: int = 8192) -> str:
+    if _google_keys:
+        try:
+            return await _google_generate(prompt, max_tokens)
+        except:
+            pass
+    if _groq_keys:
+        try:
+            return await _groq_generate(prompt, max_tokens)
+        except:
+            pass
+    raise Exception("All AI failed")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# تحليل احترافي
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _extract_keywords(text: str, max_words: int = 30) -> list:
@@ -116,66 +172,6 @@ def _detect_type(text: str) -> str:
     best = max(scores, key=scores.get)
     return best if scores[best] > 1 else 'other'
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# دوال AI
-# ═══════════════════════════════════════════════════════════════════════════════
-
-async def _google_generate(prompt: str, max_tokens: int = 8192) -> str:
-    models = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
-    for _ in range(len(_google_keys) * 2):
-        key = _next_google_key()
-        if not key:
-            break
-        client = genai.Client(api_key=key)
-        for model in models:
-            try:
-                resp = await asyncio.to_thread(
-                    client.models.generate_content, model=model, contents=prompt,
-                    config=genai_types.GenerateContentConfig(temperature=0.7, max_output_tokens=max_tokens)
-                )
-                return resp.text.strip()
-            except Exception as e:
-                if "429" in str(e) or "quota" in str(e).lower():
-                    _mark_exhausted(key)
-                    break
-    raise Exception("Google failed")
-
-async def _groq_generate(prompt: str, max_tokens: int = 8192) -> str:
-    if not _groq_keys:
-        raise Exception("No Groq keys")
-    for key in _groq_keys:
-        for model in _GROQ_MODELS:
-            try:
-                headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-                payload = {"model": model, "messages": [{"role": "user", "content": prompt}],
-                          "max_tokens": min(max_tokens, 8192), "temperature": 0.7}
-                async with aiohttp.ClientSession() as s:
-                    async with s.post("https://api.groq.com/openai/v1/chat/completions",
-                                     headers=headers, json=payload, timeout=aiohttp.ClientTimeout(60)) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            return data["choices"][0]["message"]["content"].strip()
-            except:
-                continue
-    raise Exception("Groq failed")
-
-async def _ai_generate(prompt: str, max_tokens: int = 8192) -> str:
-    if _google_keys:
-        try:
-            return await _google_generate(prompt, max_tokens)
-        except:
-            pass
-    if _groq_keys:
-        try:
-            return await _groq_generate(prompt, max_tokens)
-        except:
-            pass
-    raise Exception("All AI failed")
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# تحليل المحاضرة
-# ═══════════════════════════════════════════════════════════════════════════════
-
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     text = clean_text(text)
     if not text:
@@ -189,18 +185,41 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     
     preview = text[:4000]
     
-    teacher = {'medicine': 'طبيب', 'math': 'أستاذ رياضيات', 'physics': 'فيزيائي',
+    teacher = {'medicine': 'طبيب استشاري', 'math': 'أستاذ رياضيات', 'physics': 'فيزيائي',
                'chemistry': 'كيميائي', 'history': 'مؤرخ', 'biology': 'عالم أحياء',
-               'other': 'معلم'}.get(ltype, 'معلم')
+               'other': 'معلم خبير'}.get(ltype, 'معلم خبير')
     
-    dialect_inst = {"iraq": "بالعراقي", "egypt": "بالمصري", "syria": "بالشامي",
-                    "gulf": "بالخليجي", "msa": "بالفصحى"}.get(dialect, "بالفصحى")
+    dialect_inst = {"iraq": "باللهجة العراقية", "egypt": "باللهجة المصرية", "syria": "باللهجة الشامية",
+                    "gulf": "باللهجة الخليجية", "msa": "بالعربية الفصحى"}.get(dialect, "بالعربية الفصحى")
     
-    prompt = f"""أنت {teacher}. اشرح {dialect_inst}. اكتب 10-15 جملة لكل قسم.
-النص: {preview}
-الكلمات: {', '.join(keywords[:15])}
-أرجع JSON: {{"title": "عنوان", "sections": [{{"title": "", "keywords": ["","","",""], "narration": ""}}]}}"""
-    
+    prompt = f"""أنت {teacher}. اشرح {dialect_inst}.
+
+**تعليمات صارمة:**
+- اكتب شرحاً كاملاً ومتنوعاً (15-20 جملة) لكل قسم.
+- لا تكرر نفس الجملة أبداً.
+- كل جملة يجب أن تضيف معلومة جديدة.
+- فسر المصطلحات، أعط أمثلة، اربط الأفكار.
+- استخدم أسلوب المعلم الذي يشرح لطلابه.
+
+**النص الأصلي:**
+{preview}
+
+**الكلمات المفتاحية:** {', '.join(keywords[:15])}
+
+**المطلوب - {ns} أقسام:**
+
+أرجع JSON فقط:
+{{
+  "title": "عنوان المحاضرة",
+  "sections": [
+    {{
+      "title": "عنوان القسم",
+      "keywords": ["كلمة1", "كلمة2", "كلمة3", "كلمة4"],
+      "narration": "نص الشرح الكامل (15-20 جملة متنوعة)"
+    }}
+  ]
+}}"""
+
     try:
         content = await _ai_generate(prompt, 8192)
         content = re.sub(r'^```json\s*', '', content.strip())
@@ -208,7 +227,8 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         res = json.loads(content)
         title = clean_text(res.get("title", keywords[0] if keywords else "محاضرة"))
         ai_secs = res.get("sections", [])
-    except:
+    except Exception as e:
+        print(f"[AI] Fallback: {e}")
         title = keywords[0] if keywords else "محاضرة"
         ai_secs = []
     
@@ -223,11 +243,26 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
             idx = (i * 4) % len(keywords)
             kw = [keywords[(idx + j) % len(keywords)] for j in range(4)]
             st = kw[0] if kw else f"قسم {i+1}"
-            nar = f"نتعرف على {', '.join(kw[:3])}. " * 10
+            # شرح احتياطي احترافي
+            nar = f"نتعرف في هذا القسم على {', '.join(kw[:3])}. " \
+                  f"يعتبر {kw[0]} من المفاهيم الأساسية. " \
+                  f"نشرح تعريف {kw[0]} بالتفصيل. " \
+                  f"ننتقل إلى {kw[1]} ونوضح علاقته بـ {kw[0]}. " \
+                  f"نناقش أيضاً {kw[2]} وأهميته. " \
+                  f"نذكر أمثلة واقعية عن {kw[3]}. " \
+                  f"نختم بملخص سريع لأهم النقاط."
+            nar = nar * 3  # 18 جملة تقريباً
+        
         while len(kw) < 4:
             kw.append("مفهوم")
-        sections.append({"title": st, "keywords": kw[:4], "narration": nar,
-                        "duration_estimate": max(45, len(nar.split())//3), "_image_bytes": None})
+        
+        sections.append({
+            "title": st,
+            "keywords": kw[:4],
+            "narration": nar,
+            "duration_estimate": max(45, len(nar.split()) // 3),
+            "_image_bytes": None
+        })
     
     # توليد الصور
     for s in sections:
@@ -235,8 +270,13 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         if q:
             s["_image_bytes"] = await fetch_image_for_keyword(q, s["title"], ltype)
     
-    return {"lecture_type": ltype, "title": title, "sections": sections,
-            "summary": f"شرحنا: {', '.join(keywords[:8])}", "all_keywords": keywords}
+    return {
+        "lecture_type": ltype,
+        "title": title,
+        "sections": sections,
+        "summary": f"شرحنا: {', '.join(keywords[:8])}",
+        "all_keywords": keywords
+    }
 
 async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
     import PyPDF2
