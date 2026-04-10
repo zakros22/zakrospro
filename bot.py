@@ -644,18 +644,18 @@ async def _process_lecture(
             await context.bot.send_message(uid, "⛔ تم الإلغاء.", reply_markup=main_keyboard())
 
         except Exception as e:
-    update_video_request(req_id, "failed")
-    error_msg = str(e)[:200]
-    logger.error(f"Video generation failed for user {uid}: {e}", exc_info=True)
-    await _safe_edit(
-        prog_msg,
-        f"❌ *حدث خطأ أثناء المعالجة*\n\n`{error_msg}`\n\nلم يتم خصم محاولتك، حاول مرة أخرى.",
-    )
-    await context.bot.send_message(
-        uid,
-        "يمكنك المحاولة مجدداً أو التواصل مع الدعم.",
-        reply_markup=main_keyboard(),
-    )
+            update_video_request(req_id, "failed")
+            error_msg = str(e)[:200]
+            logger.error(f"Video generation failed for user {uid}: {e}", exc_info=True)
+            await _safe_edit(
+                prog_msg,
+                f"❌ *حدث خطأ أثناء المعالجة*\n\n`{error_msg}`\n\nلم يتم خصم محاولتك، حاول مرة أخرى.",
+            )
+            await context.bot.send_message(
+                uid,
+                "يمكنك المحاولة مجدداً أو التواصل مع الدعم.",
+                reply_markup=main_keyboard(),
+            )
 
         finally:
             _active_jobs.pop(uid, None)
