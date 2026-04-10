@@ -45,7 +45,6 @@ from ai_analyzer import (
     analyze_lecture,
     extract_full_text_from_pdf,
     fetch_image_for_keyword,
-    _detect_lecture_type,
 )
 from voice_generator import generate_sections_audio
 from video_creator import create_video_from_sections, estimate_encoding_seconds
@@ -98,34 +97,6 @@ LECTURE_TYPE_NAMES = {
     'computer': '💻 محاضرة حاسوب',
     'other': '📚 محاضرة تعليمية'
 }
-
-
-async def _run_or_cancel(uid: int, coro) -> object:
-    ev = _cancel_flags.get(uid)
-    if ev is None or ev.is_set():
-        raise asyncio.CancelledError("Already cancelled")
-
-    coro_task = asyncio.ensure_future(coro)
-    cancel_task = asyncio.ensure_future(ev.wait())
-    try:
-        done, pending = await asyncio.wait(
-            [coro_task, cancel_task],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for p in pending:
-            p.cancel()
-            try:
-                await p
-            except BaseException:
-                pass
-        if cancel_task in done:
-            coro_task.cancel()
-            raise asyncio.CancelledError("User cancelled")
-        return coro_task.result()
-    except asyncio.CancelledError:
-        coro_task.cancel()
-        raise
-
 
 DIALECT_KEYBOARD = InlineKeyboardMarkup([
     [
@@ -185,9 +156,7 @@ async def ensure_user(update: Update) -> dict | None:
                 try:
                     ref_user = get_user(ref_by)
                     name = ref_user.get("full_name", "صديق") if ref_user else "صديق"
-                    await update.effective_message.reply_text(
-                        f"✅ انضممت عبر رابط إحالة {name}!"
-                    )
+                    await update.effective_message.reply_text(f"✅ انضممت عبر رابط إحالة {name}!")
                 except Exception:
                     pass
     if user.get("is_banned"):
@@ -217,7 +186,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"👋 أهلاً *{name}*!\n\n"
-        "🎓 أنا *بوت المحاضرات الذكي* - أحوّل محاضرتك إلى فيديو تعليمي احترافي بأسلوب Osmosis!\n\n"
+        "🎓 أنا *بوت المحاضرات الذكي* - أحوّل محاضرتك إلى فيديو تعليمي احترافي بأسلول Osmosis!\n\n"
         "📥 *ما يمكنك إرساله:*\n"
         "• ملف PDF 📄\n"
         "• ملف نصي TXT 📃\n"
@@ -316,10 +285,7 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if msg.text:
         text = msg.text.strip()
         if text == "📤 رفع محاضرة":
-            await msg.reply_text(
-                "📤 أرسل ملف PDF أو اكتب نص المحاضرة مباشرة:",
-                reply_markup=ReplyKeyboardRemove(),
-            )
+            await msg.reply_text("📤 أرسل ملف PDF أو اكتب نص المحاضرة مباشرة:", reply_markup=ReplyKeyboardRemove())
             return
         if text == "📊 رصيدي":
             await my_balance(update, context)
@@ -345,10 +311,7 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text("⚠️ أرسل ملف PDF أو TXT فقط.")
             return
         await context.bot.send_chat_action(uid, "upload_document")
-        wait = await msg.reply_text(
-            f"📥 *تم استلام الملف!* جاري القراءة...\n📄 `{fname}`",
-            parse_mode="Markdown",
-        )
+        wait = await msg.reply_text(f"📥 *تم استلام الملف!* جاري القراءة...\n📄 `{fname}`", parse_mode="Markdown")
         try:
             file = await msg.document.get_file()
             raw = await file.download_as_bytearray()
@@ -367,13 +330,7 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lecture_text = msg.text.strip()
 
     elif msg.text and len(msg.text.strip()) < 200:
-        await msg.reply_text(
-            "⚠️ النص قصير جداً.\n\n"
-            "أرسل:\n"
-            "• ملف PDF 📄\n"
-            "• ملف TXT 📃\n"
-            "• أو نص المحاضرة مباشرة (200 حرف على الأقل)"
-        )
+        await msg.reply_text("⚠️ النص قصير جداً.\n\nأرسل:\n• ملف PDF 📄\n• ملف TXT 📃\n• أو نص المحاضرة مباشرة (200 حرف على الأقل)")
         return
 
     else:
@@ -395,16 +352,8 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     words = len(lecture_text.split())
-    
-    # تحديد نوع المحاضرة مبدئياً
-    detected_type = _detect_lecture_type(lecture_text)
-    type_name = LECTURE_TYPE_NAMES.get(detected_type, '📚 محاضرة تعليمية')
-    
     await msg.reply_text(
-        f"✅ *تم استلام المحاضرة!*\n\n"
-        f"📝 عدد الكلمات: {words:,}\n"
-        f"🔍 نوع المحتوى المكتشف: {type_name}\n\n"
-        "اختر لهجة الشرح:",
+        f"✅ *تم استلام المحاضرة!*\n\n📝 عدد الكلمات: {words:,}\n\nاختر لهجة الشرح:",
         parse_mode="Markdown",
         reply_markup=DIALECT_KEYBOARD,
     )
@@ -450,13 +399,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bot_info = await context.bot.get_me()
         ref_link = f"https://t.me/{bot_info.username}?start=ref_{uid}"
         await q.message.reply_text(
-            f"🔗 *رابط الإحالة الخاص بك*\n\n"
-            f"`{ref_link}`\n\n"
+            f"🔗 *رابط الإحالة الخاص بك*\n\n`{ref_link}`\n\n"
             f"👥 أصدقاء دعوتهم: *{stats['total_referrals']}*\n"
             f"⭐ نقاطك: *{stats['current_points']}*\n\n"
-            f"📌 *كيف يعمل؟*\n"
-            f"• شارك رابطك مع أصدقائك\n"
-            f"• لكل 10 أصدقاء يسجلون = محاولة مجانية لك 🎉",
+            f"📌 *كيف يعمل؟*\n• شارك رابطك مع أصدقائك\n• لكل 10 أصدقاء يسجلون = محاولة مجانية لك 🎉",
             parse_mode="Markdown",
         )
         return
@@ -477,25 +423,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         dial_name = DIALECT_NAMES.get(dialect, dialect)
-        text = state["text"]
-        detected_type = _detect_lecture_type(text)
-        type_name = LECTURE_TYPE_NAMES.get(detected_type, '📚 محاضرة تعليمية')
-        
         prog_msg = await q.edit_message_text(
-            f"🎬 *بدأت المعالجة!*\n"
-            f"📚 نوع المحاضرة: {type_name}\n"
-            f"🌍 اللهجة: {dial_name}\n\n"
-            f"{_pbar(0)} 0%\n"
-            f"🔍 جاري بدء التحليل...",
+            f"🎬 *بدأت المعالجة!*\n🌍 اللهجة: {dial_name}\n\n{_pbar(0)} 0%\n🔍 جاري بدء التحليل...",
             parse_mode="Markdown",
         )
 
+        text = state["text"]
         filename = state.get("filename", "lecture")
         user_states.pop(uid, None)
 
-        task = asyncio.create_task(
-            _process_lecture(uid, text, filename, dialect, prog_msg, context)
-        )
+        task = asyncio.create_task(_process_lecture(uid, text, filename, dialect, prog_msg, context))
         _active_tasks[uid] = task
         return
 
@@ -523,10 +460,7 @@ async def _process_lecture(
         elapsed = time.time() - t_start
         await _safe_edit(
             prog_msg,
-            f"⏳ *جاري المعالجة...*\n\n"
-            f"{_pbar(pct)} *{pct}%*\n"
-            f"{label}\n\n"
-            f"⏱️ الوقت: {_fmt_elapsed(elapsed)}",
+            f"⏳ *جاري المعالجة...*\n\n{_pbar(pct)} *{pct}%*\n{label}\n\n⏱️ الوقت: {_fmt_elapsed(elapsed)}",
             reply_markup=CANCEL_KB,
         )
 
@@ -535,141 +469,80 @@ async def _process_lecture(
             _check_cancelled()
 
             # ─────────────────────────────────────────────────────────────────
-            # المرحلة الأولى: التحليل العميق
+            # المرحلة 1: تحليل المحاضرة
             # ─────────────────────────────────────────────────────────────────
-            
-            detected_type = _detect_lecture_type(text)
-            type_name = LECTURE_TYPE_NAMES.get(detected_type, '📚 محاضرة تعليمية')
-            
-            analysis_steps = [
-                (3,  "🔍 جاري قراءة المحاضرة واستيعاب المحتوى..."),
-                (5,  f"📊 تحليل نوع المحتوى: {type_name}"),
-                (7,  "🧮 استخراج المفاهيم والمصطلحات الأساسية..."),
-                (9,  "📝 جاري كتابة المقدمة والعنوان الرئيسي..."),
-                (11, "🔤 استخراج الكلمات المفتاحية من كل قسم..."),
-                (13, "✍️ جاري كتابة النصوص للعرض على السبورة..."),
-                (15, "🎨 تصميم شرائح Osmosis التعليمية..."),
-                (17, "💡 إضافة الأمثلة التوضيحية..."),
-                (19, "🔗 ربط المفاهيم والعلاقات بينها..."),
-                (21, "📋 ترتيب المحتوى بشكل تعليمي منظم..."),
-                (23, "🎯 استخراج النقاط الرئيسية للملخص..."),
-                (25, "✅ اكتمل التحليل!"),
-            ]
-
-            for pct, label in analysis_steps:
-                await upd(pct, label)
-                await asyncio.sleep(2)
-
-            lecture_data = await _run_or_cancel(uid, analyze_lecture(text, dialect))
+            await upd(5, "🔍 جاري قراءة المحاضرة وتحليل المحتوى...")
+            lecture_data = await analyze_lecture(text, dialect)
 
             sections = lecture_data.get("sections", [])
             if not sections:
                 raise RuntimeError("لم يتم استخراج أي أقسام من المحاضرة")
             
-            lecture_type = lecture_data.get("lecture_type", detected_type)
+            lecture_type = lecture_data.get("lecture_type", "other")
             n_sec = len(sections)
             
-            await upd(28, f"✅ تم تحليل المحاضرة إلى {n_sec} أقسام تعليمية")
+            await upd(25, f"✅ تم تحليل المحاضرة إلى {n_sec} أقسام")
 
             # ─────────────────────────────────────────────────────────────────
-            # المرحلة الثانية: جلب الصور
+            # المرحلة 2: جلب الصور
             # ─────────────────────────────────────────────────────────────────
             _check_cancelled()
-            
+            await upd(30, "🖼️ جاري جلب الصور التوضيحية...")
+
+            _img_sem = asyncio.Semaphore(6)
             total_images = sum(len(s.get("keywords", [])) for s in sections)
             images_done = [0]
-            
-            _img_sem = asyncio.Semaphore(6)
-            
-            async def _fetch_one_section_images(section: dict):
+
+            async def _fetch_section_images(section: dict):
                 async with _img_sem:
                     keywords = section.get("keywords", [])[:4]
-                    kw_img_descs = section.get("keyword_images", [])
-                    img_search = section.get("image_search", "")
-
-                    tasks = [
-                        fetch_image_for_keyword(
-                            keyword=kw,
-                            section_title=section.get("title", ""),
-                            lecture_type=lecture_type,
-                            image_search_en=(
-                                kw_img_descs[i]
-                                if i < len(kw_img_descs) and kw_img_descs[i]
-                                else img_search or kw
-                            ),
-                        )
-                        for i, kw in enumerate(keywords)
-                    ]
-
-                    results = await asyncio.gather(*tasks, return_exceptions=True)
-                    section["_keyword_images"] = [
-                        r if not isinstance(r, Exception) else None for r in results
-                    ]
-                    section["_image_bytes"] = next(
-                        (r for r in results if not isinstance(r, Exception) and r),
-                        None,
-                    )
-                    images_done[0] += len(keywords)
+                    images = []
+                    for kw in keywords:
+                        try:
+                            img_bytes = await fetch_image_for_keyword(
+                                keyword=kw,
+                                section_title=section.get("title", ""),
+                                lecture_type=lecture_type,
+                                image_search_en=kw
+                            )
+                            images.append(img_bytes)
+                        except Exception as e:
+                            print(f"Failed to fetch image for {kw}: {e}")
+                            images.append(None)
+                        images_done[0] += 1
+                        
+                        pct = 30 + int((images_done[0] / max(total_images, 1)) * 15)
+                        await upd(pct, f"🖼️ جاري جلب الصور... ({images_done[0]}/{total_images})")
                     
-                    pct = 28 + int((images_done[0] / max(total_images, 1)) * 17)
-                    await upd(pct, f"🖼️ جاري جلب الصور التوضيحية... ({images_done[0]}/{total_images})")
+                    section["_keyword_images"] = images
+                    section["_image_bytes"] = images[0] if images else None
 
-            await _run_or_cancel(uid, asyncio.gather(*[_fetch_one_section_images(s) for s in sections]))
+            await asyncio.gather(*[_fetch_section_images(s) for s in sections])
             await upd(45, f"✅ تم جلب {total_images} صورة توضيحية")
 
             # ─────────────────────────────────────────────────────────────────
-            # المرحلة الثالثة: توليد الصوت
+            # المرحلة 3: توليد الصوت
             # ─────────────────────────────────────────────────────────────────
             _check_cancelled()
+            await upd(50, "🎤 جاري توليد الصوت...")
             
-            voice_steps = [
-                (48, "🎤 الاتصال بخدمة الصوت..."),
-                (52, "🎙️ جاري توليد الصوت للقسم الأول..."),
-                (58, "🎙️ جاري توليد الصوت للأقسام المتبقية..."),
-                (65, "🎵 معالجة ملفات الصوت..."),
-                (70, "✅ اكتمل توليد الصوت!"),
-            ]
-            
-            for pct, label in voice_steps:
-                await upd(pct, label)
-                await asyncio.sleep(2)
-                
-            voice_res = await _run_or_cancel(uid, generate_sections_audio(sections, dialect))
+            voice_res = await generate_sections_audio(sections, dialect)
             audio_results = voice_res["results"]
             
-            await upd(72, f"✅ تم توليد الصوت لـ {len(audio_results)} أقسام")
+            await upd(70, f"✅ تم توليد الصوت لـ {len(audio_results)} أقسام")
 
             # ─────────────────────────────────────────────────────────────────
-            # المرحلة الرابعة: إنتاج الفيديو
+            # المرحلة 4: إنتاج الفيديو
             # ─────────────────────────────────────────────────────────────────
             _check_cancelled()
-            
-            video_steps = [
-                (74, "🎬 بدء إنتاج الفيديو..."),
-                (77, "🎨 إنشاء شرائح المقدمة بأسلوب Osmosis..."),
-                (80, "📝 بناء شرائح الأقسام وإضافة النصوص..."),
-                (84, "🔤 إضافة الكلمات المفتاحية على السبورة..."),
-                (88, "🖼️ وضع الصور التوضيحية في أماكنها..."),
-                (92, "🎬 تشفير الفيديو النهائي..."),
-                (96, "✅ اكتمل الفيديو!"),
-            ]
-            
-            for pct, label in video_steps:
-                await upd(pct, label)
-                await asyncio.sleep(2)
-            
-            total_audio = sum(r.get("duration", 0) for r in audio_results)
-            enc_est = estimate_encoding_seconds(total_audio)
+            await upd(75, "🎬 جاري إنتاج الفيديو...")
 
-            fd, video_path = tempfile.mkstemp(
-                prefix=f"lecture_{uid}_", suffix=".mp4", dir=TEMP_DIR
-            )
+            fd, video_path = tempfile.mkstemp(prefix=f"lecture_{uid}_", suffix=".mp4", dir=TEMP_DIR)
             os.close(fd)
 
             async def _video_progress(elapsed_enc: float, est_enc: float):
-                frac = min(elapsed_enc / max(est_enc, 1), 0.95)
-                pct = int(80 + frac * 16)
-                await upd(pct, "🎬 جاري تشفير الفيديو...")
+                pct = int(75 + (elapsed_enc / max(est_enc, 1)) * 20)
+                await upd(min(pct, 95), "🎬 جاري تشفير الفيديو...")
 
             total_video_secs = await create_video_from_sections(
                 sections=sections,
@@ -683,7 +556,7 @@ async def _process_lecture(
             await upd(99, "✅ اكتمل الفيديو، جاري الإرسال...")
 
             # ─────────────────────────────────────────────────────────────────
-            # خصم المحاولة وإرسال الفيديو
+            # إرسال الفيديو
             # ─────────────────────────────────────────────────────────────────
             decrement_attempts(uid)
             increment_total_videos(uid)
@@ -745,11 +618,7 @@ async def _process_lecture(
                 prog_msg,
                 f"❌ *حدث خطأ أثناء المعالجة*\n\n`{error_msg}`\n\nلم يتم خصم محاولتك، حاول مرة أخرى.",
             )
-            await context.bot.send_message(
-                uid,
-                "يمكنك المحاولة مجدداً أو التواصل مع الدعم.",
-                reply_markup=main_keyboard(),
-            )
+            await context.bot.send_message(uid, "يمكنك المحاولة مجدداً أو التواصل مع الدعم.", reply_markup=main_keyboard())
 
         finally:
             _active_jobs.pop(uid, None)
@@ -789,12 +658,7 @@ async def main():
     app.add_handler(PreCheckoutQueryHandler(handle_pre_checkout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, handle_successful_payment))
     app.add_handler(CallbackQueryHandler(callback_handler))
-    app.add_handler(
-        MessageHandler(
-            (filters.TEXT | filters.Document.ALL) & ~filters.COMMAND,
-            receive_content,
-        )
-    )
+    app.add_handler(MessageHandler((filters.TEXT | filters.Document.ALL) & ~filters.COMMAND, receive_content))
 
     logger.info("✅ Bot ready")
 
