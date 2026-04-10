@@ -1,502 +1,285 @@
-import json
-import re
-import io
 import asyncio
-import aiohttp
+import io
 import os
-from concurrent.futures import ThreadPoolExecutor
-from PIL import Image as PILImage, ImageDraw, ImageFont
-from google import genai
-from google.genai import types as genai_types
-from config import GOOGLE_API_KEY, GOOGLE_API_KEYS, GROQ_API_KEYS, OPENROUTER_API_KEYS, OPENAI_API_KEY
+import tempfile
+import subprocess
+from PIL import Image, ImageDraw, ImageFont
 
-# ── Thread Pool للعمليات الثقيلة ─────────────────────────────────────────────
-_thread_pool = ThreadPoolExecutor(max_workers=4)
+W, H = 854, 480
+FONT_AR = "/app/fonts/Amiri-Regular.ttf"
+FONT_AR_BOLD = "/app/fonts/Amiri-Bold.ttf"
 
-# ── Google API key pool ────────────────────────────────────────────────────────
-_key_pool: list[str] = list(GOOGLE_API_KEYS) if GOOGLE_API_KEYS else ([GOOGLE_API_KEY] if GOOGLE_API_KEY else [])
-_groq_pool: list[str] = list(GROQ_API_KEYS) if GROQ_API_KEYS else []
-_or_pool: list[str] = list(OPENROUTER_API_KEYS) if OPENROUTER_API_KEYS else []
-_key_clients: dict[str, object] = {}
-_current_key_idx: int = 0
-
-
-def _get_client(key: str | None = None):
-    if not _key_pool:
-        raise RuntimeError("GOOGLE_API_KEY غير مضبوط")
-    use_key = key or _key_pool[_current_key_idx % len(_key_pool)]
-    if use_key not in _key_clients:
-        _key_clients[use_key] = genai.Client(api_key=use_key)
-    return _key_clients[use_key]
-
-
-class QuotaExhaustedError(Exception):
-    pass
-
-
-_GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it"]
-_OR_MODELS = ["openai/gpt-oss-120b:free", "nvidia/nemotron-3-super-120b-a12b:free", "openai/gpt-oss-20b:free"]
-
-
-async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
-    if not _groq_pool:
-        raise QuotaExhaustedError("لا يوجد GROQ_API_KEY")
-    for groq_key in _groq_pool:
-        for model in _GROQ_MODELS:
-            try:
-                headers = {"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"}
-                payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": min(max_tokens, 8192), "temperature": 0.3}
-                async with aiohttp.ClientSession() as s:
-                    async with s.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=60)) as r:
-                        if r.status == 200:
-                            data = await r.json()
-                            print(f"✅ Groq: {model}")
-                            return data["choices"][0]["message"]["content"].strip()
-            except:
-                continue
-    raise QuotaExhaustedError("نفدت حصة Groq")
-
-
-async def _generate_with_openrouter(prompt: str, max_tokens: int = 8192) -> str:
-    if not _or_pool:
-        raise QuotaExhaustedError("لا يوجد OPENROUTER_API_KEY")
-    for or_key in _or_pool:
-        for model in _OR_MODELS:
-            try:
-                headers = {"Authorization": f"Bearer {or_key}", "Content-Type": "application/json", "HTTP-Referer": "https://replit.com", "X-Title": "Lecture Bot"}
-                payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": min(max_tokens, 8192), "temperature": 0.3}
-                async with aiohttp.ClientSession() as s:
-                    async with s.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=90)) as r:
-                        if r.status == 200:
-                            data = await r.json()
-                            content = data["choices"][0]["message"]["content"]
-                            if content:
-                                print(f"✅ OpenRouter: {model}")
-                                return content.strip()
-            except:
-                continue
-    raise QuotaExhaustedError("نفدت حصة OpenRouter")
-
-
-async def _generate_with_rotation(prompt: str, max_output_tokens: int = 8192) -> str:
-    global _current_key_idx
-    gemini_models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
-    
-    # تجربة Gemini أولاً
-    for i in range(len(_key_pool)):
-        key_idx = (_current_key_idx + i) % len(_key_pool)
-        key = _key_pool[key_idx]
-        client = _get_client(key)
-        for model in gemini_models:
-            try:
-                response = await asyncio.to_thread(
-                    client.models.generate_content, model=model, contents=prompt,
-                    config=genai_types.GenerateContentConfig(temperature=0.3, max_output_tokens=max_output_tokens),
-                )
-                _current_key_idx = key_idx
-                print(f"✅ Gemini: {model}")
-                return response.text.strip()
-            except Exception as e:
-                err = str(e)
-                if "429" in err or "quota" in err.lower() or "exhausted" in err.lower():
-                    print(f"⚠️ Gemini {model} quota exhausted, trying next...")
-                    continue
-                else:
-                    print(f"⚠️ Gemini {model} error: {err[:50]}")
-                    continue
-    
-    # تجربة Groq
-    if _groq_pool:
-        print("🔄 Trying Groq...")
-        try:
-            return await _generate_with_groq(prompt, max_output_tokens)
-        except QuotaExhaustedError:
-            pass
-    
-    # تجربة OpenRouter
-    if _or_pool:
-        print("🔄 Trying OpenRouter...")
-        try:
-            return await _generate_with_openrouter(prompt, max_output_tokens)
-        except QuotaExhaustedError:
-            pass
-    
-    raise QuotaExhaustedError("QUOTA_EXHAUSTED: جميع المفاتيح منتهية")
-
-
-def _compute_lecture_scale(text: str) -> tuple:
-    """حساب عدد الأقسام بناءً على طول النص"""
-    word_count = len(text.split())
-    if word_count < 300:
-        return 3, "6-8", 3000
-    elif word_count < 800:
-        return 4, "8-10", 5000
-    elif word_count < 1500:
-        return 5, "10-12", 6000
-    elif word_count < 3000:
-        return 6, "12-15", 7000
-    else:
-        return 7, "15-18", 8000
-
-
-async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
-    """تحليل المحاضرة واستخراج الأقسام"""
-    
-    dialect_instructions = {
-        "iraq": "استخدم اللهجة العراقية في الشرح، مع كلمات عراقية أصيلة مثل (هواية، گلت، يعني، بس، هسا، چان، عگب)",
-        "egypt": "استخدم اللهجة المصرية في الشرح، مع كلمات مصرية مثل (أوي، معلش، يعني، بس، كده، إيه، مش)",
-        "syria": "استخدم اللهجة الشامية في الشرح، مع كلمات شامية مثل (هلق، شو، كتير، منيح، هيك، شي، عنجد)",
-        "gulf": "استخدم اللهجة الخليجية في الشرح، مع كلمات خليجية مثل (زين، وايد، عاد، هاذي، أبشر، يمعود)",
-        "msa": "استخدم العربية الفصحى الواضحة والمبسطة",
-        "english": "Use clear, simple English. Explain like a teacher to students.",
-        "british": "Use British English with a professional, clear academic tone."
-    }
-
-    instruction = dialect_instructions.get(dialect, dialect_instructions["msa"])
-    num_sections, narration_sentences, max_tokens = _compute_lecture_scale(text)
-    
-    # تقليل النص المرسل للتحليل لتسريع العملية
-    text_limit = min(len(text), 5000)
-    is_english = dialect in ("english", "british")
-
-    if is_english:
-        summary_hint = "A clear, concise summary (4-5 sentences)"
-        key_points_hint = '["Key point 1", "Key point 2", "Key point 3", "Key point 4"]'
-        title_hint = "Lecture title"
-        section_title_hint = "Section title"
-        content_hint = f"Simplified section content ({narration_sentences} sentences)"
-        keywords_hint = '["keyword1", "keyword2", "keyword3", "keyword4"]'
-        narration_hint = f"Full narration ({narration_sentences} sentences)"
-        lang_note = "Write ALL text in English."
-    else:
-        summary_hint = "ملخص المحاضرة بأسلوب مبسط (4-5 جمل)"
-        key_points_hint = '["نقطة رئيسية 1", "نقطة رئيسية 2", "نقطة رئيسية 3", "نقطة رئيسية 4"]'
-        title_hint = "عنوان المحاضرة"
-        section_title_hint = "عنوان القسم"
-        content_hint = f"محتوى القسم المبسط ({narration_sentences} جمل)"
-        keywords_hint = '["مصطلح 1", "مصطلح 2", "مصطلح 3", "مصطلح 4"]'
-        narration_hint = f"نص الشرح الكامل باللهجة المطلوبة ({narration_sentences} جمل)"
-        lang_note = "النص يجب أن يكون باللهجة المطلوبة"
-
-    prompt = f"""أنت معلم خبير في تبسيط المحاضرات.
-
-{instruction}
-
-المحاضرة:
----
-{text[:text_limit]}
----
-
-أرجع JSON فقط بالتنسيق التالي. {num_sections} أقسام بالضبط:
-
-{{
-  "lecture_type": "medicine/science/math/literature/history/computer/business/other",
-  "title": "{title_hint}",
-  "sections": [
-    {{
-      "title": "{section_title_hint}",
-      "content": "{content_hint}",
-      "keywords": {keywords_hint},
-      "keyword_images": [
-        "cartoon illustration description for keyword1 - 3-5 English words",
-        "cartoon illustration description for keyword2 - 3-5 English words",
-        "cartoon illustration description for keyword3 - 3-5 English words",
-        "cartoon illustration description for keyword4 - 3-5 English words"
-      ],
-      "narration": "{narration_hint}",
-      "duration_estimate": 45
-    }}
-  ],
-  "summary": "{summary_hint}",
-  "key_points": {key_points_hint}
-}}
-
-مهم جداً:
-- {lang_note}
-- {num_sections} أقسام بالضبط
-- keywords: 4 مصطلحات
-- keyword_images: وصف إنجليزي لصورة كرتونية (3-5 كلمات)
-- أرجع JSON فقط بدون أي نص إضافي أو ```json
-"""
-
-    content = await _generate_with_rotation(prompt, max_tokens)
-    content = content.strip()
-    
-    # تنظيف JSON
-    content = re.sub(r'^```json\s*', '', content)
-    content = re.sub(r'\s*```$', '', content)
-    content = content.strip()
-
+def _get_font(size, bold=False, arabic=True):
+    path = FONT_AR_BOLD if bold else FONT_AR
     try:
-        result = json.loads(content)
-        # التأكد من عدد الأقسام
-        if len(result.get("sections", [])) != num_sections:
-            # تعديل عدد الأقسام إذا لزم
-            sections = result.get("sections", [])
-            if len(sections) > num_sections:
-                result["sections"] = sections[:num_sections]
-        return result
-    except json.JSONDecodeError:
-        # محاولة استخراج JSON من النص
-        json_match = re.search(r'\{[\s\S]*\}', content)
-        if json_match:
-            try:
-                return json.loads(json_match.group())
-            except:
-                pass
-        raise ValueError(f"Failed to parse JSON: {content[:300]}")
+        return ImageFont.truetype(path, size) if os.path.exists(path) else ImageFont.load_default()
+    except:
+        return ImageFont.load_default()
 
-
-# ── استخراج النص من PDF (متزامن - للاستخدام في ThreadPool) ───────────────────
-def extract_full_text_from_pdf_sync(pdf_bytes: bytes) -> str:
-    """استخراج النص من PDF - نسخة متزامنة"""
+def _prepare_arabic(text):
     try:
-        import PyPDF2
-        reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
-        texts = []
-        # حد أقصى 50 صفحة للسرعة
-        for page in reader.pages[:50]:
-            try:
-                txt = page.extract_text()
-                if txt and txt.strip():
-                    texts.append(txt.strip())
-            except Exception:
-                pass
-        return "\n\n".join(texts)
-    except Exception as e:
-        print(f"PDF extraction error: {e}")
-        return ""
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        return get_display(arabic_reshaper.reshape(text))
+    except:
+        return text
 
-
-async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
-    """استخراج النص من PDF - غير متزامن"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(_thread_pool, extract_full_text_from_pdf_sync, pdf_bytes)
-
-
-async def extract_text_from_pdf(pdf_bytes: bytes) -> str:
-    """نسخة مختصرة للتوافق"""
-    return await extract_full_text_from_pdf(pdf_bytes)
-
-
-# ── إنشاء صورة كرتونية بديلة ─────────────────────────────────────────────────
-def _create_cartoon_placeholder_sync(keyword: str, section_title: str, lecture_type: str) -> bytes:
-    """إنشاء صورة كرتونية بديلة - نسخة متزامنة"""
-    W, H = 800, 500
-    colors = {
-        "medicine": (255, 107, 107), "science": (78, 205, 196),
-        "math": (255, 209, 102), "physics": (100, 180, 255),
-        "chemistry": (170, 120, 255), "biology": (100, 220, 150),
-        "history": (255, 180, 80), "computer": (80, 200, 220),
-        "business": (255, 200, 100), "literature": (220, 120, 200),
-        "other": (150, 150, 220),
-    }
-    color = colors.get(lecture_type, colors["other"])
-    
-    img = PILImage.new("RGB", (W, H), (250, 252, 255))
+def _create_intro(title, sections, duration):
+    """شريحة المقدمة"""
+    img = Image.new("RGB", (W, H), (20, 30, 50))
     draw = ImageDraw.Draw(img)
     
-    # خلفية متدرجة
-    for y in range(H):
-        t = y / H
-        r = int(255 * (1 - t) + color[0] * 0.15 * t)
-        g = int(255 * (1 - t) + color[1] * 0.15 * t)
-        b = int(255 * (1 - t) + color[2] * 0.15 * t)
-        draw.line([(0, y), (W, y)], fill=(r, g, b))
+    # هيدر
+    draw.rectangle([(0, 0), (W, 50)], fill=(15, 25, 45))
+    font = _get_font(20, bold=True)
+    draw.text((20, 12), "🎓 ZAKROS PRO", fill=(255, 200, 50), font=font)
     
-    # إطار
-    draw.rounded_rectangle([(15, 15), (W-15, H-15)], radius=20, outline=color, width=4)
+    # عنوان
+    title_ar = _prepare_arabic(title)
+    font_title = _get_font(28, bold=True)
+    bbox = draw.textbbox((0, 0), title_ar, font=font_title)
+    tw = bbox[2] - bbox[0]
+    draw.text(((W-tw)//2, 70), title_ar, fill=(255, 220, 80), font=font_title)
     
-    # أيقونة
-    icons = {"medicine": "🩺", "science": "🔬", "math": "📐", "physics": "⚡",
-             "chemistry": "🧪", "biology": "🧬", "history": "🏛️", "computer": "💻",
-             "business": "💼", "literature": "📖", "other": "📚"}
-    icon = icons.get(lecture_type, "📚")
+    # الأقسام
+    y = 130
+    font_sec = _get_font(16)
+    for i, s in enumerate(sections[:8]):
+        sec_title = _prepare_arabic(s.get("title", f"القسم {i+1}")[:35])
+        color = [(255,107,107), (78,205,196), (255,209,102), (170,120,255)][i%4]
+        draw.ellipse([30, y+5, 50, y+25], fill=color)
+        draw.text((60, y+8), f"{i+1}.", fill=(255,255,255), font=font_sec)
+        draw.text((85, y+8), sec_title, fill=(220,230,255), font=font_sec)
+        y += 35
     
-    try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 60)
-    except:
-        font = ImageFont.load_default()
-    
-    bbox = draw.textbbox((0, 0), icon, font=font)
-    iw = bbox[2] - bbox[0]
-    draw.text(((W - iw)//2, 80), icon, fill=color, font=font)
-    
-    # الكلمة المفتاحية
-    try:
-        import arabic_reshaper
-        from bidi.algorithm import get_display
-        kw = get_display(arabic_reshaper.reshape(keyword[:25]))
-    except:
-        kw = keyword[:25]
-    
-    try:
-        font_kw = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 32)
-    except:
-        font_kw = ImageFont.load_default()
-    
-    bbox = draw.textbbox((0, 0), kw, font=font_kw)
-    kw_w = bbox[2] - bbox[0]
-    draw.text(((W - kw_w)//2 + 2, 180), kw, fill=(0, 0, 0, 100), font=font_kw)
-    draw.text(((W - kw_w)//2, 178), kw, fill=(40, 45, 60), font=font_kw)
-    
-    # عنوان القسم
-    try:
-        import arabic_reshaper
-        from bidi.algorithm import get_display
-        st = get_display(arabic_reshaper.reshape(section_title[:35]))
-    except:
-        st = section_title[:35]
-    
-    try:
-        font_st = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
-    except:
-        font_st = ImageFont.load_default()
-    
-    bbox = draw.textbbox((0, 0), st, font=font_st)
-    sw = bbox[2] - bbox[0]
-    draw.text(((W - sw)//2, 260), st, fill=(100, 100, 120), font=font_st)
-    
-    # خط زخرفي
-    draw.rectangle([(W//4, 300), (W*3//4, 304)], fill=color)
-    
-    # نص "صورة تعليمية"
-    hint = "🎨 صورة تعليمية"
-    try:
-        import arabic_reshaper
-        from bidi.algorithm import get_display
-        hint = get_display(arabic_reshaper.reshape(hint))
-    except:
-        pass
-    
-    bbox = draw.textbbox((0, 0), hint, font=font_st)
-    hw = bbox[2] - bbox[0]
-    draw.text(((W - hw)//2, 350), hint, fill=(150, 150, 170), font=font_st)
+    # مدة
+    mins, secs = int(duration//60), int(duration%60)
+    dur_text = _prepare_arabic(f"⏱️ المدة: {mins}:{secs:02d}")
+    draw.text((W-150, H-30), dur_text, fill=(150,200,150), font=_get_font(14))
     
     buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=85)
+    img.save(buf, "JPEG", quality=90)
     return buf.getvalue()
 
-
-async def _create_cartoon_placeholder(keyword: str, section_title: str, lecture_type: str) -> bytes:
-    """إنشاء صورة كرتونية بديلة - غير متزامن"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(_thread_pool, _create_cartoon_placeholder_sync, keyword, section_title, lecture_type)
-
-
-# ── جلب الصورة مع نظام بدائل متعدد ───────────────────────────────────────────
-async def fetch_image_for_keyword(
-    keyword: str,
-    section_title: str,
-    lecture_type: str,
-    image_search_en: str = "",
-) -> bytes:
-    """جلب صورة للكلمة المفتاحية - مع نظام بدائل متعدد"""
+def _create_section_card(section, idx, total):
+    """بطاقة القسم"""
+    img = Image.new("RGB", (W, H), (25, 35, 55))
+    draw = ImageDraw.Draw(img)
     
-    subject = (image_search_en or keyword).strip()
+    color = [(255,107,107), (78,205,196), (255,209,102), (170,120,255)][idx%4]
+    draw.rounded_rectangle([(15, 15), (W-15, H-15)], radius=15, outline=(255,200,50), width=3)
     
-    # 1. Pollinations.ai (سريع ومجاني)
-    try:
-        import urllib.parse, random
-        prompt = f"educational cartoon illustration, {subject}, simple colorful"
-        encoded = urllib.parse.quote(prompt[:200])
-        url = f"https://image.pollinations.ai/prompt/{encoded}?width=800&height=500&seed={random.randint(1,99999)}&model=flux"
+    # رقم القسم
+    num = str(idx+1)
+    font_num = _get_font(80, bold=True)
+    bbox = draw.textbbox((0, 0), num, font=font_num)
+    nw = bbox[2] - bbox[0]
+    draw.text(((W-nw)//2, H//2-60), num, fill=color, font=font_num)
+    
+    # عنوان
+    title = _prepare_arabic(section.get("title", f"القسم {idx+1}"))
+    font_title = _get_font(24, bold=True)
+    bbox = draw.textbbox((0, 0), title, font=font_title)
+    tw = bbox[2] - bbox[0]
+    draw.text(((W-tw)//2, H//2+20), title, fill=(255,220,100), font=font_title)
+    
+    # تقدم
+    prog = f"{idx+1}/{total}"
+    draw.text((W-60, H-30), prog, fill=(150,160,180), font=_get_font(14))
+    
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=90)
+    return buf.getvalue()
+
+def _create_content_slide(image_bytes, keyword, all_keywords, current_idx, section_title, section_idx):
+    """شريحة المحتوى"""
+    img = Image.new("RGB", (W, H), (20, 25, 45))
+    draw = ImageDraw.Draw(img)
+    
+    color = [(255,107,107), (78,205,196), (255,209,102), (170,120,255)][section_idx%4]
+    
+    # هيدر
+    draw.rectangle([(0, 0), (W, 40)], fill=(15, 20, 40))
+    draw.rectangle([(0, 38), (W, 40)], fill=color)
+    title = _prepare_arabic(section_title[:40])
+    font_title = _get_font(15, bold=True)
+    bbox = draw.textbbox((0, 0), title, font=font_title)
+    tw = bbox[2] - bbox[0]
+    draw.text(((W-tw)//2, 10), title, fill=(255,255,255), font=font_title)
+    
+    # صورة
+    if image_bytes:
+        try:
+            pil_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            pil_img.thumbnail((W-80, H-150), Image.LANCZOS)
+            iw, ih = pil_img.size
+            px, py = (W-iw)//2, 50
+            # إطار أبيض
+            frame = Image.new("RGB", (iw+10, ih+10), (255,255,255))
+            frame.paste(pil_img, (5, 5))
+            img.paste(frame, (px-5, py-5))
+        except:
+            pass
+    
+    # كلمات مفتاحية
+    kw_y = H - 60
+    spacing = W // max(len(all_keywords), 1)
+    for i, kw in enumerate(all_keywords[:5]):
+        kw_ar = _prepare_arabic(kw[:15])
+        x = 20 + i * min(spacing, 140)
+        font_kw = _get_font(12, bold=(i==current_idx))
+        if i == current_idx:
+            bbox = draw.textbbox((0, 0), kw_ar, font=font_kw)
+            kw_w = bbox[2] - bbox[0]
+            draw.rounded_rectangle([(x-5, kw_y-2), (x+kw_w+8, kw_y+18)], radius=4, fill=color)
+            draw.text((x, kw_y), kw_ar, fill=(255,255,255), font=font_kw)
+        elif i < current_idx:
+            draw.text((x, kw_y+2), "✓ " + kw_ar, fill=(100,200,100), font=font_kw)
+        else:
+            draw.text((x, kw_y+2), "○ " + kw_ar, fill=(140,150,170), font=font_kw)
+    
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=90)
+    return buf.getvalue()
+
+def _create_summary(data, sections):
+    """شريحة الملخص"""
+    img = Image.new("RGB", (W, H), (20, 30, 50))
+    draw = ImageDraw.Draw(img)
+    
+    draw.rectangle([(0, 0), (W, 45)], fill=(25, 35, 55))
+    draw.rectangle([(0, 43), (W, 45)], fill=(255, 200, 50))
+    
+    title = _prepare_arabic("📋 ملخص المحاضرة")
+    font = _get_font(22, bold=True)
+    bbox = draw.textbbox((0, 0), title, font=font)
+    tw = bbox[2] - bbox[0]
+    draw.text(((W-tw)//2, 10), title, fill=(255,220,80), font=font)
+    
+    # ملخص
+    y = 60
+    summary = _prepare_arabic(data.get("summary", "")[:300])
+    font_sum = _get_font(13)
+    words = summary.split()
+    line = ""
+    for w in words:
+        if len(line + w) < 50:
+            line += w + " "
+        else:
+            draw.text((20, y), line, fill=(220,230,255), font=font_sum)
+            y += 22
+            line = w + " "
+    if line:
+        draw.text((20, y), line, fill=(220,230,255), font=font_sum)
+    
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=90)
+    return buf.getvalue()
+
+def _encode_segment(img_bytes, duration, audio_bytes, audio_start, out_path):
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+        f.write(img_bytes)
+        img_path = f.name
+    
+    audio_path = None
+    if audio_bytes:
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(audio_bytes)
+            audio_path = f.name
+    
+    dur = f"{duration:.3f}"
+    
+    if audio_path:
+        cmd = [
+            "ffmpeg", "-y", "-loop", "1", "-t", dur, "-i", img_path,
+            "-ss", f"{audio_start:.3f}", "-t", dur, "-i", audio_path,
+            "-vf", "scale=854:480", "-c:v", "libx264", "-preset", "ultrafast",
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k",
+            "-shortest", out_path
+        ]
+    else:
+        cmd = [
+            "ffmpeg", "-y", "-loop", "1", "-t", dur, "-i", img_path,
+            "-vf", "scale=854:480", "-c:v", "libx264", "-preset", "ultrafast",
+            "-pix_fmt", "yuv420p", out_path
+        ]
+    
+    subprocess.run(cmd, capture_output=True, check=True)
+    
+    os.unlink(img_path)
+    if audio_path:
+        os.unlink(audio_path)
+
+def _concat(segments, output):
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+        for s in segments:
+            f.write(f"file '{s}'\n")
+        list_path = f.name
+    
+    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", output], check=True)
+    os.unlink(list_path)
+
+async def create_video(sections, audio_results, data, output_path, dialect):
+    segments = []
+    total_dur = 0
+    is_arabic = dialect not in ("english", "british")
+    
+    # 1. مقدمة
+    total_audio = sum(r["duration"] for r in audio_results)
+    intro_dur = min(12, max(6, len(sections) * 1.5))
+    intro_bytes = _create_intro(data.get("title", "المحاضرة"), sections, total_audio + intro_dur + 8)
+    
+    seg_paths = []
+    seg = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    seg_paths.append(seg.name)
+    seg.close()
+    _encode_segment(intro_bytes, intro_dur, None, 0, seg.name)
+    total_dur += intro_dur
+    
+    # 2. الأقسام
+    for i, (sec, aud) in enumerate(zip(sections, audio_results)):
+        # بطاقة القسم
+        card_bytes = _create_section_card(sec, i, len(sections))
+        seg = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+        seg_paths.append(seg.name)
+        seg.close()
+        _encode_segment(card_bytes, 2.5, None, 0, seg.name)
+        total_dur += 2.5
         
-        async with aiohttp.ClientSession() as s:
-            async with s.get(url, timeout=aiohttp.ClientTimeout(total=8)) as r:
-                if r.status == 200:
-                    data = await r.read()
-                    if len(data) > 3000:
-                        print(f"✅ Pollinations: {subject[:30]}")
-                        return data
-    except Exception:
-        pass
-    
-    # 2. DALL-E (إذا وجد مفتاح)
-    if OPENAI_API_KEY:
-        try:
-            import base64
-            prompt = f"cartoon educational illustration, {subject}, simple style, white background"
-            payload = {"model": "dall-e-3", "prompt": prompt, "size": "1024x1024", "n": 1, "response_format": "b64_json"}
-            headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+        # شرائح المحتوى
+        keywords = sec.get("keywords", ["القسم"])
+        images = sec.get("_images", [])
+        dur = aud["duration"]
+        kw_dur = dur / len(keywords)
+        
+        for j, kw in enumerate(keywords):
+            img = images[j] if j < len(images) else None
+            if not img:
+                # صورة بديلة
+                img = _create_content_slide(None, kw, keywords, j, sec.get("title", ""), i)
+            slide_bytes = _create_content_slide(img, kw, keywords, j, sec.get("title", ""), i)
             
-            async with aiohttp.ClientSession() as s:
-                async with s.post("https://api.openai.com/v1/images/generations", json=payload, headers=headers, timeout=25) as r:
-                    if r.status == 200:
-                        data = await r.json()
-                        b64 = data["data"][0].get("b64_json", "")
-                        if b64:
-                            print(f"✅ DALL-E: {subject[:30]}")
-                            return base64.b64decode(b64)
-        except Exception:
-            pass
+            seg = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+            seg_paths.append(seg.name)
+            seg.close()
+            _encode_segment(slide_bytes, kw_dur, aud["audio"], j * kw_dur, seg.name)
+            total_dur += kw_dur
     
-    # 3. Pexels
-    pexels_key = os.getenv("PEXELS_API_KEY", "")
-    if pexels_key:
+    # 3. ملخص
+    summary_bytes = _create_summary(data, sections)
+    seg = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    seg_paths.append(seg.name)
+    seg.close()
+    _encode_segment(summary_bytes, 8, None, 0, seg.name)
+    total_dur += 8
+    
+    # دمج
+    _concat(seg_paths, output_path)
+    
+    for p in seg_paths:
         try:
-            import urllib.parse
-            q = urllib.parse.quote(f"{subject}")
-            headers = {"Authorization": pexels_key}
-            async with aiohttp.ClientSession() as s:
-                async with s.get(f"https://api.pexels.com/v1/search?query={q}&per_page=3", headers=headers, timeout=10) as r:
-                    if r.status == 200:
-                        data = await r.json()
-                        for photo in data.get("photos", []):
-                            img_url = photo["src"].get("medium")
-                            if img_url:
-                                async with s.get(img_url, timeout=10) as ir:
-                                    if ir.status == 200:
-                                        print(f"✅ Pexels: {subject[:30]}")
-                                        return await ir.read()
-        except Exception:
+            os.unlink(p)
+        except:
             pass
     
-    # 4. صورة كرتونية بديلة
-    print(f"🎨 Cartoon placeholder: {subject[:30]}")
-    return await _create_cartoon_placeholder(keyword, section_title, lecture_type)
-
-
-# ── دوال مساعدة للصور ────────────────────────────────────────────────────────
-async def generate_educational_image(prompt: str, lecture_type: str, keywords: list = None, image_search: str = None, image_search_fallbacks: list = None) -> bytes:
-    """توليد صورة تعليمية - للتوافق"""
-    keyword = keywords[0] if keywords else prompt[:30]
-    return await fetch_image_for_keyword(keyword, "", lecture_type, image_search or prompt)
-
-
-def _is_safe_url(url: str) -> bool:
-    """التحقق من أمان الرابط"""
-    try:
-        from urllib.parse import urlparse
-        parsed = urlparse(url)
-        return parsed.scheme in ('http', 'https')
-    except:
-        return False
-
-
-async def extract_text_from_url(url: str) -> str:
-    """استخراج النص من رابط"""
-    if not _is_safe_url(url):
-        raise ValueError("رابط غير آمن")
-    try:
-        from bs4 import BeautifulSoup
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        async with aiohttp.ClientSession() as s:
-            async with s.get(url, headers=headers, timeout=15) as r:
-                if r.status == 200:
-                    html = await r.text()
-                    soup = BeautifulSoup(html, 'html.parser')
-                    for tag in soup(['script', 'style', 'nav', 'footer', 'header']):
-                        tag.decompose()
-                    text = soup.get_text(separator='\n', strip=True)
-                    lines = [l.strip() for l in text.split('\n') if l.strip() and len(l.strip()) > 20]
-                    return '\n'.join(lines[:200])
-    except Exception as e:
-        print(f"URL extraction error: {e}")
-    return ""
-
-
-async def translate_full_text(text: str, dialect: str) -> str:
-    """ترجمة النص إلى اللهجة المطلوبة"""
-    # للتوافق - يمكن تطويرها لاحقاً
-    return text
+    return total_dur
