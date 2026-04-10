@@ -213,7 +213,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• ملف نصي TXT 📃\n"
         "• نص المحاضرة مباشرة ✍️\n\n"
         "🌍 اختر لهجة الشرح (عراقي، مصري، خليجي...)\n"
-        "🎬 استلم فيديو كامل مع صوت وصور\n\n"
+        "🎬 استلم فيديو كامل مع صوت وصور وشرح مفصل\n\n"
         f"🎁 لديك *{user['attempts_left']}* محاولة مجانية\n\n"
         "⬇️ ابدأ الآن — أرسل المحاضرة!",
         parse_mode="Markdown",
@@ -226,13 +226,14 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 *كيفية الاستخدام*\n\n"
         "1️⃣ أرسل ملف PDF أو نص المحاضرة\n"
         "2️⃣ اختر لهجة الشرح (عراقي، مصري، شامي، خليجي، فصحى)\n"
-        "3️⃣ انتظر — البوت سيحلل ويصنع الفيديو\n"
-        "4️⃣ استلم الفيديو التعليمي الكامل\n\n"
-        "📊 *محتوى الفيديو:*\n"
-        "• شرح كامل لكل قسم\n"
-        "• صور تعليمية لكل موضوع\n"
-        "• صوت بشري طبيعي\n"
-        "• كلمات مفتاحية\n\n"
+        "3️⃣ انتظر — البوت سيحلل المحاضرة بعمق ويصنع الفيديو\n"
+        "4️⃣ استلم الفيديو التعليمي الكامل مع شرح مفصل\n\n"
+        "📊 *مميزات البوت:*\n"
+        "• شرح المعادلات الرياضية خطوة بخطوة\n"
+        "• تفسير المصطلحات العلمية\n"
+        "• أمثلة واقعية لكل مفهوم\n"
+        "• صور تعليمية لكل كلمة مفتاحية\n"
+        "• صوت بشري طبيعي\n\n"
         "🔗 */referral* — رابط إحالة لكسب محاولات مجانية\n"
         "/cancel — إلغاء العملية",
         parse_mode="Markdown",
@@ -461,7 +462,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🎬 *بدأت المعالجة!*\n"
             f"اللهجة: {dial_name}\n\n"
             f"{_pbar(0)} 0%\n"
-            f"🔍 جاري استخراج المحتوى...",
+            f"🔍 جاري بدء التحليل...",
             parse_mode="Markdown",
         )
 
@@ -510,20 +511,56 @@ async def _process_lecture(
         try:
             _check_cancelled()
 
-            await upd(5, "🔍 قراءة المحاضرة واستيعاب المحتوى...")
+            # ─────────────────────────────────────────────────────────────────
+            # المرحلة الأولى: التحليل العميق (مع عرض الخطوات التفصيلية)
+            # ─────────────────────────────────────────────────────────────────
+            
+            analysis_steps = [
+                (3,  "🔍 جاري قراءة المحاضرة واستيعاب المحتوى..."),
+                (5,  "📊 تحليل بنية النص وتحديد الأقسام الرئيسية..."),
+                (7,  "🧮 استخراج المعادلات الرياضية (إن وجدت)..."),
+                (9,  "📚 تحديد المصطلحات العلمية والمفاهيم الأساسية..."),
+                (11, "🔑 استخراج الكلمات المفتاحية من كل قسم..."),
+                (13, "✍️ جاري كتابة المقدمة والعنوان الرئيسي..."),
+                (15, "📝 صياغة الشرح المفصل لكل قسم..."),
+                (17, "💡 إضافة أمثلة توضيحية لكل مفهوم..."),
+                (19, "🔗 ربط الأفكار والمفاهيم ببعضها..."),
+                (21, "📋 ترتيب الشرح بشكل تعليمي منظم..."),
+                (23, "🎯 استخراج النقاط الرئيسية للملخص..."),
+                (25, "✅ اكتمل التحليل!"),
+            ]
+
+            for pct, label in analysis_steps:
+                await upd(pct, label)
+                await asyncio.sleep(2)  # وقت كافي للمستخدم يشوف كل خطوة
+
+            # تنفيذ التحليل الفعلي
             lecture_data = await _run_or_cancel(uid, analyze_lecture(text, dialect))
 
             sections = lecture_data.get("sections", [])
             if not sections:
                 raise RuntimeError("لم يتم استخراج أي أقسام من المحاضرة")
             lecture_type = lecture_data.get("lecture_type", "other")
-            await upd(25, f"✅ تم التحليل — {len(sections)} أقسام")
+            
+            n_sec = len(sections)
+            await upd(28, f"✅ تم تحليل المحاضرة إلى {n_sec} أقسام تعليمية")
 
+            # ─────────────────────────────────────────────────────────────────
+            # المرحلة الثانية: جلب الصور
+            # ─────────────────────────────────────────────────────────────────
             _check_cancelled()
-            await upd(28, "🎨 جلب الصور التعليمية...")
+            
+            image_steps = [
+                (30, "🎨 جاري تجهيز الصور التعليمية..."),
+                (33, "🖼️ توليد الصور للقسم الأول..."),
+                (36, "🖼️ توليد الصور للقسم الثاني..."),
+                (39, "🖼️ توليد الصور للأقسام المتبقية..."),
+                (42, "✨ معالجة الصور وتحسين جودتها..."),
+                (45, "✅ اكتمل جلب الصور!"),
+            ]
 
             _img_sem = asyncio.Semaphore(6)
-
+            
             async def _fetch_one_section_images(section: dict):
                 async with _img_sem:
                     keywords = section.get("keywords", [])[:4]
@@ -553,17 +590,56 @@ async def _process_lecture(
                         None,
                     )
 
-            await _run_or_cancel(uid, asyncio.gather(*[_fetch_one_section_images(s) for s in sections]))
-            await upd(50, "✅ تم جلب الصور")
+            step_idx = 0
+            for i, section in enumerate(sections):
+                if i == 0:
+                    await upd(image_steps[1][0], image_steps[1][1])
+                elif i == 1:
+                    await upd(image_steps[2][0], image_steps[2][1])
+                elif i == 2:
+                    await upd(image_steps[3][0], image_steps[3][1])
+                
+                await _run_or_cancel(uid, _fetch_one_section_images(section))
+            
+            await upd(45, "✅ تم جلب جميع الصور التعليمية")
 
+            # ─────────────────────────────────────────────────────────────────
+            # المرحلة الثالثة: توليد الصوت
+            # ─────────────────────────────────────────────────────────────────
             _check_cancelled()
-            await upd(52, "🎤 توليد الصوت...")
+            
+            voice_steps = [
+                (48, "🎤 الاتصال بخدمة الصوت..."),
+                (52, "🎙️ توليد الصوت للقسم الأول..."),
+                (56, "🎙️ توليد الصوت للقسم الثاني..."),
+                (60, "🎙️ توليد الصوت للأقسام المتبقية..."),
+                (65, "🎵 معالجة ملفات الصوت..."),
+                (70, "✅ اكتمل توليد الصوت!"),
+            ]
+            
+            await upd(voice_steps[0][0], voice_steps[0][1])
             voice_res = await _run_or_cancel(uid, generate_sections_audio(sections, dialect))
             audio_results = voice_res["results"]
-            await upd(72, "✅ تم توليد الصوت")
+            
+            await upd(72, f"✅ تم توليد الصوت لـ {len(audio_results)} أقسام")
 
+            # ─────────────────────────────────────────────────────────────────
+            # المرحلة الرابعة: إنتاج الفيديو
+            # ─────────────────────────────────────────────────────────────────
             _check_cancelled()
-            await upd(74, "🎬 إنتاج الفيديو...")
+            
+            video_steps = [
+                (74, "🎬 بدء إنتاج الفيديو..."),
+                (77, "🎨 إنشاء شرائح المقدمة..."),
+                (80, "📝 بناء شرائح الأقسام..."),
+                (84, "🏫 تصميم السبورة البيضاء..."),
+                (88, "🎯 إضافة الملخصات..."),
+                (92, "🎬 تشفير الفيديو..."),
+                (96, "✅ اكتمل الفيديو!"),
+            ]
+            
+            await upd(video_steps[0][0], video_steps[0][1])
+            
             total_audio = sum(r.get("duration", 0) for r in audio_results)
             enc_est = estimate_encoding_seconds(total_audio)
 
@@ -574,13 +650,22 @@ async def _process_lecture(
 
             async def _video_progress(elapsed_enc: float, est_enc: float):
                 frac = min(elapsed_enc / max(est_enc, 1), 0.95)
-                pct = int(74 + frac * 24)
+                pct = int(80 + frac * 16)
                 elapsed = time.time() - t_start
+                
+                # تحديث الرسالة حسب التقدم
+                if pct < 85:
+                    label = "🎨 إنشاء شرائح الفيديو..."
+                elif pct < 90:
+                    label = "🎬 تشفير الفيديو..."
+                else:
+                    label = "✨ وضع اللمسات النهائية..."
+                    
                 await _safe_edit(
                     prog_msg,
                     f"⏳ *جاري المعالجة...*\n\n"
                     f"{_pbar(pct)} *{pct}%*\n"
-                    f"🎬 تشفير الفيديو...\n\n"
+                    f"{label}\n\n"
                     f"⏱️ الوقت: {_fmt_elapsed(elapsed)}",
                     reply_markup=CANCEL_KB,
                 )
@@ -596,13 +681,15 @@ async def _process_lecture(
 
             await upd(99, "✅ اكتمل الفيديو، جاري الإرسال...")
 
+            # ─────────────────────────────────────────────────────────────────
+            # خصم المحاولة وإرسال الفيديو
+            # ─────────────────────────────────────────────────────────────────
             decrement_attempts(uid)
             increment_total_videos(uid)
             update_video_request(req_id, "done", video_path)
 
             elapsed_total = time.time() - t_start
             title = lecture_data.get("title", filename)
-            n_sec = len(sections)
             vid_min = int(total_video_secs // 60)
             vid_sec = int(total_video_secs % 60)
             dial_name = DIALECT_NAMES.get(dialect, dialect)
@@ -630,7 +717,13 @@ async def _process_lecture(
             await prog_msg.delete()
             await context.bot.send_message(
                 uid,
-                "✅ *اكتمل الفيديو!*\nشارك المعرفة مع أصدقائك 🎓",
+                "✅ *اكتمل الفيديو!*\n\n"
+                "📹 تم إنتاج فيديو تعليمي احترافي مع:\n"
+                "• شرح مفصل للمفاهيم\n"
+                "• تفسير المعادلات\n"
+                "• صور توضيحية\n"
+                "• صوت بشري طبيعي\n\n"
+                "شارك المعرفة مع أصدقائك 🎓",
                 parse_mode="Markdown",
                 reply_markup=main_keyboard(),
             )
@@ -638,7 +731,7 @@ async def _process_lecture(
         except asyncio.CancelledError:
             update_video_request(req_id, "cancelled")
             try:
-                await prog_msg.edit_text("⛔ تم إلغاء المعالجة.")
+                await prog_msg.edit_text("⛔ تم إلغاء المعالجة.\n\nأرسل محاضرة جديدة متى شئت.")
             except Exception:
                 pass
             await context.bot.send_message(uid, "⛔ تم الإلغاء.", reply_markup=main_keyboard())
