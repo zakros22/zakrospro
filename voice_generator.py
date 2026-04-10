@@ -38,7 +38,7 @@ async def generate_sections_audio(sections: list, dialect: str) -> dict:
         # استخدام شرح AI
         text = section.get("narration", "")
         if not text:
-            text = " ".join(section.get("keywords", ["مفهوم"]))
+            text = " ".join(section.get("keywords", ["مفهوم"])) * 5
         
         async with _sem:
             try:
