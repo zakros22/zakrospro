@@ -20,6 +20,16 @@ FONT_AR_REG = os.path.join(_FONTS_DIR, "Amiri-Regular.ttf")
 _ENC_FACTOR = 0.45
 _MIN_ENC_SEC = 15.0
 
+# ── تعريف المتغيرات المفقودة ─────────────────────────────────────────────────
+INTRO_DURATION_PER_SECTION = 1.5
+INTRO_MIN = 6.0
+INTRO_MAX = 12.0
+
+SECTION_TITLE_DURATION = 2.5
+SUMMARY_DURATION_PER_SECTION = 1.0
+SUMMARY_MIN = 5.0
+SUMMARY_MAX = 10.0
+
 # ألوان كرتونية جذابة
 ACCENT_COLORS = [
     (255, 107, 107), (78, 205, 196), (255, 209, 102),
@@ -88,7 +98,6 @@ def _draw_text_centered(draw, text: str, y: int, font, color, max_width: int = N
     tw = bbox[2] - bbox[0]
     x = max((TARGET_W - tw) // 2, 20)
     
-    # ظل
     draw.text((x + 2, y + 2), text, fill=(0, 0, 0, 180), font=font)
     draw.text((x, y), text, fill=color, font=font)
 
@@ -106,14 +115,12 @@ def _gradient_bg(color_top=(25, 30, 60), color_bot=(10, 20, 45)) -> PILImage.Ima
 
 
 def _create_cartoon_placeholder(keyword: str, section_title: str, idx: int, is_arabic: bool) -> bytes:
-    """إنشاء صورة كرتونية بديلة احترافية"""
     W, H = 800, 500
     bg_color = ACCENT_COLORS[idx % len(ACCENT_COLORS)]
     
     img = PILImage.new("RGB", (W, H), (245, 248, 250))
     draw = ImageDraw.Draw(img)
     
-    # خلفية متدرجة ناعمة
     for y in range(H):
         t = y / H
         r = int(255 * (1 - t) + bg_color[0] * 0.3 * t)
@@ -121,18 +128,15 @@ def _create_cartoon_placeholder(keyword: str, section_title: str, idx: int, is_a
         b = int(255 * (1 - t) + bg_color[2] * 0.3 * t)
         draw.line([(0, y), (W, y)], fill=(r, g, b))
     
-    # إطار كرتوني
     draw.rounded_rectangle([(15, 15), (W-15, H-15)], radius=20, outline=bg_color, width=4)
     draw.rounded_rectangle([(20, 20), (W-20, H-20)], radius=15, outline=(*bg_color, 100), width=2)
     
-    # أيقونة تعليمية
     icon = "📚" if is_arabic else "📖"
     icon_font = _get_font(60)
     bbox = draw.textbbox((0, 0), icon, font=icon_font)
     iw = bbox[2] - bbox[0]
     draw.text(((W - iw) // 2, 80), icon, fill=bg_color, font=icon_font)
     
-    # الكلمة المفتاحية (كبيرة)
     kw_display = _prepare_text(keyword[:25], is_arabic)
     kw_font = _get_font(36, bold=True, arabic=is_arabic)
     bbox = draw.textbbox((0, 0), kw_display, font=kw_font)
@@ -140,17 +144,14 @@ def _create_cartoon_placeholder(keyword: str, section_title: str, idx: int, is_a
     draw.text(((W - kw_w) // 2 + 2, 180), kw_display, fill=(0, 0, 0, 100), font=kw_font)
     draw.text(((W - kw_w) // 2, 178), kw_display, fill=(40, 45, 60), font=kw_font)
     
-    # عنوان القسم
     sec_display = _prepare_text(section_title[:40], is_arabic)
     sec_font = _get_font(18, arabic=is_arabic)
     bbox = draw.textbbox((0, 0), sec_display, font=sec_font)
     sw = bbox[2] - bbox[0]
     draw.text(((W - sw) // 2, 260), sec_display, fill=(100, 100, 120), font=sec_font)
     
-    # خط زخرفي
     draw.rectangle([(W//4, 300), (W*3//4, 304)], fill=bg_color)
     
-    # نص توضيحي
     hint = "🎨 صورة تعليمية" if is_arabic else "🎨 Educational Image"
     hint_display = _prepare_text(hint, is_arabic)
     hint_font = _get_font(16, arabic=is_arabic)
@@ -158,7 +159,6 @@ def _create_cartoon_placeholder(keyword: str, section_title: str, idx: int, is_a
     hw = bbox[2] - bbox[0]
     draw.text(((W - hw) // 2, 350), hint_display, fill=(150, 150, 170), font=hint_font)
     
-    # دوائر زخرفية
     for i in range(3):
         x = 50 + i * 350
         y = 420
@@ -170,14 +170,12 @@ def _create_cartoon_placeholder(keyword: str, section_title: str, idx: int, is_a
 
 
 def _create_intro_slide(lecture_data: dict, sections: list, is_arabic: bool, total_duration: float) -> str:
-    """شريحة المقدمة مع خريطة الأقسام"""
     img_fd, img_path = tempfile.mkstemp(prefix="intro_", suffix=".jpg")
     os.close(img_fd)
 
     bg = _gradient_bg(BG_GRADIENTS[0][0], BG_GRADIENTS[0][1])
     draw = ImageDraw.Draw(bg)
 
-    # هيدر
     header_h = 60
     draw.rectangle([(0, 0), (TARGET_W, header_h)], fill=(20, 30, 50))
     draw.rectangle([(0, header_h - 3), (TARGET_W, header_h)], fill=(255, 200, 50))
@@ -192,13 +190,11 @@ def _create_intro_slide(lecture_data: dict, sections: list, is_arabic: bool, tot
     rw = bbox[2] - bbox[0]
     draw.text((TARGET_W - rw - 15, 20), rights, fill=(200, 200, 220), font=rights_font)
 
-    # عنوان المحاضرة
     title = lecture_data.get("title", "المحاضرة" if is_arabic else "Lecture")
     title_txt = _prepare_text(title, is_arabic)
     title_font = _get_font(26, bold=True, arabic=is_arabic)
     _draw_text_centered(draw, title_txt, header_h + 20, title_font, (255, 220, 80), TARGET_W - 60)
 
-    # نوع المحاضرة
     lt = lecture_data.get("lecture_type", "other")
     types = {
         "medicine": "🩺 طبية" if is_arabic else "Medical",
@@ -210,7 +206,6 @@ def _create_intro_slide(lecture_data: dict, sections: list, is_arabic: bool, tot
     type_font = _get_font(16, arabic=is_arabic)
     _draw_text_centered(draw, type_txt, header_h + 60, type_font, (180, 200, 240))
 
-    # مدة الفيديو
     mins = int(total_duration // 60)
     secs = int(total_duration % 60)
     dur_txt = f"⏱️ المدة: {mins}:{secs:02d}" if is_arabic else f"⏱️ Duration: {mins}:{secs:02d}"
@@ -220,7 +215,6 @@ def _create_intro_slide(lecture_data: dict, sections: list, is_arabic: bool, tot
 
     draw.rectangle([(60, header_h + 110), (TARGET_W - 60, header_h + 112)], fill=(255, 200, 50))
 
-    # خريطة الأقسام
     map_y = header_h + 130
     map_title = "📋 الأقسام:" if is_arabic else "📋 Sections:"
     map_title = _prepare_text(map_title, is_arabic)
@@ -242,7 +236,6 @@ def _create_intro_slide(lecture_data: dict, sections: list, is_arabic: bool, tot
         sec_txt = _prepare_text(sec_title, is_arabic)
         draw.text((70, y), sec_txt, fill=(220, 230, 255), font=sec_font)
 
-    # علامة مائية
     wm_font = _get_font(11)
     wm = WATERMARK
     bbox = draw.textbbox((0, 0), wm, font=wm_font)
@@ -254,7 +247,6 @@ def _create_intro_slide(lecture_data: dict, sections: list, is_arabic: bool, tot
 
 
 def _create_section_title_card(section: dict, idx: int, total: int, is_arabic: bool) -> str:
-    """بطاقة عنوان القسم"""
     img_fd, img_path = tempfile.mkstemp(prefix=f"sec_{idx}_", suffix=".jpg")
     os.close(img_fd)
 
@@ -262,13 +254,11 @@ def _create_section_title_card(section: dict, idx: int, total: int, is_arabic: b
     bg = _gradient_bg(BG_GRADIENTS[idx % len(BG_GRADIENTS)][0], BG_GRADIENTS[idx % len(BG_GRADIENTS)][1])
     draw = ImageDraw.Draw(bg)
 
-    # إطار ذهبي
     draw.rounded_rectangle([(10, 10), (TARGET_W-10, TARGET_H-10)], radius=15, outline=(255, 200, 50), width=3)
     draw.rounded_rectangle([(15, 15), (TARGET_W-15, TARGET_H-15)], radius=12, outline=color, width=1)
 
     center_y = TARGET_H // 2 - 30
     
-    # رقم القسم
     num_str = str(idx + 1)
     num_font = _get_font(70, bold=True)
     bbox = draw.textbbox((0, 0), num_str, font=num_font)
@@ -276,19 +266,16 @@ def _create_section_title_card(section: dict, idx: int, total: int, is_arabic: b
     draw.text(((TARGET_W - nw)//2 + 3, center_y - 33), num_str, fill=(0, 0, 0, 100), font=num_font)
     draw.text(((TARGET_W - nw)//2, center_y - 35), num_str, fill=color, font=num_font)
 
-    # "القسم"
     sec_label = "القسم" if is_arabic else "Section"
     sec_label = _prepare_text(sec_label, is_arabic)
     label_font = _get_font(22, arabic=is_arabic)
     _draw_text_centered(draw, sec_label, center_y + 40, label_font, (220, 220, 240))
 
-    # عنوان القسم
     title = section.get("title", f"Section {idx+1}")
     title_txt = _prepare_text(title, is_arabic)
     title_font = _get_font(22, bold=True, arabic=is_arabic)
     _draw_text_centered(draw, title_txt, center_y + 75, title_font, (255, 220, 100), TARGET_W - 80)
 
-    # التقدم
     prog = f"{idx+1} / {total}"
     prog_font = _get_font(14)
     bbox = draw.textbbox((0, 0), prog, font=prog_font)
@@ -314,7 +301,6 @@ def _create_content_slide(
     section_title: str = "",
     section_idx: int = 0,
 ) -> str:
-    """شريحة المحتوى - صورة كبيرة + كلمات مفتاحية واضحة"""
     img_fd, img_path = tempfile.mkstemp(prefix="content_", suffix=".jpg")
     os.close(img_fd)
 
@@ -322,7 +308,6 @@ def _create_content_slide(
     bg = _gradient_bg((20, 25, 45), (10, 15, 35))
     draw = ImageDraw.Draw(bg)
 
-    # هيدر
     header_h = 45
     draw.rectangle([(0, 0), (TARGET_W, header_h)], fill=(15, 20, 40))
     draw.rectangle([(0, header_h - 2), (TARGET_W, header_h)], fill=color)
@@ -331,7 +316,6 @@ def _create_content_slide(
     title_font = _get_font(16, bold=True, arabic=is_arabic)
     _draw_text_centered(draw, title_display, 10, title_font, (255, 255, 255))
 
-    # منطقة الصورة
     img_top = header_h + 10
     img_bottom = TARGET_H - 80
     img_h = img_bottom - img_top
@@ -342,16 +326,13 @@ def _create_content_slide(
             img = PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
             iw, ih = img.size
             
-            # تكبير الصورة لتكون واضحة
             scale = min(img_w / iw, img_h / ih)
             nw, nh = int(iw * scale), int(ih * scale)
             img = img.resize((nw, nh), PILImage.LANCZOS)
             
-            # إطار أبيض
             framed = PILImage.new("RGB", (nw + 12, nh + 12), (255, 255, 255))
             framed.paste(img, (6, 6))
             
-            # ظل
             shadow = PILImage.new("RGBA", (nw + 20, nh + 20), (0, 0, 0, 0))
             s_draw = ImageDraw.Draw(shadow)
             s_draw.rectangle([(8, 8), (nw + 12, nh + 12)], fill=(0, 0, 0, 120))
@@ -366,30 +347,25 @@ def _create_content_slide(
             py = img_top + (img_h - (nh + 20)) // 2
             bg.paste(final, (px, py))
             draw = ImageDraw.Draw(bg)
-        except Exception as e:
-            print(f"Image error: {e}")
-            # صورة بديلة كرتونية
+        except Exception:
             placeholder = _create_cartoon_placeholder(keyword, section_title, section_idx, is_arabic)
             img = PILImage.open(io.BytesIO(placeholder)).convert("RGB")
             img = img.resize((img_w, img_h), PILImage.LANCZOS)
             bg.paste(img, (20, img_top))
             draw = ImageDraw.Draw(bg)
 
-    # الكلمات المفتاحية
     kw_y = TARGET_H - 60
     kw_label = "🔑 الكلمات المفتاحية:" if is_arabic else "🔑 Keywords:"
     kw_label = _prepare_text(kw_label, is_arabic)
     label_font = _get_font(12, arabic=is_arabic)
     draw.text((20, kw_y - 20), kw_label, fill=(200, 200, 220), font=label_font)
 
-    # عرض الكلمات مع تمييز الحالية
     spacing = min(130, TARGET_W // max(len(all_keywords), 1))
     for i, kw in enumerate(all_keywords[:6]):
         kw_display = _prepare_text(kw[:18], is_arabic)
         x = 20 + i * spacing
         
         if i == current_idx:
-            # الكلمة الحالية - مميزة
             kw_font = _get_font(14, bold=True, arabic=is_arabic)
             bbox = draw.textbbox((0, 0), kw_display, font=kw_font)
             kw_w = bbox[2] - bbox[0]
@@ -399,15 +375,12 @@ def _create_content_slide(
             )
             draw.text((x + 3, kw_y), kw_display, fill=(255, 255, 255), font=kw_font)
         elif i < current_idx:
-            # تم شرحها
             kw_font = _get_font(12, arabic=is_arabic)
             draw.text((x, kw_y + 2), "✓ " + kw_display, fill=(100, 200, 100), font=kw_font)
         else:
-            # قادمة
             kw_font = _get_font(12, arabic=is_arabic)
             draw.text((x, kw_y + 2), "○ " + kw_display, fill=(140, 150, 170), font=kw_font)
 
-    # علامة مائية
     wm_font = _get_font(10)
     wm = WATERMARK
     bbox = draw.textbbox((0, 0), wm, font=wm_font)
@@ -419,14 +392,12 @@ def _create_content_slide(
 
 
 def _create_summary_slide(lecture_data: dict, sections: list, is_arabic: bool) -> str:
-    """شريحة الملخص النهائي"""
     img_fd, img_path = tempfile.mkstemp(prefix="summary_", suffix=".jpg")
     os.close(img_fd)
 
     bg = _gradient_bg((20, 30, 50), (10, 20, 40))
     draw = ImageDraw.Draw(bg)
 
-    # هيدر
     header_h = 50
     draw.rectangle([(0, 0), (TARGET_W, header_h)], fill=(25, 35, 55))
     draw.rectangle([(0, header_h - 2), (TARGET_W, header_h)], fill=(255, 200, 50))
@@ -436,7 +407,6 @@ def _create_summary_slide(lecture_data: dict, sections: list, is_arabic: bool) -
     title_font = _get_font(22, bold=True, arabic=is_arabic)
     _draw_text_centered(draw, sum_title, 10, title_font, (255, 220, 80))
 
-    # ملخص نصي
     y = header_h + 20
     summary = lecture_data.get("summary", "")
     if summary:
@@ -447,7 +417,6 @@ def _create_summary_slide(lecture_data: dict, sections: list, is_arabic: bool) -
             draw.text((30, y), line, fill=(220, 230, 255), font=sum_font)
             y += 22
 
-    # النقاط الرئيسية
     y += 15
     points = lecture_data.get("key_points", [])[:5]
     if points:
@@ -463,7 +432,6 @@ def _create_summary_slide(lecture_data: dict, sections: list, is_arabic: bool) -
             draw.text((45, y), p_txt, fill=(200, 210, 230), font=point_font)
             y += 22
 
-    # صور مصغرة للأقسام
     thumb_y = TARGET_H - 100
     thumb_w = 100
     thumb_h = 70
@@ -555,12 +523,10 @@ def _build_segments(
     total_secs = 0.0
     n = len(sections)
 
-    # حساب مدة الفيديو الكلية
     total_audio_dur = sum(r.get("duration", 0) for r in audio_results)
-    intro_dur = min(INTRO_MAX, max(INTRO_MIN, n * 1.5))
-    summary_dur = min(SUMMARY_MAX, max(SUMMARY_MIN, n * 1.0))
+    intro_dur = min(INTRO_MAX, max(INTRO_MIN, n * INTRO_DURATION_PER_SECTION))
+    summary_dur = min(SUMMARY_MAX, max(SUMMARY_MIN, n * SUMMARY_DURATION_PER_SECTION))
 
-    # 1. المقدمة
     try:
         intro = _create_intro_slide(lecture_data, sections, is_arabic, total_audio_dur + intro_dur + summary_dur)
         tmp_files.append(intro)
@@ -569,18 +535,15 @@ def _build_segments(
     except Exception as e:
         print(f"Intro error: {e}")
 
-    # 2. الأقسام
     for i, (section, audio_info) in enumerate(zip(sections, audio_results)):
-        # بطاقة عنوان القسم
         try:
             title_card = _create_section_title_card(section, i, n, is_arabic)
             tmp_files.append(title_card)
-            segments.append({"img": title_card, "audio": None, "audio_start": 0, "dur": 2.5, "gentle_zoom": False})
-            total_secs += 2.5
+            segments.append({"img": title_card, "audio": None, "audio_start": 0, "dur": SECTION_TITLE_DURATION, "gentle_zoom": False})
+            total_secs += SECTION_TITLE_DURATION
         except:
             pass
 
-        # شرائح المحتوى
         keywords = section.get("keywords") or [f"Section {i+1}"]
         kw_images = section.get("_keyword_images") or []
         audio_bytes = audio_info.get("audio")
@@ -598,7 +561,6 @@ def _build_segments(
         for j, kw in enumerate(keywords):
             img_bytes = kw_images[j] if j < len(kw_images) else section.get("_image_bytes")
             
-            # إذا ماكو صورة، نصنع صورة كرتونية بديلة
             if not img_bytes:
                 img_bytes = _create_cartoon_placeholder(kw, section.get("title", ""), i, is_arabic)
 
@@ -613,7 +575,6 @@ def _build_segments(
             })
             total_secs += kw_dur
 
-    # 3. الملخص
     try:
         summary = _create_summary_slide(lecture_data, sections, is_arabic)
         tmp_files.append(summary)
