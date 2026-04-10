@@ -11,6 +11,19 @@ from google import genai
 from google.genai import types as genai_types
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# تنظيف النص
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _clean_text(text: str) -> str:
+    """تنظيف النص من الأحرف غير المرغوبة"""
+    if not text:
+        return ""
+    text = text.replace('\x00', '').replace('\0', '')
+    text = re.sub(r'[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # 1. تحميل مفاتيح Google Gemini
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -227,17 +240,11 @@ def _generate_fallback_narration(keywords: list, lecture_type: str) -> str:
     
     narrations = {
         'medicine': f"دعونا نتحدث عن {kw_str}. هذا الموضوع مهم جداً في المجال الطبي. أولاً، يجب أن نفهم تعريف كل مصطلح. ثانياً، نناقش الأعراض والعلامات المرتبطة. ثالثاً، نستعرض طرق التشخيص المتاحة. رابعاً، نتعرف على خيارات العلاج الحديثة. خامساً، نتحدث عن المضاعفات المحتملة. سادساً، نناقش طرق الوقاية. سابعاً، نستعرض أحدث الأبحاث في هذا المجال. ثامناً، نذكر بعض الحالات السريرية. تاسعاً، نجيب على الأسئلة الشائعة. وأخيراً، نلخص أهم النقاط التي يجب تذكرها.",
-        
         'math': f"الآن سنشرح {kw_str} بالتفصيل. لنبدأ بتعريف كل مفهوم. ثم نكتب المعادلة الرياضية ونحللها خطوة بخطوة. بعد ذلك، نعطي مثالاً عددياً لتوضيح الفكرة. ثم نتحقق من صحة الحل. ننتقل إلى تطبيقات هذه المعادلة في الحياة العملية. نناقش أيضاً الحالات الخاصة والشروط اللازمة. نختم ببعض التمارين للتأكد من الفهم. تذكروا دائماً أن التدريب هو مفتاح إتقان الرياضيات.",
-        
         'physics': f"في هذا القسم ندرس {kw_str}. الفيزياء علم جميل يفسر الظواهر من حولنا. نبدأ بشرح القانون الفيزيائي الأساسي. ثم نعرض تجربة عملية توضح هذا القانون. نحلل النتائج ونستنتج العلاقات بين المتغيرات. نربط هذه المفاهيم بحياتنا اليومية. مثلاً، نرى تطبيقات هذا القانون في حركة السيارات أو سقوط الأجسام. نناقش أيضاً حدود تطبيق هذا القانون والحالات التي لا ينطبق فيها. أخيراً، نلخص أهم ما تعلمناه.",
-        
         'chemistry': f"نتعرف الآن على {kw_str} في الكيمياء. نبدأ بكتابة المعادلة الكيميائية الموزونة. نحدد المواد المتفاعلة والناتجة. نشرح شروط التفاعل مثل درجة الحرارة والضغط والمواد الحفازة. نحسب كمية المواد المتفاعلة والناتجة باستخدام الحسابات الكيميائية. نذكر تطبيقات هذا التفاعل في الصناعة. نناقش أيضاً المخاطر المحتملة وطرق التعامل الآمن مع المواد الكيميائية. نختم بمراجعة سريعة لأهم النقاط.",
-        
         'history': f"اليوم سنسافر عبر الزمن لنتعرف على {kw_str}. التاريخ يعلمنا دروساً قيمة من الماضي. نبدأ بذكر التاريخ والمكان الذي وقعت فيه الأحداث. نتعرف على الشخصيات الرئيسية وأدوارها. نسرد الأحداث بتسلسل زمني واضح. نحلل الأسباب التي أدت إلى هذه الأحداث. نناقش النتائج والآثار التي ترتبت عليها. نستخلص الدروس والعبر المستفادة. نختم بربط هذه الأحداث بالواقع المعاصر.",
-        
         'biology': f"في علم الأحياء، ندرس {kw_str}. الحياة مليئة بالأسرار الرائعة. نبدأ بشرح التركيب الأساسي. ثم ننتقل إلى الوظائف الحيوية التي يؤديها. نستخدم التشبيهات لتقريب المفاهيم. مثلاً، نشبه الخلية بالمصنع الصغير. نناقش أيضاً أهمية هذه العمليات للحفاظ على الحياة. نذكر بعض الأمراض المرتبطة بخلل هذه الوظائف. نختم بمراجعة سريعة وتلخيص لأهم المعلومات.",
-        
         'other': f"مرحباً بكم في هذا القسم الذي سنتعرف فيه على {kw_str}. هذا الموضوع مهم جداً ويستحق التركيز. نبدأ بتعريف المصطلحات الأساسية. ثم نستعرض المعلومات بالتفصيل مع أمثلة توضيحية. نربط هذه المعلومات بالواقع العملي. نجيب على الأسئلة الشائعة حول هذا الموضوع. نذكر بعض النصائح والإرشادات المفيدة. أخيراً، نلخص أهم ما تم شرحه في هذا القسم."
     }
     
@@ -250,6 +257,12 @@ def _generate_fallback_narration(keywords: list, lecture_type: str) -> str:
 
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     print("[INFO] Starting lecture analysis...")
+    
+    # تنظيف النص أولاً
+    text = _clean_text(text)
+    
+    if not text:
+        raise ValueError("النص فارغ بعد التنظيف")
     
     all_keywords = _extract_keywords(text, 40)
     lecture_type = _detect_lecture_type(text)
@@ -367,17 +380,13 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
             "narration": narration,
             "duration_estimate": max(45, len(narration.split()) // 3),
             "_keyword_images": [None] * 4,
-            "_image_bytes": None  # سيتم ملؤه لاحقاً
+            "_image_bytes": None
         })
     
-    # ═══════════════════════════════════════════════════════════════════════════
-    # توليد صورة واحدة لكل قسم (شاملة للكلمات المفتاحية)
-    # ═══════════════════════════════════════════════════════════════════════════
+    # توليد صورة واحدة لكل قسم
     print("[INFO] Generating section images...")
     for section in final_sections:
-        # نجمع الكلمات المفتاحية للقسم
         section_keywords = section["keywords"]
-        # نستخدم أول 3 كلمات لتوليد الصورة
         search_query = " ".join(section_keywords[:3])
         
         try:
@@ -410,7 +419,10 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
         page_text = page.extract_text() or ""
         if page_text.strip():
             pages.append(page_text)
-    return "\n\n".join(pages)
+    text = "\n\n".join(pages)
+    # تنظيف النص
+    text = _clean_text(text)
+    return text
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -442,11 +454,10 @@ def _get_font(size: int) -> ImageFont.FreeTypeFont:
 
 
 def _make_colored_image(keyword: str, color: tuple) -> bytes:
-    W, H = 500, 350  # حجم أكبر للصورة الشاملة
+    W, H = 500, 350
     img = PILImage.new("RGB", (W, H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
     
-    # خلفية متدرجة
     for y in range(H):
         t = y / H
         r = int(255 * (1 - t) + color[0] * t * 0.2)
@@ -454,15 +465,11 @@ def _make_colored_image(keyword: str, color: tuple) -> bytes:
         b = int(255 * (1 - t) + color[2] * t * 0.2)
         draw.line([(0, y), (W, y)], fill=(r, g, b))
     
-    # إطار
     draw.rounded_rectangle([(10, 10), (W-10, H-10)], radius=20, outline=color, width=8)
-    
-    # دائرة زخرفية
     draw.ellipse([(W//2-60, H//2-60), (W//2+60, H//2+60)], fill=(*color, 25))
     
     font = _get_font(32)
     
-    # تحضير النص العربي
     try:
         import arabic_reshaper
         from bidi.algorithm import get_display
@@ -470,7 +477,6 @@ def _make_colored_image(keyword: str, color: tuple) -> bytes:
     except:
         pass
     
-    # تقسيم النص إذا كان طويلاً
     words = keyword.split()
     lines = []
     current = []
@@ -541,21 +547,16 @@ async def fetch_image_for_keyword(
     lecture_type: str = "other",
     image_search_en: str = "",
 ) -> bytes:
-    """جلب صورة شاملة للكلمات المفتاحية"""
     print(f"[INFO] Fetching image for: {keyword[:50]}")
     color = _TYPE_COLORS.get(lecture_type, _TYPE_COLORS['other'])
     
-    # 1. محاولة Pollinations
-    prompt = f"educational illustration of {keyword}, simple clean style, white background"
-    img_bytes = await _pollinations_generate(prompt)
+    img_bytes = await _pollinations_generate(f"educational illustration of {keyword}")
     if img_bytes:
         return img_bytes
     
-    # 2. محاولة Picsum
     img_bytes = await _picsum_generate()
     if img_bytes:
         return img_bytes
     
-    # 3. صورة ملونة احتياطية
     print(f"[INFO] Using colored placeholder")
     return _make_colored_image(keyword, color)
