@@ -1,10 +1,8 @@
-
 import json
 import re
 import io
 import asyncio
 import aiohttp
-import random
 import os
 from PIL import Image as PILImage, ImageDraw, ImageFont
 from google import genai
@@ -171,12 +169,12 @@ def _extract_keywords(text: str, max_words: int = 30) -> list:
 def _detect_lecture_type(text: str) -> str:
     text_lower = text.lower()
     
-    medical = ['مرض', 'علاج', 'طبيب', 'جراحة', 'دواء', 'تشخيص', 'مريض', 'قلب', 'دم', 'خلية', 'ورم', 'سرطان', 'endometriosis', 'cyst', 'inflammation', 'pain', 'bleeding', 'menstrual', 'pelvic', 'diagnosis', 'treatment']
-    math = ['معادلة', 'دالة', 'تفاضل', 'تكامل', 'جبر', 'هندسة', 'رياضيات', 'equation', 'function', 'calculus', 'algebra', 'variable', 'derivative', 'integral']
-    physics = ['قوة', 'طاقة', 'حركة', 'سرعة', 'جاذبية', 'كهرباء', 'مغناطيس', 'فيزياء', 'force', 'energy', 'motion', 'velocity', 'gravity', 'physics']
-    chemistry = ['تفاعل', 'عنصر', 'مركب', 'جزيء', 'ذرة', 'حمض', 'قاعدة', 'كيمياء', 'reaction', 'element', 'compound', 'molecule', 'chemistry']
-    history = ['تاريخ', 'حرب', 'معركة', 'حضارة', 'إمبراطورية', 'ملك', 'ثورة', 'history', 'war', 'battle', 'civilization', 'empire', 'revolution']
-    biology = ['نبات', 'حيوان', 'بيئة', 'وراثة', 'تطور', 'خلية', 'biology', 'plant', 'animal', 'cell', 'evolution', 'dna', 'gene']
+    medical = ['مرض', 'علاج', 'طبيب', 'جراحة', 'دواء', 'تشخيص', 'مريض', 'قلب', 'دم', 'خلية', 'ورم', 'سرطان', 'endometriosis', 'cyst', 'inflammation', 'pain', 'bleeding', 'menstrual']
+    math = ['معادلة', 'دالة', 'تفاضل', 'تكامل', 'جبر', 'هندسة', 'رياضيات', 'equation', 'function', 'calculus', 'algebra']
+    physics = ['قوة', 'طاقة', 'حركة', 'سرعة', 'جاذبية', 'كهرباء', 'مغناطيس', 'فيزياء', 'force', 'energy', 'motion']
+    chemistry = ['تفاعل', 'عنصر', 'مركب', 'جزيء', 'ذرة', 'حمض', 'قاعدة', 'كيمياء', 'reaction', 'element', 'compound']
+    history = ['تاريخ', 'حرب', 'معركة', 'حضارة', 'إمبراطورية', 'ملك', 'ثورة', 'history', 'war', 'battle']
+    biology = ['نبات', 'حيوان', 'بيئة', 'وراثة', 'تطور', 'خلية', 'biology', 'plant', 'animal', 'cell']
     
     scores = {
         'medicine': sum(1 for kw in medical if kw in text_lower),
@@ -193,12 +191,8 @@ def _detect_lecture_type(text: str) -> str:
     return 'other'
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# تحليل المحاضرة - شرح احترافي غير مكرر
-# ─────────────────────────────────────────────────────────────────────────────
-
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
-    """تحليل المحاضرة مع شرح احترافي ومتنوع"""
+    """تحليل المحاضرة مع شرح احترافي"""
     
     all_keywords = _extract_keywords(text, 40)
     lecture_type = _detect_lecture_type(text)
@@ -215,24 +209,23 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     
     text_preview = text[:4000]
     
-    # شخصية المعلم حسب نوع المحاضرة
     teacher_styles = {
-        'medicine': 'أنت طبيب استشاري تشرح لطلاب الطب. اشرح pathophysiology، الأعراض، الأسباب، التشخيص، والعلاج. استخدم لغة طبية دقيقة ثم بسطها.',
-        'math': 'أنت أستاذ رياضيات. اشرح المعادلات خطوة بخطوة. فسر كل متغير. أعط أمثلة عددية محلولة.',
-        'physics': 'أنت فيزيائي. اشرح القوانين الفيزيائية وطبقها على أمثلة من الحياة اليومية.',
-        'chemistry': 'أنت كيميائي. اشرح التفاعلات الكيميائية والمعادلات وظروف التفاعل.',
-        'history': 'أنت مؤرخ. اسرد الأحداث التاريخية بتسلسل زمني. حلل الأسباب والنتائج.',
+        'medicine': 'أنت طبيب استشاري. اشرح pathophysiology والأعراض والتشخيص والعلاج.',
+        'math': 'أنت أستاذ رياضيات. اشرح المعادلات خطوة بخطوة مع أمثلة.',
+        'physics': 'أنت فيزيائي. اشرح القوانين وطبقها على أمثلة واقعية.',
+        'chemistry': 'أنت كيميائي. اشرح التفاعلات والمعادلات الكيميائية.',
+        'history': 'أنت مؤرخ. اسرد الأحداث وحلل الأسباب والنتائج.',
         'biology': 'أنت عالم أحياء. اشرح العمليات الحيوية والتركيب والوظيفة.',
-        'other': 'أنت معلم خبير. بسط المفاهيم المعقدة واشرحها بوضوح مع أمثلة.'
+        'other': 'أنت معلم خبير. بسط المفاهيم واشرحها بوضوح مع أمثلة.'
     }
     
     teacher_style = teacher_styles.get(lecture_type, teacher_styles['other'])
     
     dialect_instructions = {
-        "iraq": "باللهجة العراقية. استخدم: هواية، گلت، هسا، چي، شلون، أكو، ماكو.",
-        "egypt": "باللهجة المصرية. استخدم: أوي، معلش، كده، عايز، النهارده، يا جماعة.",
-        "syria": "باللهجة الشامية. استخدم: هلق، شو، كتير، منيح، هيك، عم، فيكن.",
-        "gulf": "باللهجة الخليجية. استخدم: زين، وايد، عاد، هاذي، أبشر، يالحبيب.",
+        "iraq": "باللهجة العراقية. استخدم: هواية، گلت، هسا، چي، شلون، أكو.",
+        "egypt": "باللهجة المصرية. استخدم: أوي، معلش، كده، عايز، النهارده.",
+        "syria": "باللهجة الشامية. استخدم: هلق، شو، كتير، منيح، هيك.",
+        "gulf": "باللهجة الخليجية. استخدم: زين، وايد، عاد، هاذي، أبشر.",
         "msa": "بالعربية الفصحى البسيطة والواضحة."
     }
     
@@ -241,33 +234,31 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     prompt = f"""{teacher_style}
 تكلم {dialect_inst}
 
-**النص الأصلي:**
+**النص:**
 ---
 {text_preview}
 ---
 
-**الكلمات المفتاحية المستخرجة:** {', '.join(all_keywords[:15])}
+**الكلمات المفتاحية:** {', '.join(all_keywords[:15])}
 
 **المطلوب - {num_sections} أقسام:**
 
-أرجع JSON فقط:
+أرجع JSON:
 {{
   "title": "عنوان المحاضرة",
   "sections": [
     {{
       "title": "عنوان القسم",
-      "keywords": ["كلمة1", "كلمة2", "كلمة3", "كلمة4"],
-      "narration": "نص الشرح الصوتي الكامل (15-20 جملة متنوعة). لا تكرر الجمل. كل جملة معلومة جديدة. اشرح بأسلوبك كمعلم."
+      "keywords": ["ك1", "ك2", "ك3", "ك4"],
+      "narration": "نص الشرح (15-20 جملة متنوعة). لا تكرر الجمل."
     }}
   ]
 }}
 
-**تعليمات صارمة للـ narration:**
-- اكتب 15-20 جملة كاملة ومتنوعة.
-- لا تكرر نفس الجملة أبداً.
+**تعليمات صارمة:**
+- اكتب 15-20 جملة متنوعة. لا تكرر نفس الجملة أبداً.
 - لا تستخدم "يعني يعني" أو "هو هو".
-- كل جملة يجب أن تضيف معلومة جديدة.
-- اشرح كأنك تتحدث لطلاب أمامك.
+- كل جملة معلومة جديدة.
 """
 
     try:
@@ -284,14 +275,6 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         print(f"AI analysis failed: {e}")
         title = all_keywords[0] if all_keywords else "المحاضرة التعليمية"
         ai_sections = []
-
-    # تقسيم النص الأصلي لاستخراج النص الأصلي لكل قسم (للاستخدام في الصوت)
-    words = text.split()
-    chunk_size = max(1, len(words) // num_sections)
-    original_parts = []
-    for i in range(0, len(words), chunk_size):
-        original_parts.append(' '.join(words[i:i+chunk_size]))
-    original_parts = original_parts[:num_sections]
 
     final_sections = []
     for i in range(num_sections):
@@ -310,9 +293,8 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
             section_title = keywords[0] if keywords else f"القسم {i+1}"
             narration = ""
         
-        # إذا ماكو شرح، نستخدم النص الأصلي
         if not narration or len(narration) < 100:
-            narration = original_parts[i] if i < len(original_parts) else " ".join(keywords) * 5
+            narration = f"في هذا القسم سنتعرف على {', '.join(keywords)}. " * 10
         
         final_sections.append({
             "title": section_title,
@@ -327,7 +309,7 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         "lecture_type": lecture_type,
         "title": title,
         "sections": final_sections,
-        "summary": f"شرحنا في هذه المحاضرة: {', '.join(all_keywords[:8])}",
+        "summary": f"شرحنا: {', '.join(all_keywords[:8])}",
         "key_points": all_keywords[:5],
         "all_keywords": all_keywords
     }
@@ -352,7 +334,6 @@ def _get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     font_paths = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
     ]
     for p in font_paths:
         if os.path.exists(p):
@@ -364,13 +345,10 @@ def _get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
 
 
 def _make_colored_image(keyword: str, color: tuple) -> bytes:
-    """إنشاء صورة ملونة للكلمة المفتاحية - مضمونة 100%"""
     W, H = 400, 300
-    
     img = PILImage.new("RGB", (W, H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
     
-    # خلفية متدرجة
     for y in range(H):
         t = y / H
         r = int(255 * (1 - t) + color[0] * t * 0.2)
@@ -378,15 +356,11 @@ def _make_colored_image(keyword: str, color: tuple) -> bytes:
         b = int(255 * (1 - t) + color[2] * t * 0.2)
         draw.line([(0, y), (W, y)], fill=(r, g, b))
     
-    # إطار
     draw.rounded_rectangle([(8, 8), (W-8, H-8)], radius=15, outline=color, width=6)
-    
-    # دائرة زخرفية
     draw.ellipse([(W//2-50, H//2-50), (W//2+50, H//2+50)], fill=(*color, 25))
     
     font = _get_font(28, bold=True)
     
-    # تقسيم الكلمة
     words = keyword.split()
     lines = []
     current = []
@@ -445,8 +419,6 @@ async def fetch_image_for_keyword(
     lecture_type: str,
     image_search_en: str = "",
 ) -> bytes:
-    """جلب صورة للكلمة المفتاحية"""
-    
     colors = {
         'medicine': (231, 76, 126),
         'math': (52, 152, 219),
@@ -458,11 +430,9 @@ async def fetch_image_for_keyword(
     }
     color = colors.get(lecture_type, (231, 76, 126))
     
-    # محاولة Pollinations
     prompt = f"simple educational illustration of {keyword}, clean white background"
     img_bytes = await _pollinations_generate(prompt)
     if img_bytes:
         return img_bytes
     
-    # صورة ملونة احتياطية (مضمونة)
     return _make_colored_image(keyword, color)
