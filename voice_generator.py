@@ -35,7 +35,6 @@ async def generate_sections_audio(sections: list, dialect: str) -> dict:
     _sem = asyncio.Semaphore(3)
 
     async def _gen_one(i: int, section: dict) -> dict:
-        # استخدام شرح AI
         text = section.get("narration", "")
         if not text:
             text = " ".join(section.get("keywords", ["مفهوم"])) * 5
