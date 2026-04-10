@@ -3,7 +3,6 @@ import re
 import io
 import asyncio
 import aiohttp
-import random
 import os
 from PIL import Image as PILImage, ImageDraw, ImageFont
 from google import genai
@@ -80,7 +79,7 @@ async def _generate_with_google(prompt: str, max_tokens: int = 8192) -> str:
                     model=model,
                     contents=prompt,
                     config=genai_types.GenerateContentConfig(
-                        temperature=0.3,
+                        temperature=0.4,
                         max_output_tokens=max_tokens,
                     ),
                 )
@@ -111,7 +110,7 @@ async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": min(max_tokens, 8192),
-                    "temperature": 0.3,
+                    "temperature": 0.4,
                 }
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
@@ -144,10 +143,6 @@ async def _generate_with_rotation(prompt: str, max_output_tokens: int = 8192) ->
     
     raise Exception("All AI services failed")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# دوال استخراج الكلمات المفتاحية
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _extract_keywords(text: str, max_words: int = 20) -> list:
     stop_words = {'و', 'في', 'من', 'على', 'إلى', 'أن', 'هو', 'هي', 'هذا', 'هذه', 'كان', 
@@ -192,34 +187,8 @@ def _detect_lecture_type(text: str) -> str:
     return 'other'
 
 
-def _split_text_into_sections(text: str, num_sections: int) -> list:
-    paragraphs = text.split('\n\n')
-    if len(paragraphs) < num_sections:
-        paragraphs = text.split('\n')
-    
-    if len(paragraphs) < num_sections:
-        sentences = re.split(r'(?<=[.!?؟])\s+', text)
-        chunk_size = max(1, len(sentences) // num_sections)
-        paragraphs = []
-        for i in range(0, len(sentences), chunk_size):
-            paragraphs.append(' '.join(sentences[i:i+chunk_size]))
-    
-    sections = []
-    chunk_size = len(paragraphs) // num_sections
-    for i in range(num_sections):
-        start = i * chunk_size
-        end = start + chunk_size if i < num_sections - 1 else len(paragraphs)
-        sections.append('\n\n'.join(paragraphs[start:end]))
-    
-    return sections
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# دوال تحليل المحاضرة (المطلوبة من bot.py)
-# ─────────────────────────────────────────────────────────────────────────────
-
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
-    """تحليل المحاضرة واستخراج الأقسام والكلمات المفتاحية"""
+    """تحليل المحاضرة وإنشاء شرح احترافي"""
     
     all_keywords = _extract_keywords(text, 30)
     lecture_type = _detect_lecture_type(text)
@@ -234,28 +203,64 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     else:
         num_sections = 6
     
-    text_preview = text[:3000]
+    text_preview = text[:4000]
     
-    prompt = f"""حلل النص التالي وأعطني:
+    # شخصية المعلم حسب النوع
+    teacher_styles = {
+        'medicine': 'أنت طبيب استشاري تشرح لطلاب الطب. اشرح pathophysiology والأعراض والتشخيص والعلاج.',
+        'math': 'أنت أستاذ رياضيات. اشرح المعادلات خطوة بخطوة مع أمثلة.',
+        'physics': 'أنت فيزيائي. اشرح القوانين وطبقها على أمثلة واقعية.',
+        'chemistry': 'أنت كيميائي. اشرح التفاعلات والمعادلات الكيميائية.',
+        'history': 'أنت مؤرخ. اسرد الأحداث التاريخية وحلل الأسباب والنتائج.',
+        'biology': 'أنت عالم أحياء. اشرح العمليات الحيوية والتركيب والوظيفة.',
+        'other': 'أنت معلم خبير. بسط المفاهيم واشرحها بوضوح.'
+    }
+    
+    teacher_style = teacher_styles.get(lecture_type, teacher_styles['other'])
+    
+    dialect_instructions = {
+        "iraq": "باللهجة العراقية. استخدم: هواية، گلت، هسا، چي، شلون، أكو.",
+        "egypt": "باللهجة المصرية. استخدم: أوي، معلش، كده، عايز، النهارده.",
+        "syria": "باللهجة الشامية. استخدم: هلق، شو، كتير، منيح، هيك.",
+        "gulf": "باللهجة الخليجية. استخدم: زين، وايد، عاد، هاذي، أبشر.",
+        "msa": "بالعربية الفصحى البسيطة والواضحة."
+    }
+    
+    dialect_inst = dialect_instructions.get(dialect, dialect_instructions["msa"])
 
-1. عنوان مناسب للمحاضرة
-2. للأقسام الـ {num_sections}، أعطني لكل قسم:
-   - عنوان القسم
-   - 4 كلمات مفتاحية من النص
+    prompt = f"""{teacher_style}
+تكلم {dialect_inst}
 
-النص:
+**النص الأصلي:**
 ---
 {text_preview}
 ---
 
-الكلمات المفتاحية المستخرجة: {', '.join(all_keywords[:15])}
+**الكلمات المفتاحية:** {', '.join(all_keywords[:15])}
 
-أرجع JSON فقط:
-{{"title": "عنوان المحاضرة", "sections": [{{"title": "عنوان", "keywords": ["ك1", "ك2", "ك3", "ك4"]}}]}}
-"""
+**المطلوب:**
+1. عنوان مناسب للمحاضرة
+2. للأقسام الـ {num_sections}:
+   - عنوان القسم
+   - 4 كلمات مفتاحية
+   - شرح كامل (15-20 جملة) - هذا أهم جزء!
+
+أرجع JSON:
+{{
+  "title": "عنوان المحاضرة",
+  "sections": [
+    {{
+      "title": "عنوان القسم",
+      "keywords": ["ك1", "ك2", "ك3", "ك4"],
+      "narration": "نص الشرح الكامل (15-20 جملة). اشرح هنا بالتفصيل. لا تكرر النص الأصلي - أضف شرحك الخاص."
+    }}
+  ]
+}}
+
+اكتب شرحاً احترافياً مفصلاً في narration. هذا هو الجزء الأهم!"""
 
     try:
-        content = await _generate_with_rotation(prompt, max_output_tokens=4096)
+        content = await _generate_with_rotation(prompt, max_output_tokens=8192)
         content = content.strip()
         content = re.sub(r'^```json\s*', '', content)
         content = re.sub(r'\s*```$', '', content)
@@ -269,14 +274,13 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         title = all_keywords[0] if all_keywords else "المحاضرة التعليمية"
         ai_sections = []
 
-    original_sections = _split_text_into_sections(text, num_sections)
-    
     final_sections = []
     for i in range(num_sections):
-        section_text = original_sections[i] if i < len(original_sections) else ""
-        
-        if i < len(ai_sections) and ai_sections[i].get("keywords"):
-            keywords = ai_sections[i]["keywords"][:4]
+        if i < len(ai_sections):
+            section = ai_sections[i]
+            keywords = section.get("keywords", [])[:4]
+            section_title = section.get("title", f"القسم {i+1}")
+            narration = section.get("narration", "")
         else:
             start_idx = (i * 4) % len(all_keywords)
             keywords = []
@@ -284,17 +288,19 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
                 idx = (start_idx + j) % len(all_keywords)
                 if all_keywords[idx] not in keywords:
                     keywords.append(all_keywords[idx])
-        
-        if i < len(ai_sections) and ai_sections[i].get("title"):
-            section_title = ai_sections[i]["title"]
-        else:
             section_title = keywords[0] if keywords else f"القسم {i+1}"
+            narration = ""
+        
+        # إذا ماكو شرح، ننشئ شرح افتراضي
+        if not narration:
+            kw_str = ', '.join(keywords[:3]) if keywords else 'المفاهيم'
+            narration = f"في هذا القسم سنتعرف على {kw_str}. " * 12
         
         final_sections.append({
             "title": section_title,
-            "keywords": keywords,
-            "original_text": section_text,
-            "duration_estimate": max(30, len(section_text.split()) // 3),
+            "keywords": keywords if keywords else ["مفهوم", "تعريف", "شرح", "تحليل"],
+            "narration": narration,
+            "duration_estimate": max(45, len(narration.split()) // 3),
             "_keyword_images": [None] * 4,
             "_image_bytes": None
         })
@@ -321,7 +327,7 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# دوال توليد الصور (المطلوبة من bot.py)
+# توليد الصور
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
@@ -329,7 +335,6 @@ def _get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
     ]
     for p in font_paths:
         if os.path.exists(p):
@@ -354,6 +359,7 @@ def _make_colored_image(keyword: str, color: tuple) -> bytes:
         draw.line([(0, y), (W, y)], fill=(r, g, b))
     
     draw.rounded_rectangle([(8, 8), (W-8, H-8)], radius=15, outline=color, width=6)
+    draw.ellipse([(W//2-50, H//2-50), (W//2+50, H//2+50)], fill=(*color, 30))
     
     font = _get_font(28, bold=True)
     
@@ -415,8 +421,6 @@ async def fetch_image_for_keyword(
     lecture_type: str,
     image_search_en: str = "",
 ) -> bytes:
-    """جلب صورة للكلمة المفتاحية - الدالة المطلوبة من bot.py"""
-    
     colors = {
         'medicine': (231, 76, 126),
         'math': (52, 152, 219),
@@ -428,11 +432,9 @@ async def fetch_image_for_keyword(
     }
     color = colors.get(lecture_type, (231, 76, 126))
     
-    # محاولة Pollinations
     prompt = f"simple educational illustration of {keyword}, clean white background"
     img_bytes = await _pollinations_generate(prompt)
     if img_bytes:
         return img_bytes
     
-    # صورة ملونة احتياطية
     return _make_colored_image(keyword, color)
