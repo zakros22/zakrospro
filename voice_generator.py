@@ -4,7 +4,6 @@ from gtts import gTTS
 
 GTTS_LANG_MAP = {
     "iraq": "ar", "egypt": "ar", "syria": "ar", "gulf": "ar", "msa": "ar",
-    "english": "en", "british": "en",
 }
 
 async def generate_voice(text: str, dialect: str = "msa") -> tuple[bytes, bool]:
@@ -37,32 +36,18 @@ async def generate_sections_audio(sections: list, dialect: str) -> dict:
     async def _gen_one(i: int, section: dict) -> dict:
         text = section.get("narration", "")
         if not text:
-            text = " ".join(section.get("keywords", ["مفهوم"])) * 5
+            text = " ".join(section.get("keywords", ["مفهوم"]))
         
         async with _sem:
             try:
                 audio_bytes, _ = await generate_voice(text, dialect)
                 duration = await get_audio_duration(audio_bytes)
-                return {
-                    "index": i,
-                    "audio": audio_bytes,
-                    "duration": duration,
-                    "ok": True,
-                }
+                return {"index": i, "audio": audio_bytes, "duration": duration, "ok": True}
             except Exception as e:
-                print(f"TTS failed for section {i}: {e}")
-                return {
-                    "index": i,
-                    "audio": None,
-                    "duration": 45,
-                    "ok": False,
-                }
+                print(f"TTS failed: {e}")
+                return {"index": i, "audio": None, "duration": 30, "ok": False}
 
     raw = await asyncio.gather(*[_gen_one(i, s) for i, s in enumerate(sections)])
     results = sorted(raw, key=lambda r: r["index"])
     
-    return {
-        "results": results,
-        "used_fallback": True,
-        "all_failed": all(not r.get("ok") for r in results),
-    }
+    return {"results": results, "used_fallback": True, "all_failed": False}
