@@ -69,7 +69,7 @@ async def generate_voice(text: str, dialect: str = "msa") -> tuple[bytes, bool]:
 
     loop = asyncio.get_event_loop()
     audio_bytes = await loop.run_in_executor(None, _synth)
-    return audio_bytes, False  # False يعني استخدمنا gTTS
+    return audio_bytes, False
 
 
 async def get_audio_duration(audio_bytes: bytes) -> float:
@@ -79,7 +79,7 @@ async def get_audio_duration(audio_bytes: bytes) -> float:
         audio = AudioSegment.from_mp3(io.BytesIO(audio_bytes))
         return len(audio) / 1000.0
     except Exception:
-        return len(audio_bytes) / 16000  # تقدير تقريبي
+        return len(audio_bytes) / 16000
 
 
 def split_into_sentences(text: str) -> list:
@@ -154,7 +154,7 @@ async def generate_sections_audio(sections: list, dialect: str) -> dict:
                     "duration": duration,
                     "narration": narration,
                     "sentence_timings": sentence_timings,
-                    "used_fallback": True,  # gTTS دائماً
+                    "used_fallback": True,
                     "ok": True,
                 }
             except Exception as e:
@@ -179,6 +179,6 @@ async def generate_sections_audio(sections: list, dialect: str) -> dict:
 
     return {
         "results": results,
-        "used_fallback": True,  # gTTS دائماً
+        "used_fallback": True,
         "all_failed": all_failed,
-  }
+    }
