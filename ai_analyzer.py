@@ -10,11 +10,9 @@ from PIL import Image, ImageDraw, ImageFont
 from google import genai
 from google.genai import types as genai_types
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# تنظيف النص
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def clean_text(text: str) -> str:
+    """تنظيف النص من الأحرف غير المرغوبة"""
     if not text:
         return ""
     text = str(text).replace('\x00', '').replace('\0', '')
@@ -23,12 +21,8 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# استخراج النص من PDF - مع Thread و Timeout
-# ═══════════════════════════════════════════════════════════════════════════════
-
 async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
-    """استخراج النص من PDF في Thread منفصل مع timeout"""
+    """استخراج النص من PDF"""
     import PyPDF2
     
     def _extract():
@@ -41,150 +35,78 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
         return "\n\n".join(pages)
     
     loop = asyncio.get_event_loop()
-    
-    try:
-        text = await asyncio.wait_for(
-            loop.run_in_executor(None, _extract),
-            timeout=60.0
-        )
-        return clean_text(text)
-    except asyncio.TimeoutError:
-        raise RuntimeError("استخراج النص من PDF استغرق وقتاً طويلاً. الملف كبير جداً.")
-    except Exception as e:
-        raise RuntimeError(f"فشل استخراج النص من PDF: {str(e)}")
+    text = await loop.run_in_executor(None, _extract)
+    return clean_text(text)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # مفاتيح API
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _load_google_keys():
-    keys = []
-    raw = os.getenv("GOOGLE_API_KEYS", "")
-    if raw:
-        for k in raw.split(","):
-            k = k.strip()
-            if k and k not in keys:
-                keys.append(k)
-    for i in range(1, 10):
-        k = os.getenv(f"GOOGLE_API_KEY_{i}", "").strip()
-        if k and k not in keys:
-            keys.append(k)
-    single = os.getenv("GOOGLE_API_KEY", "").strip()
-    if single and single not in keys:
-        keys.append(single)
-    return keys
-
-_google_keys = _load_google_keys()
+_google_keys = [k.strip() for k in os.getenv("GOOGLE_API_KEYS", "").split(",") if k.strip()]
 _current_google_idx = 0
-_exhausted_google = set()
 
-def _load_groq_keys():
-    keys = []
-    raw = os.getenv("GROQ_API_KEYS", "")
-    if raw:
-        for k in raw.split(","):
-            k = k.strip()
-            if k and k not in keys:
-                keys.append(k)
-    single = os.getenv("GROQ_API_KEY", "").strip()
-    if single and single not in keys:
-        keys.append(single)
-    return keys
+_groq_key = os.getenv("GROQ_API_KEY", "").strip()
 
-_groq_keys = _load_groq_keys()
-_GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
 
 def _next_google_key():
+    """الحصول على مفتاح Google التالي"""
     global _current_google_idx
     if not _google_keys:
         return None
-    for _ in range(len(_google_keys)):
-        k = _google_keys[_current_google_idx % len(_google_keys)]
-        if k not in _exhausted_google:
-            return k
-        _current_google_idx += 1
-    return None
-
-def _mark_exhausted(k):
-    global _current_google_idx
-    _exhausted_google.add(k)
+    key = _google_keys[_current_google_idx % len(_google_keys)]
     _current_google_idx += 1
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# دوال AI
-# ═══════════════════════════════════════════════════════════════════════════════
-
-async def _google_generate(prompt: str, max_tokens: int = 8192) -> str:
-    models = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
-    for _ in range(len(_google_keys) * 2):
-        key = _next_google_key()
-        if not key:
-            break
-        client = genai.Client(api_key=key)
-        for model in models:
-            try:
-                resp = await asyncio.to_thread(
-                    client.models.generate_content,
-                    model=model,
-                    contents=prompt,
-                    config=genai_types.GenerateContentConfig(
-                        temperature=0.7,
-                        max_output_tokens=max_tokens
-                    )
-                )
-                return resp.text.strip()
-            except Exception as e:
-                if "429" in str(e) or "quota" in str(e).lower():
-                    _mark_exhausted(key)
-                    break
-    raise Exception("Google failed")
-
-
-async def _groq_generate(prompt: str, max_tokens: int = 8192) -> str:
-    if not _groq_keys:
-        raise Exception("No Groq keys")
-    for key in _groq_keys:
-        for model in _GROQ_MODELS:
-            try:
-                headers = {
-                    "Authorization": f"Bearer {key}",
-                    "Content-Type": "application/json"
-                }
-                payload = {
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": min(max_tokens, 8192),
-                    "temperature": 0.7
-                }
-                async with aiohttp.ClientSession() as s:
-                    async with s.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers=headers,
-                        json=payload,
-                        timeout=aiohttp.ClientTimeout(60)
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            return data["choices"][0]["message"]["content"].strip()
-            except:
-                continue
-    raise Exception("Groq failed")
+    return key
 
 
 async def _ai_generate(prompt: str, max_tokens: int = 8192) -> str:
-    if _google_keys:
+    """توليد النص باستخدام Google Gemini أو Groq"""
+    
+    # محاولة Google Gemini
+    key = _next_google_key()
+    if key:
         try:
-            return await _google_generate(prompt, max_tokens)
-        except:
-            pass
-    if _groq_keys:
+            client = genai.Client(api_key=key)
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model="gemini-2.0-flash",
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    temperature=0.7,
+                    max_output_tokens=max_tokens
+                )
+            )
+            return response.text.strip()
+        except Exception as e:
+            print(f"[AI] Google failed: {e}")
+    
+    # محاولة Groq
+    if _groq_key:
         try:
-            return await _groq_generate(prompt, max_tokens)
-        except:
-            pass
-    raise Exception("All AI failed")
+            headers = {
+                "Authorization": f"Bearer {_groq_key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": "llama-3.3-70b-versatile",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": min(max_tokens, 8192),
+                "temperature": 0.7
+            }
+            async with aiohttp.ClientSession() as s:
+                async with s.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(60)
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return data["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            print(f"[AI] Groq failed: {e}")
+    
+    raise Exception("All AI services failed")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -192,8 +114,9 @@ async def _ai_generate(prompt: str, max_tokens: int = 8192) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _extract_keywords(text: str, max_words: int = 30) -> list:
+    """استخراج الكلمات المفتاحية"""
     text = clean_text(text)
-    stop = {
+    stop_words = {
         'و', 'في', 'من', 'على', 'إلى', 'أن', 'هو', 'هي', 'هذا', 'هذه', 'كان', 'كانت',
         'مع', 'ما', 'لا', 'عن', 'إذا', 'لم', 'لن', 'قد', 'ثم', 'أو', 'أم', 'لكن',
         'حتى', 'بل', 'كل', 'بعض', 'the', 'a', 'an', 'is', 'are', 'was', 'were',
@@ -204,14 +127,16 @@ def _extract_keywords(text: str, max_words: int = 30) -> list:
     freq = {}
     for w in words:
         wl = w.lower()
-        if wl not in stop:
+        if wl not in stop_words:
             freq[w] = freq.get(w, 0) + 1
     sorted_words = sorted(freq.items(), key=lambda x: x[1], reverse=True)
     return [w[0] for w in sorted_words[:max_words]]
 
 
 def _detect_type(text: str) -> str:
+    """تحديد نوع المحاضرة"""
     text = clean_text(text).lower()
+    
     medical = ['مرض', 'علاج', 'طبيب', 'جراحة', 'دواء', 'تشخيص', 'مريض', 'قلب', 'دم', 'خلية', 'ورم', 'سرطان']
     math = ['معادلة', 'دالة', 'تفاضل', 'تكامل', 'جبر', 'هندسة', 'رياضيات', 'equation', 'function']
     physics = ['قوة', 'طاقة', 'حركة', 'سرعة', 'جاذبية', 'كهرباء', 'مغناطيس', 'فيزياء', 'force', 'energy']
@@ -232,9 +157,10 @@ def _detect_type(text: str) -> str:
 
 
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
+    """تحليل المحاضرة بشكل كامل"""
     text = clean_text(text)
     if not text:
-        raise ValueError("Empty")
+        raise ValueError("النص فارغ")
     
     keywords = _extract_keywords(text, 40)
     ltype = _detect_type(text)
@@ -252,22 +178,30 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     preview = text[:4000]
     
     teacher_map = {
-        'medicine': 'طبيب', 'math': 'أستاذ رياضيات', 'physics': 'فيزيائي',
-        'chemistry': 'كيميائي', 'history': 'مؤرخ', 'biology': 'عالم أحياء',
+        'medicine': 'طبيب',
+        'math': 'أستاذ رياضيات',
+        'physics': 'فيزيائي',
+        'chemistry': 'كيميائي',
+        'history': 'مؤرخ',
+        'biology': 'عالم أحياء',
         'other': 'معلم'
     }
     teacher = teacher_map.get(ltype, 'معلم')
     
     dial_map = {
-        "iraq": "بالعراقي", "egypt": "بالمصري", "syria": "بالشامي",
-        "gulf": "بالخليجي", "msa": "بالفصحى"
+        "iraq": "بالعراقي",
+        "egypt": "بالمصري",
+        "syria": "بالشامي",
+        "gulf": "بالخليجي",
+        "msa": "بالفصحى"
     }
     dial = dial_map.get(dialect, "بالفصحى")
     
     prompt = (
         f"أنت {teacher}. اشرح {dial}. اكتب 15-20 جملة متنوعة لكل قسم. "
-        f"النص: {preview}. الكلمات: {', '.join(keywords[:15])}. "
-        f"أرجع JSON: {{'title': 'عنوان', 'sections': [{{'title': '', 'keywords': ['','','',''], 'narration': ''}}]}}"
+        f"النص: {preview}. الكلمات المفتاحية: {', '.join(keywords[:15])}. "
+        f"أرجع JSON فقط بالتنسيق التالي: "
+        f'{{"title": "عنوان المحاضرة", "sections": [{{"title": "عنوان القسم", "keywords": ["ك1","ك2","ك3","ك4"], "narration": "نص الشرح"}}]}}'
     )
     
     try:
@@ -277,7 +211,8 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         res = json.loads(content)
         title = clean_text(res.get("title", keywords[0] if keywords else "محاضرة"))
         ai_secs = res.get("sections", [])
-    except:
+    except Exception as e:
+        print(f"[AI] Parse failed: {e}")
         title = keywords[0] if keywords else "محاضرة"
         ai_secs = []
     
@@ -292,7 +227,7 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
             idx = (i * 4) % len(keywords)
             kw = [keywords[(idx + j) % len(keywords)] for j in range(4)]
             st = kw[0] if kw else f"قسم {i+1}"
-            nar = f"نتعرف على {', '.join(kw[:3])}. " * 15
+            nar = f"نتعرف في هذا القسم على {', '.join(kw[:3])}. " * 15
         
         while len(kw) < 4:
             kw.append("مفهوم")
@@ -313,13 +248,13 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         "lecture_type": ltype,
         "title": title,
         "sections": sections,
-        "summary": f"شرحنا: {', '.join(keywords[:8])}",
+        "summary": f"شرحنا في هذه المحاضرة: {', '.join(keywords[:8])}",
         "all_keywords": keywords
     }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# الصور
+# توليد الصور
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _TYPE_COLORS = {
@@ -333,7 +268,8 @@ _TYPE_COLORS = {
 }
 
 
-def _get_font(sz):
+def _get_font(size: int):
+    """تحميل خط مناسب"""
     paths = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
@@ -341,43 +277,46 @@ def _get_font(sz):
     for p in paths:
         if os.path.exists(p):
             try:
-                return ImageFont.truetype(p, sz)
+                return ImageFont.truetype(p, size)
             except:
                 pass
     return ImageFont.load_default()
 
 
-def _make_image(kw: str, col: tuple) -> bytes:
-    kw = clean_text(kw) or "مفهوم"
+def _make_colored_image(keyword: str, color: tuple) -> bytes:
+    """إنشاء صورة ملونة تحتوي على الكلمة المفتاحية"""
+    keyword = clean_text(keyword) or "مفهوم"
     W, H = 500, 350
+    
     img = Image.new("RGB", (W, H), (255, 255, 255))
-    d = ImageDraw.Draw(img)
+    draw = ImageDraw.Draw(img)
     
     for y in range(H):
         t = y / H
-        r = int(255 * (1 - t) + col[0] * t * 0.2)
-        g = int(255 * (1 - t) + col[1] * t * 0.2)
-        b = int(255 * (1 - t) + col[2] * t * 0.2)
-        d.line([(0, y), (W, y)], fill=(r, g, b))
+        r = int(255 * (1 - t) + color[0] * t * 0.2)
+        g = int(255 * (1 - t) + color[1] * t * 0.2)
+        b = int(255 * (1 - t) + color[2] * t * 0.2)
+        draw.line([(0, y), (W, y)], fill=(r, g, b))
     
-    d.rounded_rectangle([(10, 10), (W-10, H-10)], radius=20, outline=col, width=8)
-    d.ellipse([(W//2-60, H//2-60), (W//2+60, H//2+60)], fill=(*col, 25))
+    draw.rounded_rectangle([(10, 10), (W-10, H-10)], radius=20, outline=color, width=8)
+    draw.ellipse([(W//2-60, H//2-60), (W//2+60, H//2+60)], fill=(*color, 25))
     
-    f = _get_font(32)
+    font = _get_font(32)
+    
     try:
         import arabic_reshaper
         from bidi.algorithm import get_display
-        kw = get_display(arabic_reshaper.reshape(kw[:30]))
+        keyword = get_display(arabic_reshaper.reshape(keyword[:30]))
     except:
         pass
     
     lines = []
     cur = []
-    for w in kw.split():
+    for w in keyword.split():
         cur.append(w)
         line = ' '.join(cur)
         try:
-            if f.getbbox(line)[2] - f.getbbox(line)[0] > W - 60:
+            if font.getbbox(line)[2] - font.getbbox(line)[0] > W - 60:
                 cur.pop()
                 lines.append(' '.join(cur))
                 cur = [w]
@@ -389,12 +328,12 @@ def _make_image(kw: str, col: tuple) -> bytes:
     y = H // 2 - (len(lines) * 40) // 2
     for line in lines:
         try:
-            tw = f.getbbox(line)[2] - f.getbbox(line)[0]
+            tw = font.getbbox(line)[2] - font.getbbox(line)[0]
         except:
             tw = len(line) * 18
         x = (W - tw) // 2
-        d.text((x+3, y+3), line, fill=(200, 200, 200), font=f)
-        d.text((x, y), line, fill=col, font=f)
+        draw.text((x+3, y+3), line, fill=(200, 200, 200), font=font)
+        draw.text((x, y), line, fill=color, font=font)
         y += 45
     
     buf = io.BytesIO()
@@ -402,11 +341,13 @@ def _make_image(kw: str, col: tuple) -> bytes:
     return buf.getvalue()
 
 
-async def _pollinations(prompt: str) -> bytes | None:
+async def _pollinations_generate(prompt: str) -> bytes | None:
+    """محاولة توليد صورة من Pollinations.ai"""
     import urllib.parse
     try:
         async with aiohttp.ClientSession() as s:
-            url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt[:200])}?width=500&height=350&nologo=true"
+            encoded = urllib.parse.quote(prompt[:200])
+            url = f"https://image.pollinations.ai/prompt/{encoded}?width=500&height=350&nologo=true"
             async with s.get(url, timeout=15) as r:
                 if r.status == 200:
                     return await r.read()
@@ -415,7 +356,8 @@ async def _pollinations(prompt: str) -> bytes | None:
     return None
 
 
-async def _picsum() -> bytes | None:
+async def _picsum_generate() -> bytes | None:
+    """محاولة جلب صورة من Picsum"""
     try:
         async with aiohttp.ClientSession() as s:
             url = f"https://picsum.photos/500/350?random={random.randint(1, 1000)}"
@@ -427,16 +369,22 @@ async def _picsum() -> bytes | None:
     return None
 
 
-async def fetch_image_for_keyword(keyword: str, section_title: str = "", lecture_type: str = "other", image_search_en: str = "") -> bytes:
+async def fetch_image_for_keyword(
+    keyword: str,
+    section_title: str = "",
+    lecture_type: str = "other",
+    image_search_en: str = ""
+) -> bytes:
+    """جلب صورة للكلمة المفتاحية"""
     keyword = clean_text(keyword) or "مفهوم"
-    col = _TYPE_COLORS.get(lecture_type, _TYPE_COLORS['other'])
+    color = _TYPE_COLORS.get(lecture_type, _TYPE_COLORS['other'])
     
-    img = await _pollinations(f"educational illustration of {keyword}")
+    img = await _pollinations_generate(f"educational illustration of {keyword}")
     if img:
         return img
     
-    img = await _picsum()
+    img = await _picsum_generate()
     if img:
         return img
     
-    return _make_image(keyword, col)
+    return _make_colored_image(keyword, color)
