@@ -78,4 +78,4 @@ async def generate_sections_audio(sections: list, dialect: str) -> dict:
         "results": results,
         "used_fallback": True,
         "all_failed": all(not r["ok"] for r in results)
-    }
+        }
