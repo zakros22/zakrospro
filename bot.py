@@ -651,6 +651,11 @@ async def _process_lecture(
         prog_msg,
         f"❌ *حدث خطأ أثناء المعالجة*\n\n`{error_msg}`\n\nلم يتم خصم محاولتك، حاول مرة أخرى.",
     )
+    await context.bot.send_message(
+        uid,
+        "يمكنك المحاولة مجدداً أو التواصل مع الدعم.",
+        reply_markup=main_keyboard(),
+    )
 
         finally:
             _active_jobs.pop(uid, None)
