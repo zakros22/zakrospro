@@ -164,12 +164,15 @@ async def _generate_with_rotation(prompt: str, max_output_tokens: int = 8192) ->
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# تحليل المحاضرة
+# استخراج الكلمات المفتاحية من النص
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _extract_keywords_from_text(text: str, max_words: int = 4) -> list:
+def _extract_keywords_from_text(text: str, max_words: int = 8) -> list:
     """استخراج الكلمات المفتاحية من النص العربي"""
-    stop_words = {'و', 'في', 'من', 'على', 'إلى', 'أن', 'هو', 'هي', 'هذا', 'هذه', 'كان', 'كانت', 'مع', 'ما', 'لا', 'عن', 'إذا', 'لم', 'لن', 'قد', 'ثم', 'أو', 'أم', 'لكن', 'حتى', 'بل', 'كل', 'بعض', 'أي', 'تلك', 'ذلك', 'هؤلاء', 'الذي', 'التي', 'الذين', 'ما', 'ماذا', 'كيف', 'أين', 'متى'}
+    stop_words = {'و', 'في', 'من', 'على', 'إلى', 'أن', 'هو', 'هي', 'هذا', 'هذه', 'كان', 
+                  'كانت', 'مع', 'ما', 'لا', 'عن', 'إذا', 'لم', 'لن', 'قد', 'ثم', 'أو', 
+                  'أم', 'لكن', 'حتى', 'بل', 'كل', 'بعض', 'أي', 'تلك', 'ذلك', 'هؤلاء', 
+                  'الذي', 'التي', 'الذين', 'ماذا', 'كيف', 'أين', 'متى', 'نحن', 'هم'}
     
     words = re.findall(r'[\u0600-\u06FF]{4,}', text)
     word_freq = {}
@@ -181,67 +184,95 @@ def _extract_keywords_from_text(text: str, max_words: int = 4) -> list:
     return [w[0] for w in sorted_words[:max_words]]
 
 
-async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
-    # استخراج الكلمات المفتاحية من النص الأصلي
-    extracted_keywords = _extract_keywords_from_text(text, 6)
-    
-    dialect_instructions = {
-        "iraq": "استخدم اللهجة العراقية في الشرح، مع كلمات عراقية أصيلة مثل (هواية، گلت، يعني، بس، هسا)",
-        "egypt": "استخدم اللهجة المصرية في الشرح، مع كلمات مصرية مثل (أوي، معلش، يعني، بس، كده)",
-        "syria": "استخدم اللهجة الشامية في الشرح، مع كلمات شامية مثل (هلق، شو، كتير، منيح، هيك)",
-        "gulf": "استخدم اللهجة الخليجية في الشرح، مع كلمات خليجية مثل (زين، وايد، عاد، هاذي، أبشر)",
-        "msa": "استخدم العربية الفصحى الواضحة والمبسطة",
-    }
+# ──────────────────────────────────────────────────────────────────────────────
+# التحليل العميق للمحاضرة
+# ──────────────────────────────────────────────────────────────────────────────
 
-    instruction = dialect_instructions.get(dialect, dialect_instructions["msa"])
+async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
+    """تحليل عميق للمحاضرة مع شرح مفصل للمفاهيم والمعادلات"""
     
-    # تحديد عدد الأقسام
+    # استخراج الكلمات المفتاحية
+    extracted_keywords = _extract_keywords_from_text(text, 10)
+    
+    # تحديد عدد الأقسام حسب طول النص
     word_count = len(text.split())
-    if word_count < 300:
+    if word_count < 400:
         num_sections = 3
     elif word_count < 800:
         num_sections = 4
     elif word_count < 1500:
         num_sections = 5
-    else:
+    elif word_count < 2500:
         num_sections = 6
+    else:
+        num_sections = 7
     
-    text_limit = min(len(text), 4000)
+    dialect_instructions = {
+        "iraq": "استخدم اللهجة العراقية الأصيلة. اشرح بطريقة المعلم العراقي: (هواية، گلت، يعني، بس، هسا، چي، شلون، وين، أكو، ماكو). خلي الشرح وافي ومفصل.",
+        "egypt": "استخدم اللهجة المصرية. اشرح بطريقة المعلم المصري: (أوي، معلش، يعني، كده، عايز، بتاع، النهارده، بكره). خلي الشرح وافي ومفصل.",
+        "syria": "استخدم اللهجة الشامية. اشرح بطريقة المعلم السوري: (هلق، شو، كتير، منيح، هيك، عم، فيكن). خلي الشرح وافي ومفصل.",
+        "gulf": "استخدم اللهجة الخليجية. اشرح بطريقة المعلم الخليجي: (زين، وايد، عاد، هاذي، أبشر، شفيك، ليش). خلي الشرح وافي ومفصل.",
+        "msa": "استخدم العربية الفصحى البسيطة والواضحة. اشرح كمعلم متمكن يبسط المعلومات للطلاب.",
+    }
+    
+    instruction = dialect_instructions.get(dialect, dialect_instructions["msa"])
+    
+    text_limit = min(len(text), 5000)
 
-    prompt = f"""أنت معلم خبير ومتخصص في تبسيط المحاضرات العلمية.
+    prompt = f"""أنت معلم خبير ومتخصص في تبسيط العلوم والرياضيات. مهمتك شرح المحاضرة التالية بشكل مفصل وعميق جداً.
 
 {instruction}
 
-المحاضرة:
+**المحاضرة:**
 ---
 {text[:text_limit]}
 ---
 
-الكلمات المفتاحية المستخرجة: {', '.join(extracted_keywords[:6])}
+**الكلمات المفتاحية المستخرجة:** {', '.join(extracted_keywords[:8])}
 
-قم بتحليل المحاضرة وأرجع JSON فقط بالتنسيق التالي. يجب أن يحتوي على بالضبط {num_sections} أقسام:
+**تعليمات مهمة جداً:**
+
+1. **حلل النص بعمق**: اقرأ المحاضرة جيداً وافهم كل مفهوم.
+2. **اشرح المعادلات الرياضية**: إذا وجدت معادلات، اشرحها خطوة بخطوة. فسر كل رمز وماذا يعني.
+3. **فسر المصطلحات العلمية**: كل مصطلح معقد، اشرحه بلغة بسيطة مع مثال.
+4. **اربط الأفكار**: وضح كيف ترتبط المفاهيم ببعضها.
+5. **أعطِ أمثلة واقعية**: لكل مفهوم، أعطِ مثالاً من الحياة اليومية.
+6. **الشرح يجب أن يكون طويلاً ووافياً**: لا تختصر! اشرح كل جزئية بالتفصيل.
+7. **استخدم أسلوب المعلم**: كأنك تشرح لطلاب أمامك في الفصل.
+
+**المطلوب:**
+أنشئ {num_sections} أقسام تعليمية. كل قسم يجب أن يحتوي على شرح مفصل جداً (15-20 جملة).
+
+أرجع JSON فقط بالتنسيق التالي:
 
 {{
-  "lecture_type": "medicine",
-  "title": "عنوان المحاضرة",
+  "lecture_type": "medicine/science/math/physics/chemistry/biology/engineering/computer/business/literature/history/other",
+  "title": "عنوان المحاضرة (عنوان جذاب وواضح)",
   "sections": [
     {{
       "title": "عنوان القسم",
-      "content": "محتوى القسم المبسط",
+      "content": "ملخص مختصر للقسم (3-4 جمل)",
       "keywords": ["كلمة1", "كلمة2", "كلمة3", "كلمة4"],
-      "narration": "نص الشرح الكامل باللهجة المطلوبة (8-10 جمل)",
-      "duration_estimate": 45
+      "keyword_images": [
+        "وصف إنجليزي لصورة كرتونية تعبر عن الكلمة الأولى (3-5 كلمات)",
+        "وصف إنجليزي لصورة كرتونية تعبر عن الكلمة الثانية (3-5 كلمات)",
+        "وصف إنجليزي لصورة كرتونية تعبر عن الكلمة الثالثة (3-5 كلمات)",
+        "وصف إنجليزي لصورة كرتونية تعبر عن الكلمة الرابعة (3-5 كلمات)"
+      ],
+      "narration": "نص الشرح الكامل والمفصل (15-20 جملة). اشرح كل مفهوم، فسر المعادلات، أعطِ أمثلة، اربط الأفكار. استخدم اللهجة المطلوبة.",
+      "duration_estimate": 90
     }}
   ],
-  "summary": "ملخص المحاضرة بأسلوب مبسط (4-5 جمل)",
-  "key_points": ["نقطة1", "نقطة2", "نقطة3", "نقطة4"]
+  "summary": "ملخص شامل للمحاضرة (6-8 جمل) يذكر أهم النقاط التي تم شرحها",
+  "key_points": ["النقطة الرئيسية الأولى", "النقطة الرئيسية الثانية", "النقطة الرئيسية الثالثة", "النقطة الرئيسية الرابعة", "النقطة الرئيسية الخامسة"]
 }}
 
-مهم جداً:
-- يجب أن تكون {num_sections} أقسام بالضبط
-- كل قسم يجب أن يحتوي على 4 كلمات مفتاحية من القائمة المستخرجة
-- اكتب النصوص باللهجة المطلوبة
-- أرجع JSON فقط بدون أي نص إضافي
+**تنبيهات:**
+- اكتب نصوصاً طويلة ومفصلة في narration (15-20 جملة على الأقل لكل قسم).
+- اشرح المعادلات الرياضية خطوة بخطوة.
+- فسر كل المصطلحات العلمية.
+- استخدم الكلمات المفتاحية من القائمة أعلاه.
+- أرجع JSON فقط بدون أي نص إضافي.
 """
 
     try:
@@ -256,14 +287,13 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         if "title" not in result or not result["title"]:
             result["title"] = "المحاضرة التعليمية"
         if "summary" not in result or not result["summary"]:
-            result["summary"] = "تم شرح المفاهيم الأساسية في هذه المحاضرة."
+            result["summary"] = "تم شرح المفاهيم الأساسية في هذه المحاضرة بشكل مفصل."
         if "key_points" not in result or not result["key_points"]:
-            result["key_points"] = extracted_keywords[:4]
+            result["key_points"] = extracted_keywords[:5]
         
-        # التأكد من وجود كلمات مفتاحية في كل قسم
+        # التأكد من وجود كلمات مفتاحية وشرح في كل قسم
         for i, section in enumerate(result.get("sections", [])):
             if "keywords" not in section or not section["keywords"]:
-                # استخدام الكلمات المستخرجة
                 start_idx = (i * 4) % len(extracted_keywords)
                 section["keywords"] = []
                 for j in range(4):
@@ -272,42 +302,60 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
                         section["keywords"].append(extracted_keywords[idx])
             
             if "narration" not in section or not section["narration"]:
-                section["narration"] = section.get("content", "شرح القسم")
+                section["narration"] = section.get("content", "شرح مفصل للقسم") * 5
+            
+            if "keyword_images" not in section or not section["keyword_images"]:
+                section["keyword_images"] = [
+                    f"educational illustration of {kw}" for kw in section.get("keywords", ["concept"])[:4]
+                ]
             
             if "title" not in section or not section["title"]:
-                section["title"] = f"القسم {i+1}"
+                section["title"] = f"القسم {i+1}: {section.get('keywords', [''])[0]}"
         
         return result
         
     except Exception as e:
         print(f"Analysis error: {e}")
         
-        # إنشاء بيانات افتراضية
+        # إنشاء بيانات افتراضية مفصلة
         sections = []
-        chunk_size = max(1, len(extracted_keywords) // num_sections)
-        
         for i in range(num_sections):
-            start_idx = (i * chunk_size) % len(extracted_keywords)
+            start_idx = (i * 4) % len(extracted_keywords)
             kw = []
             for j in range(4):
                 idx = (start_idx + j) % len(extracted_keywords)
                 if extracted_keywords[idx] not in kw:
                     kw.append(extracted_keywords[idx])
             
+            # نص شرح افتراضي طويل
+            if kw:
+                narration = (
+                    f"في هذا القسم سنتعرف على {kw[0]}. "
+                    f"{kw[0]} هو مفهوم مهم جداً في مجالنا. "
+                    f"لنفهم {kw[0]} بشكل أفضل، دعونا ننظر إلى تعريفه أولاً. "
+                    f"ثم ننتقل إلى {kw[1]} الذي يرتبط ارتباطاً وثيقاً بـ {kw[0]}. "
+                    f"العلاقة بين {kw[0]} و {kw[1]} هي علاقة تكاملية. "
+                    f"بعد ذلك، سنتناول {kw[2]} ونرى كيف يؤثر على النتائج. "
+                    f"وأخيراً، سنختتم بـ {kw[3]} الذي يوضح التطبيق العملي. "
+                ) * 3
+            else:
+                narration = "شرح مفصل للمفاهيم الأساسية في هذا القسم. " * 8
+            
             sections.append({
-                "title": f"القسم {i+1}: {kw[0] if kw else 'مقدمة'}",
-                "content": f"شرح مفصل عن {', '.join(kw[:2]) if kw else 'المفاهيم الأساسية'}",
+                "title": f"القسم {i+1}: {kw[0] if kw else 'المفاهيم الأساسية'}",
+                "content": f"شرح مفصل عن {', '.join(kw[:2]) if kw else 'المفاهيم'}",
                 "keywords": kw if kw else ["مفهوم", "تعريف", "شرح", "تحليل"],
-                "narration": f"في هذا القسم سنتعرف على {', '.join(kw[:3]) if kw else 'المفاهيم الأساسية'}. " * 3,
-                "duration_estimate": 45
+                "keyword_images": [f"educational illustration of {k}" for k in (kw if kw else ["concept"])[:4]],
+                "narration": narration,
+                "duration_estimate": 90
             })
         
         return {
             "lecture_type": "other",
-            "title": "المحاضرة التعليمية",
+            "title": extracted_keywords[0] if extracted_keywords else "المحاضرة التعليمية",
             "sections": sections,
-            "summary": "تم شرح المفاهيم الأساسية في هذه المحاضرة.",
-            "key_points": extracted_keywords[:4] if extracted_keywords else ["نقطة1", "نقطة2", "نقطة3", "نقطة4"]
+            "summary": "شرحنا في هذه المحاضرة " + "، ".join(extracted_keywords[:5]) if extracted_keywords else "المفاهيم الأساسية",
+            "key_points": extracted_keywords[:5] if extracted_keywords else ["نقطة1", "نقطة2", "نقطة3", "نقطة4", "نقطة5"]
         }
 
 
@@ -323,11 +371,10 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# توليد الصور - مواقع متعددة للاحتياط
+# توليد الصور
 # ──────────────────────────────────────────────────────────────────────────────
 
 async def _pollinations_generate(prompt: str) -> bytes | None:
-    """الموقع الأول: Pollinations.ai"""
     import urllib.parse
     clean_prompt = prompt[:200].replace("\n", " ")
     encoded = urllib.parse.quote(clean_prompt)
@@ -343,37 +390,29 @@ async def _pollinations_generate(prompt: str) -> bytes | None:
                         pil_img = pil_img.resize((854, 480), PILImage.LANCZOS)
                         buf = io.BytesIO()
                         pil_img.save(buf, "JPEG", quality=85)
-                        print(f"✅ Pollinations image generated")
                         return buf.getvalue()
-    except Exception as e:
-        print(f"Pollinations error: {e}")
+    except Exception:
+        pass
     return None
 
 
 async def _picsum_generate() -> bytes | None:
-    """الموقع الاحتياطي: Lorem Picsum (صور عشوائية مجانية)"""
     try:
         url = f"https://picsum.photos/854/480?random={random.randint(1, 1000)}"
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status == 200:
-                    raw = await resp.read()
-                    if len(raw) > 5000:
-                        print(f"✅ Picsum fallback image used")
-                        return raw
-    except Exception as e:
-        print(f"Picsum error: {e}")
+                    return await resp.read()
+    except Exception:
+        pass
     return None
 
 
 def _make_placeholder_image(keyword: str, section_title: str = "") -> bytes:
-    """صورة احتياطية مكتوب عليها الكلمة المفتاحية"""
     W, H = 854, 480
-    # خلفية متدرجة
     img = PILImage.new("RGB", (W, H), (30, 40, 70))
     draw = ImageDraw.Draw(img)
     
-    # تدرج لوني
     for y in range(H):
         t = y / H
         r = int(30 * (1 - t) + 60 * t)
@@ -381,32 +420,24 @@ def _make_placeholder_image(keyword: str, section_title: str = "") -> bytes:
         b = int(70 * (1 - t) + 120 * t)
         draw.line([(0, y), (W, y)], fill=(r, g, b))
     
-    # إطار
     draw.rectangle([(20, 20), (W-20, H-20)], outline=(255, 200, 50), width=3)
     
     try:
         font_path = os.path.join(os.path.dirname(__file__), "fonts", "Amiri-Bold.ttf")
         if os.path.exists(font_path):
             font = ImageFont.truetype(font_path, 50)
-            font_small = ImageFont.truetype(font_path, 24)
         else:
             font = ImageFont.load_default()
-            font_small = font
     except Exception:
         font = ImageFont.load_default()
-        font_small = font
     
-    # إعادة تشكيل النص العربي
     try:
         import arabic_reshaper
         from bidi.algorithm import get_display
         keyword_disp = get_display(arabic_reshaper.reshape(keyword))
-        section_disp = get_display(arabic_reshaper.reshape(section_title[:30]))
     except Exception:
         keyword_disp = keyword
-        section_disp = section_title[:30]
     
-    # رسم الكلمة المفتاحية
     try:
         bbox = draw.textbbox((0, 0), keyword_disp, font=font)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
@@ -416,34 +447,8 @@ def _make_placeholder_image(keyword: str, section_title: str = "") -> bytes:
     x = (W - tw) // 2
     y = (H - th) // 2 - 30
     
-    # ظل
     draw.text((x+3, y+3), keyword_disp, fill=(0, 0, 0), font=font)
     draw.text((x, y), keyword_disp, fill=(255, 220, 50), font=font)
-    
-    # عنوان القسم
-    if section_title:
-        try:
-            bbox = draw.textbbox((0, 0), section_disp, font=font_small)
-            sw, sh = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        except Exception:
-            sw, sh = len(section_disp) * 15, 24
-        
-        sx = (W - sw) // 2
-        sy = y + th + 20
-        draw.text((sx+2, sy+2), section_disp, fill=(0, 0, 0), font=font_small)
-        draw.text((sx, sy), section_disp, fill=(200, 200, 220), font=font_small)
-    
-    # علامة مائية
-    watermark = "@zakros_probot"
-    try:
-        bbox = draw.textbbox((0, 0), watermark, font=font_small)
-        ww, wh = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    except Exception:
-        ww, wh = len(watermark) * 10, 20
-    
-    wx = (W - ww) // 2
-    wy = H - wh - 20
-    draw.text((wx, wy), watermark, fill=(120, 130, 150), font=font_small)
     
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=90)
@@ -456,40 +461,25 @@ async def fetch_image_for_keyword(
     lecture_type: str,
     image_search_en: str = "",
 ) -> bytes:
-    """جلب صورة للكلمة المفتاحية - يجرب Pollinations ثم Picsum ثم صورة نصية"""
+    subject = image_search_en if image_search_en else keyword.strip()
     
-    # تحضير وصف الصورة
-    subject = keyword.strip()
+    prompt_en = f"educational cartoon illustration of {subject}, simple clean style, white background"
+    prompt_ar = f"رسم توضيحي تعليمي بسيط عن {keyword}، خلفية بيضاء، أسلوب كرتوني نظيف"
     
-    # وصف بالعربي للصورة
-    prompt_ar = f"رسم توضيحي تعليمي بسيط عن {subject}، خلفية فاتحة، أسلوب كرتوني نظيف"
+    # محاولة Pollinations مع وصف عربي
+    img_bytes = await _pollinations_generate(prompt_ar)
+    if img_bytes:
+        return img_bytes
     
-    # وصف بالإنجليزي للصورة
-    prompt_en = f"educational cartoon illustration about {subject}, simple clean style, light background"
+    # محاولة Pollinations مع وصف إنجليزي
+    img_bytes = await _pollinations_generate(prompt_en)
+    if img_bytes:
+        return img_bytes
     
-    # 1. محاولة Pollinations مع وصف عربي
-    try:
-        img_bytes = await _pollinations_generate(prompt_ar)
-        if img_bytes:
-            return img_bytes
-    except Exception:
-        pass
+    # محاولة Picsum
+    img_bytes = await _picsum_generate()
+    if img_bytes:
+        return img_bytes
     
-    # 2. محاولة Pollinations مع وصف إنجليزي
-    try:
-        img_bytes = await _pollinations_generate(prompt_en)
-        if img_bytes:
-            return img_bytes
-    except Exception:
-        pass
-    
-    # 3. محاولة Picsum (صور عشوائية)
-    try:
-        img_bytes = await _picsum_generate()
-        if img_bytes:
-            return img_bytes
-    except Exception:
-        pass
-    
-    # 4. صورة احتياطية مكتوب عليها الكلمة المفتاحية
+    # صورة احتياطية
     return _make_placeholder_image(keyword, section_title)
