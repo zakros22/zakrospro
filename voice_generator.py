@@ -1,41 +1,81 @@
 # -*- coding: utf-8 -*-
-import asyncio, io, re
+import asyncio
+import io
+import re
 from gtts import gTTS
 
-def clean_text(t):
-    if not t: return ""
-    t = str(t).replace('\x00','').replace('\0','')
-    return re.sub(r'\s+', ' ', t).strip()
 
-GTTS_LANG = {"iraq":"ar","egypt":"ar","syria":"ar","gulf":"ar","msa":"ar","english":"en","british":"en"}
+def clean_text(text: str) -> str:
+    """تنظيف النص"""
+    if not text:
+        return ""
+    text = str(text).replace('\x00', '').replace('\0', '')
+    text = re.sub(r'[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
 
-async def generate_voice(text, dialect="msa"):
+
+GTTS_LANG_MAP = {
+    "iraq": "ar",
+    "egypt": "ar",
+    "syria": "ar",
+    "gulf": "ar",
+    "msa": "ar",
+    "english": "en",
+    "british": "en"
+}
+
+
+async def generate_voice(text: str, dialect: str = "msa") -> tuple[bytes, bool]:
+    """توليد الصوت باستخدام gTTS"""
     text = clean_text(text) or "محاضرة"
-    lang = GTTS_LANG.get(dialect, "ar")
+    lang = GTTS_LANG_MAP.get(dialect, "ar")
+    
     def _synth():
         buf = io.BytesIO()
-        gTTS(text=text, lang=lang, slow=False).write_to_fp(buf)
+        tts = gTTS(text=text, lang=lang, slow=False)
+        tts.write_to_fp(buf)
         buf.seek(0)
         return buf.read()
-    return await asyncio.get_event_loop().run_in_executor(None, _synth), False
+    
+    loop = asyncio.get_event_loop()
+    audio = await loop.run_in_executor(None, _synth)
+    return audio, False
 
-async def get_audio_duration(audio):
+
+async def get_audio_duration(audio: bytes) -> float:
+    """حساب مدة الصوت"""
     try:
         from pydub import AudioSegment
-        return len(AudioSegment.from_mp3(io.BytesIO(audio))) / 1000.0
+        seg = AudioSegment.from_mp3(io.BytesIO(audio))
+        return len(seg) / 1000.0
     except:
         return max(5.0, len(audio) / 16000)
 
-async def generate_sections_audio(sections, dialect):
+
+async def generate_sections_audio(sections: list, dialect: str) -> dict:
+    """توليد الصوت لجميع الأقسام"""
     sem = asyncio.Semaphore(3)
-    async def _gen(i, s):
-        txt = clean_text(s.get("narration", "")) or " ".join(s.get("keywords", ["مفهوم"]))
+    
+    async def _gen_one(i: int, section: dict):
+        txt = clean_text(section.get("narration", ""))
+        if not txt:
+            txt = " ".join(section.get("keywords", ["مفهوم"]))
+        
         async with sem:
             try:
                 aud, _ = await generate_voice(txt, dialect)
                 dur = await get_audio_duration(aud)
                 return {"index": i, "audio": aud, "duration": dur, "ok": True}
-            except:
+            except Exception as e:
+                print(f"TTS error: {e}")
                 return {"index": i, "audio": None, "duration": 30, "ok": False}
-    results = sorted(await asyncio.gather(*[_gen(i,s) for i,s in enumerate(sections)]), key=lambda x: x["index"])
-    return {"results": results, "used_fallback": True, "all_failed": all(not r["ok"] for r in results)}
+    
+    results = await asyncio.gather(*[_gen_one(i, s) for i, s in enumerate(sections)])
+    results = sorted(results, key=lambda x: x["index"])
+    
+    return {
+        "results": results,
+        "used_fallback": True,
+        "all_failed": all(not r["ok"] for r in results)
+    }
