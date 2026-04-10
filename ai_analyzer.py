@@ -11,15 +11,18 @@ from google import genai
 from google.genai import types as genai_types
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# تنظيف النص
+# دالة تنظيف النص من null bytes والأحرف غير المرغوبة
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _clean_text(text: str) -> str:
-    """تنظيف النص من الأحرف غير المرغوبة"""
+    """تنظيف النص من جميع الأحرف غير المرغوبة"""
     if not text:
         return ""
+    # إزالة null bytes
     text = text.replace('\x00', '').replace('\0', '')
+    # إزالة أحرف التحكم
     text = re.sub(r'[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    # استبدال المسافات المتعددة بمسافة واحدة
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
@@ -258,7 +261,9 @@ def _generate_fallback_narration(keywords: list, lecture_type: str) -> str:
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     print("[INFO] Starting lecture analysis...")
     
+    # ═══════════════════════════════════════════════════════════════════════════
     # تنظيف النص أولاً
+    # ═══════════════════════════════════════════════════════════════════════════
     text = _clean_text(text)
     
     if not text:
@@ -374,6 +379,9 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         while len(keywords) < 4:
             keywords.append("مفهوم")
         
+        # تنظيف النص لكل قسم
+        narration = _clean_text(narration)
+        
         final_sections.append({
             "title": section_title,
             "keywords": keywords[:4],
@@ -405,11 +413,15 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         "lecture_type": lecture_type,
         "title": title,
         "sections": final_sections,
-        "summary": summary,
+        "summary": _clean_text(summary),
         "key_points": all_keywords[:5],
         "all_keywords": all_keywords
     }
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 6. استخراج النص من PDF
+# ═══════════════════════════════════════════════════════════════════════════════
 
 async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
     import PyPDF2
@@ -426,7 +438,7 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 6. توليد الصور
+# 7. توليد الصور
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _TYPE_COLORS = {
