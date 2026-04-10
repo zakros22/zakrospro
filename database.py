@@ -5,12 +5,10 @@ from config import DATABASE_URL, FREE_ATTEMPTS, REFERRAL_POINTS_PER_INVITE, REFE
 
 
 def get_connection():
-    """إنشاء اتصال بقاعدة البيانات"""
     return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
 
 
 def init_db():
-    """تهيئة قاعدة البيانات وإنشاء الجداول"""
     conn = get_connection()
     cur = conn.cursor()
     
@@ -31,17 +29,14 @@ def init_db():
 
     for col, definition in [
         ("referral_points", "FLOAT DEFAULT 0"),
-        ("referred_by", "BIGINT DEFAULT NULL"),
+        ("referred_by",     "BIGINT DEFAULT NULL"),
     ]:
-        try:
-            cur.execute(
-                sql.SQL("ALTER TABLE users ADD COLUMN IF NOT EXISTS {} {}").format(
-                    sql.Identifier(col),
-                    sql.SQL(definition),
-                )
+        cur.execute(
+            sql.SQL("ALTER TABLE users ADD COLUMN IF NOT EXISTS {} {}").format(
+                sql.Identifier(col),
+                sql.SQL(definition),
             )
-        except Exception:
-            pass
+        )
     
     cur.execute("""
         CREATE TABLE IF NOT EXISTS payments (
@@ -111,21 +106,16 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
     """)
-    
-    try:
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_notes_user ON notes(user_id)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_notes_reminder ON notes(reminder_at) WHERE reminded = FALSE")
-    except Exception:
-        pass
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_notes_user ON notes(user_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_notes_reminder ON notes(reminder_at) WHERE reminded = FALSE")
 
     conn.commit()
     cur.close()
     conn.close()
-    print("✅ Database initialized successfully")
+    print("Database initialized successfully")
 
 
 def get_user(user_id: int):
-    """جلب معلومات مستخدم"""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
@@ -135,8 +125,7 @@ def get_user(user_id: int):
     return dict(user) if user else None
 
 
-def create_user(user_id: int, username: str, full_name: str, referred_by: int = None):
-    """إنشاء مستخدم جديد"""
+def create_user(user_id: int, username: str, full_name: str, referred_by: int | None = None):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -156,7 +145,6 @@ def create_user(user_id: int, username: str, full_name: str, referred_by: int = 
 
 
 def decrement_attempts(user_id: int):
-    """خصم محاولة"""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -172,7 +160,6 @@ def decrement_attempts(user_id: int):
 
 
 def add_attempts(user_id: int, count: int):
-    """إضافة محاولات"""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -188,7 +175,7 @@ def add_attempts(user_id: int, count: int):
 
 
 def subtract_attempts(user_id: int, count: int):
-    """خصم محاولات مع حد أدنى 0"""
+    """Subtract attempts, floor at 0."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -205,7 +192,6 @@ def subtract_attempts(user_id: int, count: int):
 
 
 def set_attempts(user_id: int, count: int):
-    """تعيين عدد المحاولات"""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -218,7 +204,6 @@ def set_attempts(user_id: int, count: int):
 
 
 def increment_total_videos(user_id: int):
-    """زيادة عداد الفيديوهات"""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -231,7 +216,6 @@ def increment_total_videos(user_id: int):
 
 
 def ban_user(user_id: int, banned: bool = True):
-    """حظر أو رفع حظر مستخدم"""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("UPDATE users SET is_banned = %s WHERE user_id = %s", (banned, user_id))
@@ -241,13 +225,11 @@ def ban_user(user_id: int, banned: bool = True):
 
 
 def is_banned(user_id: int) -> bool:
-    """التحقق مما إذا كان المستخدم محظوراً"""
     user = get_user(user_id)
     return user.get('is_banned', False) if user else False
 
 
 def create_payment(user_id: int, method: str, amount: float, reference: str = None):
-    """إنشاء طلب دفع"""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -263,7 +245,7 @@ def create_payment(user_id: int, method: str, amount: float, reference: str = No
 
 
 def approve_payment(payment_id: int):
-    """الموافقة على دفع وإضافة محاولات"""
+    """Approve a payment and add 4 attempts to the user."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -281,35 +263,47 @@ def approve_payment(payment_id: int):
 
 
 def mark_payment_approved_without_adding(payment_id: int):
-    """تحديث حالة الدفع إلى approved بدون إضافة محاولات"""
+    """Mark a payment as approved without adding attempts (attempts already added externally)."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        UPDATE payments SET status = 'approved'
+        UPDATE payments SET status = 'approved', attempts_granted = %s
         WHERE id = %s
-    """, (payment_id,))
+    """, (4, payment_id))
     conn.commit()
     cur.close()
     conn.close()
 
 
+PAID_ATTEMPTS_CONST = 4
+
+
+# ── Referral functions ────────────────────────────────────────────────────────
+
 def record_referral(referrer_id: int, referred_id: int) -> dict:
-    """تسجيل إحالة"""
+    """
+    Record that referred_id joined via referrer_id's link.
+    Awards REFERRAL_POINTS_PER_INVITE points to referrer.
+    If points reach REFERRAL_POINTS_PER_ATTEMPT, grants 1 attempt and resets partial.
+    Returns {'already_referred': bool, 'new_points': float, 'attempts_granted': int}
+    """
     conn = get_connection()
     cur = conn.cursor()
 
+    # Check already referred
     cur.execute("SELECT id FROM referrals WHERE referred_id = %s", (referred_id,))
     if cur.fetchone():
-        cur.close()
-        conn.close()
+        cur.close(); conn.close()
         return {'already_referred': True, 'new_points': 0, 'attempts_granted': 0}
 
+    # Insert referral record
     cur.execute("""
         INSERT INTO referrals (referrer_id, referred_id, points_awarded)
         VALUES (%s, %s, %s)
         ON CONFLICT (referred_id) DO NOTHING
     """, (referrer_id, referred_id, REFERRAL_POINTS_PER_INVITE))
 
+    # Add points to referrer
     cur.execute("""
         UPDATE users
         SET referral_points = referral_points + %s, updated_at = NOW()
@@ -319,6 +313,7 @@ def record_referral(referrer_id: int, referred_id: int) -> dict:
     row = cur.fetchone()
     new_points = row['referral_points'] if row else 0
 
+    # Check if enough points to earn an attempt
     attempts_granted = 0
     while new_points >= REFERRAL_POINTS_PER_ATTEMPT:
         new_points -= REFERRAL_POINTS_PER_ATTEMPT
@@ -327,7 +322,7 @@ def record_referral(referrer_id: int, referred_id: int) -> dict:
     if attempts_granted > 0:
         cur.execute("""
             UPDATE users
-            SET attempts_left = attempts_left + %s,
+            SET attempts_left   = attempts_left + %s,
                 referral_points = %s,
                 updated_at = NOW()
             WHERE user_id = %s
@@ -345,7 +340,7 @@ def record_referral(referrer_id: int, referred_id: int) -> dict:
 
 
 def get_referral_stats(user_id: int) -> dict:
-    """إحصائيات الإحالة"""
+    """Return referral stats for a user."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT referral_points FROM users WHERE user_id = %s", (user_id,))
@@ -355,18 +350,16 @@ def get_referral_stats(user_id: int) -> dict:
     cur.execute("SELECT COUNT(*) as cnt FROM referrals WHERE referrer_id = %s", (user_id,))
     total_referrals = cur.fetchone()['cnt']
 
-    cur.close()
-    conn.close()
+    cur.close(); conn.close()
     return {
         'total_referrals': total_referrals,
         'current_points': round(points, 2),
         'points_needed': round(REFERRAL_POINTS_PER_ATTEMPT - points, 2) if points < REFERRAL_POINTS_PER_ATTEMPT else 0,
-        'next_attempt_at': int(total_referrals + ((REFERRAL_POINTS_PER_ATTEMPT - points) / REFERRAL_POINTS_PER_INVITE)) + 1 if points < REFERRAL_POINTS_PER_ATTEMPT else 0,
+        'next_attempt_at': int(total_referrals + ((REFERRAL_POINTS_PER_ATTEMPT - points) / REFERRAL_POINTS_PER_INVITE)) + 1,
     }
 
 
 def get_all_users(limit: int = 50, offset: int = 0):
-    """جلب جميع المستخدمين"""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -380,7 +373,6 @@ def get_all_users(limit: int = 50, offset: int = 0):
 
 
 def get_stats():
-    """إحصائيات عامة"""
     conn = get_connection()
     cur = conn.cursor()
     
@@ -390,11 +382,11 @@ def get_stats():
     cur.execute("SELECT COUNT(*) as total FROM users WHERE DATE(created_at) = CURRENT_DATE")
     new_today = cur.fetchone()['total']
     
-    cur.execute("SELECT COALESCE(SUM(total_videos), 0) as total FROM users")
-    total_videos = cur.fetchone()['total']
+    cur.execute("SELECT SUM(total_videos) as total FROM users")
+    total_videos = cur.fetchone()['total'] or 0
     
-    cur.execute("SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE status = 'approved'")
-    total_revenue = cur.fetchone()['total']
+    cur.execute("SELECT SUM(amount) as total FROM payments WHERE status = 'approved'")
+    total_revenue = cur.fetchone()['total'] or 0
     
     cur.execute("SELECT COUNT(*) as total FROM payments WHERE status = 'pending'")
     pending_payments = cur.fetchone()['total']
@@ -409,14 +401,13 @@ def get_stats():
         'total_users': total_users,
         'new_today': new_today,
         'total_videos': total_videos,
-        'total_revenue': float(total_revenue) if total_revenue else 0,
+        'total_revenue': float(total_revenue),
         'pending_payments': pending_payments,
         'banned_users': banned_users
     }
 
 
 def get_pending_payments():
-    """جلب المدفوعات المعلقة"""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -433,7 +424,6 @@ def get_pending_payments():
 
 
 def save_video_request(user_id: int, input_type: str, dialect: str, lecture_type: str = None):
-    """حفظ طلب فيديو"""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -449,7 +439,6 @@ def save_video_request(user_id: int, input_type: str, dialect: str, lecture_type
 
 
 def update_video_request(req_id: int, status: str, video_path: str = None, pdf_path: str = None):
-    """تحديث حالة طلب فيديو"""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -461,10 +450,11 @@ def update_video_request(req_id: int, status: str, video_path: str = None, pdf_p
     conn.close()
 
 
+# ── Notes functions ───────────────────────────────────────────────────────────
+
 def save_note(user_id: int, name: str, content_type: str,
               file_id: str = None, text_content: str = None,
               original_filename: str = None, reminder_at=None) -> int:
-    """حفظ مذكرة"""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -480,7 +470,6 @@ def save_note(user_id: int, name: str, content_type: str,
 
 
 def get_user_notes(user_id: int) -> list:
-    """جلب مذكرات المستخدم"""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -494,7 +483,6 @@ def get_user_notes(user_id: int) -> list:
 
 
 def get_note(note_id: int, user_id: int) -> dict | None:
-    """جلب مذكرة محددة"""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT * FROM notes WHERE id = %s AND user_id = %s", (note_id, user_id))
@@ -505,7 +493,6 @@ def get_note(note_id: int, user_id: int) -> dict | None:
 
 
 def delete_note(note_id: int, user_id: int) -> bool:
-    """حذف مذكرة"""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("DELETE FROM notes WHERE id = %s AND user_id = %s RETURNING id", (note_id, user_id))
@@ -517,7 +504,6 @@ def delete_note(note_id: int, user_id: int) -> bool:
 
 
 def set_note_reminder(note_id: int, user_id: int, reminder_at) -> bool:
-    """تعيين تنبيه للمذكرة"""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -532,7 +518,6 @@ def set_note_reminder(note_id: int, user_id: int, reminder_at) -> bool:
 
 
 def get_due_reminders() -> list:
-    """جلب التنبيهات المستحقة"""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -546,7 +531,6 @@ def get_due_reminders() -> list:
 
 
 def mark_reminded(note_id: int):
-    """تحديث حالة التنبيه إلى تم"""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("UPDATE notes SET reminded = TRUE WHERE id = %s", (note_id,))
