@@ -82,7 +82,7 @@ async def _generate_with_google(prompt: str, max_tokens: int = 8192) -> str:
                     model=model,
                     contents=prompt,
                     config=genai_types.GenerateContentConfig(
-                        temperature=0.3,
+                        temperature=0.5,
                         max_output_tokens=max_tokens,
                     ),
                 )
@@ -115,7 +115,7 @@ async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": min(max_tokens, 8192),
-                    "temperature": 0.3,
+                    "temperature": 0.5,
                 }
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
@@ -194,7 +194,7 @@ def _detect_lecture_type(text: str) -> str:
 
 
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
-    """تحليل المحاضرة مع شرح مفصل وكامل"""
+    """تحليل المحاضرة مع شرح احترافي غير مكرر"""
     
     extracted_keywords = _extract_keywords_from_text(text, 20)
     lecture_type = _detect_lecture_type(text)
@@ -211,26 +211,40 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     
     text_limit = min(len(text), 5000)
     
+    teacher_styles = {
+        'medicine': 'أنت طبيب استشاري تشرح لطلاب الطب. استخدم لغة طبية دقيقة ثم بسطها. اشرح الأعراض، الأسباب، التشخيص، والعلاج. أعط أمثلة من الواقع الطبي.',
+        'math': 'أنت أستاذ رياضيات تشرح على السبورة. اشرح المعادلات خطوة بخطوة. فسر المتغيرات وأعط أمثلة عددية محلولة.',
+        'physics': 'أنت فيزيائي تشرح القوانين الطبيعية. اشرح القانون ثم طبقه على مثال واقعي من الحياة اليومية.',
+        'chemistry': 'أنت كيميائي تشرح التفاعلات. اشرح المعادلة الكيميائية وظروف التفاعل والتطبيقات الصناعية.',
+        'history': 'أنت مؤرخ تروي الأحداث. اسرد القصة التاريخية مع التواريخ والشخصيات والأسباب والنتائج.',
+        'biology': 'أنت عالم أحياء تشرح الكائنات الحية. اشرح التركيب والوظيفة والعمليات الحيوية.',
+        'other': 'أنت معلم خبير تشرح المعلومات بوضوح. بسط المفاهيم المعقدة وأعط أمثلة من الحياة.'
+    }
+    
+    teacher_style = teacher_styles.get(lecture_type, teacher_styles['other'])
+    
     dialect_instructions = {
         "iraq": "باللهجة العراقية. تكلم كمعلم عراقي: استخدم (هواية، گلت، يعني، هسا، چي، شلون، أكو، ماكو).",
         "egypt": "باللهجة المصرية. تكلم كمعلم مصري: استخدم (أوي، معلش، يعني، كده، عايز، النهارده، يا جماعة).",
         "syria": "باللهجة الشامية. تكلم كمعلم سوري: استخدم (هلق، شو، كتير، منيح، هيك، عم، فيكن).",
         "gulf": "باللهجة الخليجية. تكلم كمعلم خليجي: استخدم (زين، وايد، عاد، هاذي، أبشر، يالحبيب).",
-        "msa": "بالعربية الفصحى البسيطة والواضحة. تكلم كمعلم فصيح."
+        "msa": "بالعربية الفصحى البسيطة والواضحة."
     }
     
     dialect_inst = dialect_instructions.get(dialect, dialect_instructions["msa"])
 
-    prompt = f"""أنت معلم خبير ومتخصص في تبسيط العلوم. مهمتك شرح المحاضرة التالية شرحاً كاملاً ومفصلاً.
+    prompt = f"""{teacher_style}
 
-**تعليمات صارمة:**
+**تعليمات صارمة للشرح:**
 - {dialect_inst}
-- اشرح كل مفهوم بالتفصيل الممل (20-25 جملة لكل قسم)
-- لا تكرر نفس الجملة أبداً
-- فسر كل المصطلحات العلمية
-- أعطِ أمثلة واقعية من الحياة
-- اربط بين المفاهيم
-- استخدم أسلوب المعلم الذي يشرح لطلابه
+- اشرح كل قسم بجمل كاملة ومفيدة ومتنوعة.
+- كل جملة يجب أن تضيف معلومة جديدة. لا تكرر نفس الجملة أبداً.
+- لا تستخدم كلمات حشو مثل "يعني يعني يعني" أو "هو هو هو".
+- فسر المصطلحات العلمية بلغة بسيطة.
+- أعطِ أمثلة واقعية من الحياة اليومية.
+- اربط بين المفاهيم بشكل منطقي.
+- استخدم أسلوب المعلم الذي يشرح لطلابه مباشرة.
+- لا تقل "في هذا القسم سنتعرف على" أكثر من مرة في بداية القسم فقط.
 
 **المحاضرة:**
 ---
@@ -241,7 +255,7 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
 
 **المطلوب - {num_sections} أقسام:**
 
-أرجع JSON فقط بهذا التنسيق بالضبط:
+أرجع JSON فقط:
 
 {{
   "lecture_type": "{lecture_type}",
@@ -250,18 +264,18 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     {{
       "title": "عنوان القسم",
       "keywords": ["كلمة1", "كلمة2", "كلمة3", "كلمة4"],
-      "narration": "نص الشرح الصوتي الكامل والمفصل جداً (20-25 جملة). هذا هو النص الذي سينطقه المعلم. اشرح هنا كل شيء بالتفصيل. لا تكرر الجمل. استخدم اللهجة المطلوبة.",
-      "duration_estimate": 120
+      "narration": "نص الشرح الصوتي الكامل والمفصل (15-20 جملة متنوعة). هذا هو النص الذي سينطقه المعلم. اشرح هنا بالتفصيل دون تكرار.",
+      "duration_estimate": 90
     }}
   ],
-  "summary": "ملخص شامل (6-8 جمل)",
+  "summary": "ملخص شامل (5-7 جمل)",
   "key_points": ["نقطة1", "نقطة2", "نقطة3", "نقطة4", "نقطة5"]
 }}
 
-**تنبيهات مهمة جداً:**
+**تنبيهات:**
 - keywords: 4 كلمات مفتاحية مختلفة لكل قسم.
-- narration: اكتب شرحاً طويلاً جداً ومفصلاً. لا تكرر الجمل. كل جملة يجب أن تضيف معلومات جديدة.
-- أرجع JSON فقط بدون أي نص إضافي.
+- narration: اكتب شرحاً كاملاً ومتنوعاً. لا تكرر الجمل.
+- أرجع JSON فقط.
 """
 
     try:
@@ -298,7 +312,7 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
             
             if "narration" not in section or not section["narration"] or len(section["narration"]) < 100:
                 kw_str = ', '.join(section.get('keywords', ['المفاهيم'])[:3])
-                section["narration"] = f"في هذا القسم سنتعرف على {kw_str}. " + f"دعونا نفهم {kw_str} بشكل أعمق. " * 15
+                section["narration"] = f"دعونا نتعرف على {kw_str}. " * 15
             
             section["_keyword_images"] = [None] * 4
             section["_image_bytes"] = None
@@ -318,13 +332,13 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
                 if extracted_keywords[idx] not in kw:
                     kw.append(extracted_keywords[idx])
             
-            narration = f"في هذا القسم سنتعرف على {kw[0] if kw else 'المفاهيم الأساسية'}. " * 20
+            narration = f"دعونا نتعرف على {kw[0] if kw else 'المفاهيم الأساسية'}. " * 15
             
             sections.append({
                 "title": kw[0] if kw else f"القسم {i+1}",
                 "keywords": kw if kw else ["مفهوم", "تعريف", "شرح", "تحليل"],
                 "narration": narration,
-                "duration_estimate": 120,
+                "duration_estimate": 90,
                 "_keyword_images": [None] * 4,
                 "_image_bytes": None
             })
@@ -350,7 +364,7 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# توليد الصور - Picsum + صورة ملونة احتياطية
+# توليد الصور
 # ──────────────────────────────────────────────────────────────────────────────
 
 async def _pollinations_generate(prompt: str) -> bytes | None:
@@ -450,19 +464,16 @@ async def fetch_image_for_keyword(
 ) -> bytes:
     print(f"🖼️ Fetching image for: {keyword}")
     
-    # 1. محاولة Pollinations
     prompt = f"simple educational illustration of {keyword}, clean white background"
     img_bytes = await _pollinations_generate(prompt)
     if img_bytes:
         print(f"✅ Pollinations success")
         return img_bytes
     
-    # 2. محاولة Picsum
     img_bytes = await _picsum_generate()
     if img_bytes:
         print(f"✅ Picsum fallback")
         return img_bytes
     
-    # 3. صورة ملونة
     print(f"⚠️ Using colored placeholder")
     return _make_colored_image(keyword, lecture_type)
