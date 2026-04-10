@@ -4,10 +4,10 @@ import io
 import asyncio
 import aiohttp
 import random
-import os
 from PIL import Image as PILImage, ImageDraw, ImageFont
 from google import genai
 from google.genai import types as genai_types
+import os
 
 # ──────────────────────────────────────────────────────────────────────────────
 # تحميل مفاتيح Google
@@ -62,6 +62,17 @@ def _load_groq_keys():
     return keys
 
 _groq_keys = _load_groq_keys()
+_current_groq_idx = 0
+
+def _get_next_groq_key():
+    global _current_groq_idx
+    if not _groq_keys:
+        return None
+    key = _groq_keys[_current_groq_idx % len(_groq_keys)]
+    _current_groq_idx += 1
+    return key
+
+_GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it"]
 
 # ──────────────────────────────────────────────────────────────────────────────
 # دوال التوليد
@@ -104,10 +115,11 @@ async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
     if not _groq_keys:
         raise Exception("No Groq keys")
     
-    key = _groq_keys[0]
-    models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+    key = _get_next_groq_key()
+    if not key:
+        raise Exception("No Groq keys available")
     
-    for model in models:
+    for model in _GROQ_MODELS:
         try:
             headers = {
                 "Authorization": f"Bearer {key}",
@@ -158,8 +170,11 @@ async def _generate_with_rotation(prompt: str, max_output_tokens: int = 8192) ->
 def _extract_keywords_from_text(text: str, max_words: int = 16) -> list:
     stop_words = {'و', 'في', 'من', 'على', 'إلى', 'أن', 'هو', 'هي', 'هذا', 'هذه', 'كان', 
                   'كانت', 'مع', 'ما', 'لا', 'عن', 'إذا', 'لم', 'لن', 'قد', 'ثم', 'أو', 
-                  'أم', 'لكن', 'حتى', 'بل', 'كل', 'بعض', 'the', 'a', 'an', 'is', 'are',
-                  'was', 'were', 'of', 'to', 'in', 'that', 'it', 'be', 'for', 'on'}
+                  'أم', 'لكن', 'حتى', 'بل', 'كل', 'بعض', 'أي', 'تلك', 'ذلك', 'هؤلاء', 
+                  'الذي', 'التي', 'الذين', 'ماذا', 'كيف', 'أين', 'متى', 'نحن', 'هم',
+                  'the', 'a', 'an', 'is', 'are', 'was', 'were', 'of', 'to', 'in',
+                  'that', 'it', 'be', 'for', 'on', 'with', 'as', 'at', 'by', 'this',
+                  'and', 'or', 'but'}
     
     words = re.findall(r'[\u0600-\u06FF]{4,}|[a-zA-Z]{4,}', text)
     word_freq = {}
@@ -172,30 +187,15 @@ def _extract_keywords_from_text(text: str, max_words: int = 16) -> list:
     return [w[0] for w in sorted_words[:max_words]]
 
 
-def detect_lecture_type(text: str) -> str:
-    """تحديد نوع المحاضرة"""
+def _detect_lecture_type(text: str) -> str:
     text_lower = text.lower()
     
-    medical = ['مرض', 'علاج', 'طبيب', 'جراحة', 'دواء', 'تشخيص', 'مريض', 'عرض', 'قلب', 'دم', 
-               'خلية', 'ورم', 'سرطان', 'endometriosis', 'cyst', 'inflammation', 'pain', 
-               'bleeding', 'menstrual', 'pelvic', 'diagnosis', 'symptom', 'treatment',
-               'surgery', 'medicine', 'disease', 'heart', 'blood', 'cell', 'cancer',
-               'chronic', 'acute', 'infection', 'bacteria', 'virus', 'organ', 'tissue']
-    math = ['معادلة', 'دالة', 'تفاضل', 'تكامل', 'جبر', 'هندسة', 'عدد', 'متغير', 'رياضيات',
-            'equation', 'function', 'calculus', 'algebra', 'geometry', 'variable', 'math',
-            'derivative', 'integral', 'matrix', 'vector']
-    physics = ['قوة', 'طاقة', 'حركة', 'سرعة', 'تسارع', 'جاذبية', 'كهرباء', 'مغناطيس', 'فيزياء',
-               'force', 'energy', 'motion', 'velocity', 'gravity', 'physics', 'quantum',
-               'wave', 'particle', 'mass', 'acceleration']
-    chemistry = ['تفاعل', 'عنصر', 'مركب', 'جزيء', 'ذرة', 'حمض', 'قاعدة', 'كيمياء',
-                 'reaction', 'element', 'compound', 'molecule', 'atom', 'chemistry',
-                 'bond', 'acid', 'base', 'solution']
-    history = ['تاريخ', 'حرب', 'معركة', 'حضارة', 'إمبراطورية', 'ملك', 'ثورة', 'قرن', 'قديم',
-               'history', 'war', 'battle', 'civilization', 'empire', 'revolution',
-               'ancient', 'king', 'dynasty', 'century']
-    biology = ['نبات', 'حيوان', 'بيئة', 'وراثة', 'حمض نووي', 'تطور', 'خلية', 'biology',
-               'plant', 'animal', 'evolution', 'dna', 'gene', 'species', 'cell',
-               'tissue', 'organ', 'organism', 'ecosystem']
+    medical = ['مرض', 'علاج', 'طبيب', 'جراحة', 'دواء', 'تشخيص', 'مريض', 'عرض', 'قلب', 'دم', 'خلية', 'ورم', 'سرطان', 'endometriosis', 'cyst', 'inflammation', 'pain', 'bleeding', 'menstrual', 'pelvic', 'diagnosis', 'symptom', 'treatment', 'surgery', 'medicine', 'disease', 'heart', 'blood', 'cell', 'cancer', 'chronic', 'acute', 'infection', 'bacteria', 'virus']
+    math = ['معادلة', 'دالة', 'تفاضل', 'تكامل', 'جبر', 'هندسة', 'عدد', 'متغير', 'رياضيات', 'equation', 'function', 'calculus', 'algebra', 'geometry', 'variable', 'math', 'derivative', 'integral', 'matrix', 'vector']
+    physics = ['قوة', 'طاقة', 'حركة', 'سرعة', 'تسارع', 'جاذبية', 'كهرباء', 'مغناطيس', 'فيزياء', 'force', 'energy', 'motion', 'velocity', 'gravity', 'physics', 'quantum', 'wave', 'particle', 'mass', 'acceleration']
+    chemistry = ['تفاعل', 'عنصر', 'مركب', 'جزيء', 'ذرة', 'حمض', 'قاعدة', 'كيمياء', 'reaction', 'element', 'compound', 'molecule', 'atom', 'chemistry', 'bond', 'acid', 'base', 'solution']
+    history = ['تاريخ', 'حرب', 'معركة', 'حضارة', 'إمبراطورية', 'ملك', 'ثورة', 'قرن', 'قديم', 'history', 'war', 'battle', 'civilization', 'empire', 'revolution', 'ancient', 'king', 'dynasty', 'century']
+    biology = ['نبات', 'حيوان', 'بيئة', 'وراثة', 'حمض نووي', 'تطور', 'خلية', 'biology', 'plant', 'animal', 'evolution', 'dna', 'gene', 'species', 'cell', 'tissue', 'organ', 'ecosystem']
     
     scores = {
         'medicine': sum(1 for kw in medical if kw in text_lower),
@@ -212,17 +212,60 @@ def detect_lecture_type(text: str) -> str:
     return 'other'
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# التحليل الرئيسي
-# ──────────────────────────────────────────────────────────────────────────────
+def _get_teacher_persona(lecture_type: str, dialect: str) -> str:
+    personas = {
+        'medicine': {
+            'name': 'طبيب استشاري',
+            'style': 'اشرح كطبيب يشرح لطلاب الطب. استخدم المصطلحات الطبية بدقة ثم اشرحها بلغة بسيطة. اذكر pathophysiology، الأعراض، الأسباب، وطرق العلاج.'
+        },
+        'math': {
+            'name': 'أستاذ رياضيات',
+            'style': 'اشرح كمعلم رياضيات على السبورة. فسر كل معادلة خطوة بخطوة. اشرح المتغيرات وأعطِ أمثلة عددية.'
+        },
+        'physics': {
+            'name': 'أستاذ فيزياء',
+            'style': 'اشرح كفيزيائي. اذكر القانون الفيزيائي ثم فسره. اشرح التجارب العملية واربطها بالحياة اليومية.'
+        },
+        'chemistry': {
+            'name': 'أستاذ كيمياء',
+            'style': 'اشرح ككيميائي. فسر التفاعلات والمعادلات الكيميائية. اشرح الروابط والتراكيب الجزيئية.'
+        },
+        'history': {
+            'name': 'مؤرخ',
+            'style': 'اسرد الأحداث التاريخية كقصة مشوقة. اذكر التواريخ والشخصيات الرئيسية. حلل الأسباب والنتائج.'
+        },
+        'biology': {
+            'name': 'أستاذ أحياء',
+            'style': 'اشرح كعالم أحياء. فسر العمليات الحيوية والتركيب والوظيفة. استخدم التشبيهات لتقريب المفاهيم.'
+        },
+        'other': {
+            'name': 'معلم خبير',
+            'style': 'اشرح بلغة واضحة وبسيطة. بسط المفاهيم المعقدة وأعطِ أمثلة من الحياة اليومية.'
+        }
+    }
+    
+    dialect_style = {
+        'iraq': 'باللهجة العراقية. استخدم: هواية، گلت، يعني، هسا، چي، شلون، أكو.',
+        'egypt': 'باللهجة المصرية. استخدم: أوي، معلش، يعني، كده، عايز، النهارده.',
+        'syria': 'باللهجة الشامية. استخدم: هلق، شو، كتير، منيح، هيك، عم.',
+        'gulf': 'باللهجة الخليجية. استخدم: زين، وايد، عاد، هاذي، أبشر.',
+        'msa': 'بالعربية الفصحى البسيطة والواضحة.'
+    }
+    
+    persona = personas.get(lecture_type, personas['other'])
+    dialect_inst = dialect_style.get(dialect, dialect_style['msa'])
+    
+    return f"""
+أنت {persona['name']}.
+{persona['style']}
+تكلم {dialect_inst}
+"""
+
 
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
-    """تحليل المحاضرة واستخراج جميع العناصر المطلوبة للفيديو"""
+    extracted_keywords = _extract_keywords_from_text(text, 20)
+    lecture_type = _detect_lecture_type(text)
     
-    # استخراج الكلمات المفتاحية
-    extracted_keywords = _extract_keywords_from_text(text, 16)
-    
-    # تحديد عدد الأقسام
     word_count = len(text.split())
     if word_count < 300:
         num_sections = 3
@@ -233,26 +276,17 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     else:
         num_sections = 6
     
+    teacher_persona = _get_teacher_persona(lecture_type, dialect)
     text_limit = min(len(text), 4000)
-    
-    # تعليمات حسب اللهجة
-    dialect_instructions = {
-        "iraq": "باللهجة العراقية: هواية، گلت، يعني، هسا، چي، شلون، أكو",
-        "egypt": "باللهجة المصرية: أوي، معلش، يعني، كده، عايز، النهارده",
-        "syria": "باللهجة الشامية: هلق، شو، كتير، منيح، هيك، عم",
-        "gulf": "باللهجة الخليجية: زين، وايد، عاد، هاذي، أبشر",
-        "msa": "بالعربية الفصحى البسيطة والواضحة"
-    }
-    
-    dialect_inst = dialect_instructions.get(dialect, dialect_instructions["msa"])
 
-    prompt = f"""أنت معلم خبير متخصص في تبسيط المعلومات بأسلوب Osmosis التعليمي.
+    prompt = f"""{teacher_persona}
 
 **المحاضرة:**
 ---
 {text[:text_limit]}
 ---
 
+**نوع المحاضرة:** {lecture_type}
 **الكلمات المفتاحية:** {', '.join(extracted_keywords[:12])}
 
 **المطلوب - {num_sections} أقسام:**
@@ -260,18 +294,13 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
 أرجع JSON فقط:
 
 {{
-  "lecture_type": "medicine/math/physics/chemistry/history/biology/other",
+  "lecture_type": "{lecture_type}",
   "title": "عنوان المحاضرة",
   "sections": [
     {{
       "title": "عنوان القسم (قصير)",
       "keywords": ["كلمة1", "كلمة2", "كلمة3", "كلمة4"],
-      "board_texts": [
-        "النص الأول للعرض على السبورة",
-        "النص الثاني للعرض على السبورة",
-        "النص الثالث للعرض على السبورة"
-      ],
-      "narration": "نص الشرح الصوتي الكامل (10-15 جملة) {dialect_inst}",
+      "narration": "نص الشرح الصوتي الكامل (10-15 جملة) - هذا ما سينطقه المعلم",
       "duration_estimate": 60
     }}
   ],
@@ -279,11 +308,10 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
   "key_points": ["نقطة1", "نقطة2", "نقطة3", "نقطة4", "نقطة5"]
 }}
 
-**تعليمات مهمة:**
-1. keywords: 4 كلمات مفتاحية من القائمة أعلاه
-2. board_texts: 3-4 نصوص قصيرة للعرض على السبورة
-3. narration: شرح صوتي طويل ومفصل (10-15 جملة)
-4. أرجع JSON فقط
+**تعليمات:**
+- keywords: 4 كلمات مفتاحية لكل قسم من القائمة أعلاه.
+- narration: اكتب شرحاً صوتياً كاملاً باللهجة المطلوبة (10-15 جملة).
+- أرجع JSON فقط.
 """
 
     try:
@@ -294,7 +322,6 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         
         result = json.loads(content)
         
-        # التأكد من الحقول الأساسية
         if "title" not in result or not result["title"]:
             result["title"] = extracted_keywords[0] if extracted_keywords else "المحاضرة التعليمية"
         
@@ -304,12 +331,10 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         if "key_points" not in result or not result["key_points"]:
             result["key_points"] = extracted_keywords[:5]
         
-        lecture_type = detect_lecture_type(text)
-        result["lecture_type"] = lecture_type
+        if "lecture_type" not in result:
+            result["lecture_type"] = lecture_type
         
-        # معالجة الأقسام
         for i, section in enumerate(result.get("sections", [])):
-            # الكلمات المفتاحية
             if "keywords" not in section or not section["keywords"] or len(section["keywords"]) < 4:
                 start_idx = (i * 4) % len(extracted_keywords)
                 section["keywords"] = []
@@ -318,23 +343,16 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
                     if extracted_keywords[idx] not in section["keywords"]:
                         section["keywords"].append(extracted_keywords[idx])
             
-            # نصوص السبورة
-            if "board_texts" not in section or not section["board_texts"]:
-                section["board_texts"] = [f"• {kw}" for kw in section["keywords"]]
-            
-            # العنوان
             if "title" not in section or not section["title"]:
                 section["title"] = section["keywords"][0] if section["keywords"] else f"القسم {i+1}"
             
-            # الشرح الصوتي
             if "narration" not in section or not section["narration"]:
                 kw_str = ', '.join(section.get('keywords', ['المفاهيم'])[:3])
-                section["narration"] = f"في هذا القسم سنتعرف على {kw_str}. " * 10
+                section["narration"] = f"في هذا القسم سنتعرف على {kw_str}. " * 8
             
             if "duration_estimate" not in section:
                 section["duration_estimate"] = 60
             
-            # إعدادات الصور
             section["_keyword_images"] = [None] * 4
             section["_image_bytes"] = None
         
@@ -343,8 +361,6 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     except Exception as e:
         print(f"Analysis error: {e}")
         
-        # بيانات افتراضية
-        lecture_type = detect_lecture_type(text)
         sections = []
         for i in range(num_sections):
             start_idx = (i * 4) % len(extracted_keywords)
@@ -354,11 +370,12 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
                 if extracted_keywords[idx] not in kw:
                     kw.append(extracted_keywords[idx])
             
+            narration = f"في هذا القسم سنتعرف على {kw[0] if kw else 'المفاهيم الأساسية'}. " * 10
+            
             sections.append({
                 "title": kw[0] if kw else f"القسم {i+1}",
                 "keywords": kw if kw else ["مفهوم", "تعريف", "شرح", "تحليل"],
-                "board_texts": [f"• {k}" for k in kw] if kw else ["• المفهوم الأساسي"],
-                "narration": f"في هذا القسم سنتعرف على {kw[0] if kw else 'المفاهيم'}. " * 10,
+                "narration": narration,
                 "duration_estimate": 60,
                 "_keyword_images": [None] * 4,
                 "_image_bytes": None
@@ -368,7 +385,7 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
             "lecture_type": lecture_type,
             "title": extracted_keywords[0] if extracted_keywords else "المحاضرة التعليمية",
             "sections": sections,
-            "summary": f"شرحنا: {', '.join(extracted_keywords[:5])}",
+            "summary": f"شرحنا في هذه المحاضرة: {', '.join(extracted_keywords[:5])}",
             "key_points": extracted_keywords[:5] if extracted_keywords else ["نقطة1", "نقطة2", "نقطة3", "نقطة4", "نقطة5"]
         }
 
@@ -392,25 +409,26 @@ async def _pollinations_generate(prompt: str) -> bytes | None:
     import urllib.parse
     clean_prompt = prompt[:200].replace("\n", " ")
     encoded = urllib.parse.quote(clean_prompt)
-    url = f"https://image.pollinations.ai/prompt/{encoded}?width=300&height=200&nologo=true&model=flux"
+    url = f"https://image.pollinations.ai/prompt/{encoded}?width=400&height=300&nologo=true&model=flux"
 
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 if resp.status == 200:
                     raw = await resp.read()
-                    if len(raw) > 3000:
-                        return raw
+                    if len(raw) > 5000:
+                        pil_img = PILImage.open(io.BytesIO(raw)).convert("RGB")
+                        buf = io.BytesIO()
+                        pil_img.save(buf, "JPEG", quality=85)
+                        return buf.getvalue()
     except Exception:
         pass
     return None
 
 
-def _make_osmosis_image(keyword: str, lecture_type: str = "medicine") -> bytes:
-    """صورة بأسلوب Osmosis - بسيطة ونظيفة"""
+def _make_osmosis_style_image(keyword: str, lecture_type: str = "medicine") -> bytes:
     W, H = 300, 200
     
-    # ألوان Osmosis
     colors = {
         'medicine': (231, 76, 126),
         'math': (52, 152, 219),
@@ -425,16 +443,13 @@ def _make_osmosis_image(keyword: str, lecture_type: str = "medicine") -> bytes:
     img = PILImage.new("RGB", (W, H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
     
-    # إطار
     draw.rounded_rectangle([(5, 5), (W-5, H-5)], radius=8, outline=accent, width=3)
-    
-    # دائرة خلفية
-    draw.ellipse([(W//2-35, H//2-35), (W//2+35, H//2+35)], fill=(*accent, 20))
+    draw.ellipse([(W//2-40, H//2-40), (W//2+40, H//2+40)], fill=(*accent, 20))
     
     try:
         font_path = os.path.join(os.path.dirname(__file__), "fonts", "Amiri-Bold.ttf")
         if os.path.exists(font_path):
-            font = ImageFont.truetype(font_path, 22)
+            font = ImageFont.truetype(font_path, 24)
         else:
             font = ImageFont.load_default()
     except Exception:
@@ -443,15 +458,15 @@ def _make_osmosis_image(keyword: str, lecture_type: str = "medicine") -> bytes:
     try:
         import arabic_reshaper
         from bidi.algorithm import get_display
-        keyword_disp = get_display(arabic_reshaper.reshape(keyword[:12]))
+        keyword_disp = get_display(arabic_reshaper.reshape(keyword[:15]))
     except Exception:
-        keyword_disp = keyword[:12]
+        keyword_disp = keyword[:15]
     
     try:
         bbox = draw.textbbox((0, 0), keyword_disp, font=font)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
     except Exception:
-        tw, th = len(keyword_disp) * 13, 28
+        tw, th = len(keyword_disp) * 15, 30
     
     x = (W - tw) // 2
     y = (H - th) // 2
@@ -470,24 +485,25 @@ async def fetch_image_for_keyword(
     lecture_type: str,
     image_search_en: str = "",
 ) -> bytes:
-    """جلب صورة للكلمة المفتاحية"""
-    
     prompts = {
-        'medicine': f"simple medical illustration of {keyword}, osmosis style, clean white background",
-        'math': f"simple math diagram of {keyword}, educational style, white background",
-        'physics': f"simple physics diagram of {keyword}, white background",
-        'chemistry': f"simple chemistry illustration of {keyword}, white background",
-        'history': f"simple historical illustration of {keyword}, white background",
-        'biology': f"simple biology diagram of {keyword}, osmosis style, white background",
-        'other': f"simple educational illustration of {keyword}, white background"
+        'medicine': f"simple medical illustration of {keyword}, osmosis style, clean white background, minimal colors",
+        'math': f"simple math diagram of {keyword}, educational style, clean white background",
+        'physics': f"simple physics diagram of {keyword}, educational illustration, clean white background",
+        'chemistry': f"simple chemistry illustration of {keyword}, educational style, clean white background",
+        'history': f"simple historical illustration of {keyword}, educational style, clean white background",
+        'biology': f"simple biology diagram of {keyword}, osmosis style, clean white background",
+        'other': f"simple educational illustration of {keyword}, clean white background, minimal style"
     }
     
     prompt = prompts.get(lecture_type, prompts['other'])
     
-    # محاولة Pollinations
     img_bytes = await _pollinations_generate(prompt)
     if img_bytes:
         return img_bytes
     
-    # صورة احتياطية
-    return _make_osmosis_image(keyword, lecture_type)
+    simple_prompt = f"simple cartoon {keyword}, white background, minimal"
+    img_bytes = await _pollinations_generate(simple_prompt)
+    if img_bytes:
+        return img_bytes
+    
+    return _make_osmosis_style_image(keyword, lecture_type)
