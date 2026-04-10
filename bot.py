@@ -36,8 +36,6 @@ from database import (
     decrement_attempts,
     add_attempts,
     increment_total_videos,
-    get_stats,
-    get_all_users,
     save_video_request,
     update_video_request,
     record_referral,
@@ -47,6 +45,7 @@ from ai_analyzer import (
     analyze_lecture,
     extract_full_text_from_pdf,
     fetch_image_for_keyword,
+    _detect_lecture_type,
 )
 from voice_generator import generate_sections_audio
 from video_creator import create_video_from_sections, estimate_encoding_seconds
@@ -88,6 +87,17 @@ _cancel_flags: dict[int, asyncio.Event] = {}
 CANCEL_KB = InlineKeyboardMarkup([[
     InlineKeyboardButton("❌ إلغاء المعالجة", callback_data="cancel_job")
 ]])
+
+LECTURE_TYPE_NAMES = {
+    'medicine': '🩺 محاضرة طبية',
+    'math': '📐 محاضرة رياضيات',
+    'physics': '⚡ محاضرة فيزياء',
+    'chemistry': '🧪 محاضرة كيمياء',
+    'history': '📜 محاضرة تاريخية',
+    'biology': '🧬 محاضرة أحياء',
+    'computer': '💻 محاضرة حاسوب',
+    'other': '📚 محاضرة تعليمية'
+}
 
 
 async def _run_or_cancel(uid: int, coro) -> object:
@@ -207,15 +217,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"👋 أهلاً *{name}*!\n\n"
-        "🎓 أنا *بوت المحاضرات الذكي* — أحوّل محاضرتك إلى فيديو تعليمي احترافي!\n\n"
+        "🎓 أنا *بوت المحاضرات الذكي* - أحوّل محاضرتك إلى فيديو تعليمي احترافي بأسلوب Osmosis!\n\n"
         "📥 *ما يمكنك إرساله:*\n"
         "• ملف PDF 📄\n"
         "• ملف نصي TXT 📃\n"
         "• نص المحاضرة مباشرة ✍️\n\n"
         "🌍 اختر لهجة الشرح (عراقي، مصري، خليجي...)\n"
-        "🎬 استلم فيديو كامل مع صوت وصور وشرح مفصل\n\n"
+        "🎬 استلم فيديو كامل مع:\n"
+        "• سبورة بيضاء بأسلوب Osmosis\n"
+        "• نصوص وكلمات مفتاحية واضحة\n"
+        "• صور توضيحية بسيطة\n"
+        "• صوت بشري طبيعي\n\n"
         f"🎁 لديك *{user['attempts_left']}* محاولة مجانية\n\n"
-        "⬇️ ابدأ الآن — أرسل المحاضرة!",
+        "⬇️ ابدأ الآن - أرسل المحاضرة!",
         parse_mode="Markdown",
         reply_markup=main_keyboard(),
     )
@@ -225,17 +239,16 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📖 *كيفية الاستخدام*\n\n"
         "1️⃣ أرسل ملف PDF أو نص المحاضرة\n"
-        "2️⃣ اختر لهجة الشرح (عراقي، مصري، شامي، خليجي، فصحى)\n"
-        "3️⃣ انتظر — البوت سيحلل المحاضرة بعمق ويصنع الفيديو\n"
-        "4️⃣ استلم الفيديو التعليمي الكامل مع شرح مفصل\n\n"
-        "📊 *مميزات البوت:*\n"
-        "• شرح المعادلات الرياضية خطوة بخطوة\n"
-        "• تفسير المصطلحات العلمية\n"
-        "• أمثلة واقعية لكل مفهوم\n"
-        "• صور تعليمية لكل كلمة مفتاحية\n"
-        "• صوت بشري طبيعي\n\n"
-        "🔗 */referral* — رابط إحالة لكسب محاولات مجانية\n"
-        "/cancel — إلغاء العملية",
+        "2️⃣ اختر لهجة الشرح\n"
+        "3️⃣ انتظر - البوت سيحلل المحاضرة ويصنع الفيديو\n"
+        "4️⃣ استلم الفيديو التعليمي بأسلوب Osmosis\n\n"
+        "🎨 *مميزات الفيديو:*\n"
+        "• سبورة بيضاء احترافية\n"
+        "• نصوص وكلمات مفتاحية واضحة\n"
+        "• صور توضيحية بسيطة\n"
+        "• شرح صوتي باللهجة المختارة\n\n"
+        "🔗 */referral* - رابط إحالة لكسب محاولات مجانية\n"
+        "/cancel - إلغاء العملية",
         parse_mode="Markdown",
         reply_markup=main_keyboard(),
     )
@@ -382,9 +395,15 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     words = len(lecture_text.split())
+    
+    # تحديد نوع المحاضرة مبدئياً
+    detected_type = _detect_lecture_type(lecture_text)
+    type_name = LECTURE_TYPE_NAMES.get(detected_type, '📚 محاضرة تعليمية')
+    
     await msg.reply_text(
         f"✅ *تم استلام المحاضرة!*\n\n"
-        f"📝 عدد الكلمات: {words:,}\n\n"
+        f"📝 عدد الكلمات: {words:,}\n"
+        f"🔍 نوع المحتوى المكتشف: {type_name}\n\n"
         "اختر لهجة الشرح:",
         parse_mode="Markdown",
         reply_markup=DIALECT_KEYBOARD,
@@ -458,15 +477,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         dial_name = DIALECT_NAMES.get(dialect, dialect)
+        text = state["text"]
+        detected_type = _detect_lecture_type(text)
+        type_name = LECTURE_TYPE_NAMES.get(detected_type, '📚 محاضرة تعليمية')
+        
         prog_msg = await q.edit_message_text(
             f"🎬 *بدأت المعالجة!*\n"
-            f"اللهجة: {dial_name}\n\n"
+            f"📚 نوع المحاضرة: {type_name}\n"
+            f"🌍 اللهجة: {dial_name}\n\n"
             f"{_pbar(0)} 0%\n"
             f"🔍 جاري بدء التحليل...",
             parse_mode="Markdown",
         )
 
-        text = state["text"]
         filename = state.get("filename", "lecture")
         user_states.pop(uid, None)
 
@@ -512,37 +535,40 @@ async def _process_lecture(
             _check_cancelled()
 
             # ─────────────────────────────────────────────────────────────────
-            # المرحلة الأولى: التحليل العميق (مع عرض الخطوات التفصيلية)
+            # المرحلة الأولى: التحليل العميق
             # ─────────────────────────────────────────────────────────────────
+            
+            detected_type = _detect_lecture_type(text)
+            type_name = LECTURE_TYPE_NAMES.get(detected_type, '📚 محاضرة تعليمية')
             
             analysis_steps = [
                 (3,  "🔍 جاري قراءة المحاضرة واستيعاب المحتوى..."),
-                (5,  "📊 تحليل بنية النص وتحديد الأقسام الرئيسية..."),
-                (7,  "🧮 استخراج المعادلات الرياضية (إن وجدت)..."),
-                (9,  "📚 تحديد المصطلحات العلمية والمفاهيم الأساسية..."),
-                (11, "🔑 استخراج الكلمات المفتاحية من كل قسم..."),
-                (13, "✍️ جاري كتابة المقدمة والعنوان الرئيسي..."),
-                (15, "📝 صياغة الشرح المفصل لكل قسم..."),
-                (17, "💡 إضافة أمثلة توضيحية لكل مفهوم..."),
-                (19, "🔗 ربط الأفكار والمفاهيم ببعضها..."),
-                (21, "📋 ترتيب الشرح بشكل تعليمي منظم..."),
+                (5,  f"📊 تحليل نوع المحتوى: {type_name}"),
+                (7,  "🧮 استخراج المفاهيم والمصطلحات الأساسية..."),
+                (9,  "📝 جاري كتابة المقدمة والعنوان الرئيسي..."),
+                (11, "🔤 استخراج الكلمات المفتاحية من كل قسم..."),
+                (13, "✍️ جاري كتابة النصوص للعرض على السبورة..."),
+                (15, "🎨 تصميم شرائح Osmosis التعليمية..."),
+                (17, "💡 إضافة الأمثلة التوضيحية..."),
+                (19, "🔗 ربط المفاهيم والعلاقات بينها..."),
+                (21, "📋 ترتيب المحتوى بشكل تعليمي منظم..."),
                 (23, "🎯 استخراج النقاط الرئيسية للملخص..."),
                 (25, "✅ اكتمل التحليل!"),
             ]
 
             for pct, label in analysis_steps:
                 await upd(pct, label)
-                await asyncio.sleep(2)  # وقت كافي للمستخدم يشوف كل خطوة
+                await asyncio.sleep(2)
 
-            # تنفيذ التحليل الفعلي
             lecture_data = await _run_or_cancel(uid, analyze_lecture(text, dialect))
 
             sections = lecture_data.get("sections", [])
             if not sections:
                 raise RuntimeError("لم يتم استخراج أي أقسام من المحاضرة")
-            lecture_type = lecture_data.get("lecture_type", "other")
             
+            lecture_type = lecture_data.get("lecture_type", detected_type)
             n_sec = len(sections)
+            
             await upd(28, f"✅ تم تحليل المحاضرة إلى {n_sec} أقسام تعليمية")
 
             # ─────────────────────────────────────────────────────────────────
@@ -550,15 +576,9 @@ async def _process_lecture(
             # ─────────────────────────────────────────────────────────────────
             _check_cancelled()
             
-            image_steps = [
-                (30, "🎨 جاري تجهيز الصور التعليمية..."),
-                (33, "🖼️ توليد الصور للقسم الأول..."),
-                (36, "🖼️ توليد الصور للقسم الثاني..."),
-                (39, "🖼️ توليد الصور للأقسام المتبقية..."),
-                (42, "✨ معالجة الصور وتحسين جودتها..."),
-                (45, "✅ اكتمل جلب الصور!"),
-            ]
-
+            total_images = sum(len(s.get("keywords", [])) for s in sections)
+            images_done = [0]
+            
             _img_sem = asyncio.Semaphore(6)
             
             async def _fetch_one_section_images(section: dict):
@@ -589,19 +609,13 @@ async def _process_lecture(
                         (r for r in results if not isinstance(r, Exception) and r),
                         None,
                     )
+                    images_done[0] += len(keywords)
+                    
+                    pct = 28 + int((images_done[0] / max(total_images, 1)) * 17)
+                    await upd(pct, f"🖼️ جاري جلب الصور التوضيحية... ({images_done[0]}/{total_images})")
 
-            step_idx = 0
-            for i, section in enumerate(sections):
-                if i == 0:
-                    await upd(image_steps[1][0], image_steps[1][1])
-                elif i == 1:
-                    await upd(image_steps[2][0], image_steps[2][1])
-                elif i == 2:
-                    await upd(image_steps[3][0], image_steps[3][1])
-                
-                await _run_or_cancel(uid, _fetch_one_section_images(section))
-            
-            await upd(45, "✅ تم جلب جميع الصور التعليمية")
+            await _run_or_cancel(uid, asyncio.gather(*[_fetch_one_section_images(s) for s in sections]))
+            await upd(45, f"✅ تم جلب {total_images} صورة توضيحية")
 
             # ─────────────────────────────────────────────────────────────────
             # المرحلة الثالثة: توليد الصوت
@@ -610,14 +624,16 @@ async def _process_lecture(
             
             voice_steps = [
                 (48, "🎤 الاتصال بخدمة الصوت..."),
-                (52, "🎙️ توليد الصوت للقسم الأول..."),
-                (56, "🎙️ توليد الصوت للقسم الثاني..."),
-                (60, "🎙️ توليد الصوت للأقسام المتبقية..."),
+                (52, "🎙️ جاري توليد الصوت للقسم الأول..."),
+                (58, "🎙️ جاري توليد الصوت للأقسام المتبقية..."),
                 (65, "🎵 معالجة ملفات الصوت..."),
                 (70, "✅ اكتمل توليد الصوت!"),
             ]
             
-            await upd(voice_steps[0][0], voice_steps[0][1])
+            for pct, label in voice_steps:
+                await upd(pct, label)
+                await asyncio.sleep(2)
+                
             voice_res = await _run_or_cancel(uid, generate_sections_audio(sections, dialect))
             audio_results = voice_res["results"]
             
@@ -630,15 +646,17 @@ async def _process_lecture(
             
             video_steps = [
                 (74, "🎬 بدء إنتاج الفيديو..."),
-                (77, "🎨 إنشاء شرائح المقدمة..."),
-                (80, "📝 بناء شرائح الأقسام..."),
-                (84, "🏫 تصميم السبورة البيضاء..."),
-                (88, "🎯 إضافة الملخصات..."),
-                (92, "🎬 تشفير الفيديو..."),
+                (77, "🎨 إنشاء شرائح المقدمة بأسلوب Osmosis..."),
+                (80, "📝 بناء شرائح الأقسام وإضافة النصوص..."),
+                (84, "🔤 إضافة الكلمات المفتاحية على السبورة..."),
+                (88, "🖼️ وضع الصور التوضيحية في أماكنها..."),
+                (92, "🎬 تشفير الفيديو النهائي..."),
                 (96, "✅ اكتمل الفيديو!"),
             ]
             
-            await upd(video_steps[0][0], video_steps[0][1])
+            for pct, label in video_steps:
+                await upd(pct, label)
+                await asyncio.sleep(2)
             
             total_audio = sum(r.get("duration", 0) for r in audio_results)
             enc_est = estimate_encoding_seconds(total_audio)
@@ -651,24 +669,7 @@ async def _process_lecture(
             async def _video_progress(elapsed_enc: float, est_enc: float):
                 frac = min(elapsed_enc / max(est_enc, 1), 0.95)
                 pct = int(80 + frac * 16)
-                elapsed = time.time() - t_start
-                
-                # تحديث الرسالة حسب التقدم
-                if pct < 85:
-                    label = "🎨 إنشاء شرائح الفيديو..."
-                elif pct < 90:
-                    label = "🎬 تشفير الفيديو..."
-                else:
-                    label = "✨ وضع اللمسات النهائية..."
-                    
-                await _safe_edit(
-                    prog_msg,
-                    f"⏳ *جاري المعالجة...*\n\n"
-                    f"{_pbar(pct)} *{pct}%*\n"
-                    f"{label}\n\n"
-                    f"⏱️ الوقت: {_fmt_elapsed(elapsed)}",
-                    reply_markup=CANCEL_KB,
-                )
+                await upd(pct, "🎬 جاري تشفير الفيديو...")
 
             total_video_secs = await create_video_from_sections(
                 sections=sections,
@@ -718,11 +719,11 @@ async def _process_lecture(
             await context.bot.send_message(
                 uid,
                 "✅ *اكتمل الفيديو!*\n\n"
-                "📹 تم إنتاج فيديو تعليمي احترافي مع:\n"
-                "• شرح مفصل للمفاهيم\n"
-                "• تفسير المعادلات\n"
-                "• صور توضيحية\n"
-                "• صوت بشري طبيعي\n\n"
+                "📹 تم إنتاج فيديو تعليمي احترافي بأسلوب Osmosis:\n"
+                "• سبورة بيضاء نظيفة\n"
+                "• نصوص وكلمات مفتاحية واضحة\n"
+                "• صور توضيحية بسيطة\n"
+                "• شرح صوتي باللهجة المختارة\n\n"
                 "شارك المعرفة مع أصدقائك 🎓",
                 parse_mode="Markdown",
                 reply_markup=main_keyboard(),
