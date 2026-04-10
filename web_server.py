@@ -4,11 +4,9 @@ import json
 from aiohttp import web
 from config import OWNER_ID
 
-# ── Webhook support ───────────────────────────────────────────────────────────
-_bot_application = None   # set by bot.py when webhook mode is active
+_bot_application = None
 
 def set_bot_app(app):
-    """Register the PTB Application so webhook updates can be forwarded to it."""
     global _bot_application
     _bot_application = app
 
@@ -21,7 +19,7 @@ HOME_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>بوت المحاضرات الذكي</title>
+  <title>بوت المذكرات</title>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
     body {
@@ -71,17 +69,17 @@ HOME_HTML = """<!DOCTYPE html>
 </head>
 <body>
   <div class="container">
-    <div class="logo">🎓</div>
-    <h1>بوت المحاضرات الذكي</h1>
-    <p class="subtitle">حوّل محاضرتك إلى فيديو تعليمي احترافي</p>
+    <div class="logo">📒</div>
+    <h1>بوت المذكرات</h1>
+    <p class="subtitle">احفظ أي شيء — نصوص، صور، ملفات، صوت، فيديو، روابط</p>
     <div class="features">
-      <div class="feature"><div class="icon">📄</div><h3>PDF و TXT</h3><p>ارفع ملفاتك</p></div>
-      <div class="feature"><div class="icon">🎙️</div><h3>صوت بشري</h3><p>بجميع اللهجات</p></div>
-      <div class="feature"><div class="icon">🖼️</div><h3>صور تعليمية</h3><p>ذكاء اصطناعي</p></div>
-      <div class="feature"><div class="icon">🎬</div><h3>فيديو كامل</h3><p>شرح احترافي</p></div>
+      <div class="feature"><div class="icon">🖼️</div><h3>صور وملفات</h3><p>احفظ أي ملف أو صورة</p></div>
+      <div class="feature"><div class="icon">🎤</div><h3>رسائل صوتية</h3><p>حفظ الصوت والموسيقى</p></div>
+      <div class="feature"><div class="icon">⏰</div><h3>تنبيهات</h3><p>تذكير بأي تاريخ ووقت</p></div>
+      <div class="feature"><div class="icon">🔗</div><h3>روابط</h3><p>احفظ روابط الإنترنت</p></div>
     </div>
     <a class="btn" href="https://t.me/zakros_Quizebot" target="_blank">🚀 ابدأ الآن</a>
-    <p class="status"><span class="dot"></span>البوت يعمل 24/7 على Heroku</p>
+    <p class="status"><span class="dot"></span>البوت يعمل الآن</p>
   </div>
 </body>
 </html>"""
@@ -98,7 +96,7 @@ def make_admin_html(stats: dict, recent: list) -> str:
           <td>{u['user_id']}</td>
           <td>{u.get('full_name','—')}</td>
           <td>{username}</td>
-          <td>{u.get('total_videos', 0)}</td>
+          <td>{u.get('notes_count', 0)}</td>
           <td>{banned}</td>
           <td>{created}</td>
         </tr>"""
@@ -108,7 +106,7 @@ def make_admin_html(stats: dict, recent: list) -> str:
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>لوحة التحكم — بوت المحاضرات</title>
+  <title>لوحة التحكم — بوت المذكرات</title>
   <style>
     * {{ margin:0; padding:0; box-sizing:border-box; }}
     body {{
@@ -174,8 +172,8 @@ def make_admin_html(stats: dict, recent: list) -> str:
 </head>
 <body>
   <header>
-    <span>🎓</span>
-    <h1>لوحة تحكم — بوت المحاضرات الذكي</h1>
+    <span>📒</span>
+    <h1>لوحة تحكم — بوت المذكرات</h1>
   </header>
   <div class="main">
     <a class="refresh" href="">🔄 تحديث</a>
@@ -191,14 +189,14 @@ def make_admin_html(stats: dict, recent: list) -> str:
         <div class="label">مستخدمون جدد اليوم</div>
       </div>
       <div class="card yellow">
-        <div class="icon">🎬</div>
-        <div class="num">{stats['total_videos']}</div>
-        <div class="label">إجمالي الفيديوهات</div>
+        <div class="icon">📒</div>
+        <div class="num">{stats['total_notes']}</div>
+        <div class="label">إجمالي المذكرات</div>
       </div>
       <div class="card yellow">
-        <div class="icon">💰</div>
-        <div class="num">{stats.get('pending_payments', 0)}</div>
-        <div class="label">مدفوعات معلقة</div>
+        <div class="icon">⏰</div>
+        <div class="num">{stats['pending_reminders']}</div>
+        <div class="label">تنبيهات قادمة</div>
       </div>
       <div class="card red">
         <div class="icon">⛔</div>
@@ -214,7 +212,7 @@ def make_admin_html(stats: dict, recent: list) -> str:
           <th>المعرّف</th>
           <th>الاسم</th>
           <th>يوزرنيم</th>
-          <th>فيديوهات</th>
+          <th>مذكراته</th>
           <th>الحالة</th>
           <th>تاريخ التسجيل</th>
         </tr>
@@ -231,7 +229,7 @@ def make_admin_html(stats: dict, recent: list) -> str:
 def get_admin_stats() -> tuple[dict, list]:
     from database import get_connection
     conn = get_connection()
-    cur = conn.cursor()
+    cur  = conn.cursor()
 
     cur.execute("SELECT COUNT(*) as c FROM users")
     total_users = cur.fetchone()["c"]
@@ -242,16 +240,18 @@ def get_admin_stats() -> tuple[dict, list]:
     cur.execute("SELECT COUNT(*) as c FROM users WHERE is_banned = TRUE")
     banned_users = cur.fetchone()["c"]
 
-    cur.execute("SELECT SUM(total_videos) as c FROM users")
-    total_videos = cur.fetchone()["c"] or 0
+    cur.execute("SELECT COUNT(*) as c FROM notes")
+    total_notes = cur.fetchone()["c"]
 
-    cur.execute("SELECT COUNT(*) as c FROM payments WHERE status = 'pending'")
-    pending_payments = cur.fetchone()["c"]
+    cur.execute("SELECT COUNT(*) as c FROM notes WHERE reminder_at IS NOT NULL AND reminder_at > NOW() AND reminded = FALSE")
+    pending_reminders = cur.fetchone()["c"]
 
     cur.execute("""
         SELECT u.user_id, u.username, u.full_name, u.is_banned, u.created_at,
-               u.total_videos
+               COUNT(n.id) as notes_count
         FROM users u
+        LEFT JOIN notes n ON n.user_id = u.user_id
+        GROUP BY u.user_id
         ORDER BY u.created_at DESC
         LIMIT 30
     """)
@@ -261,11 +261,11 @@ def get_admin_stats() -> tuple[dict, list]:
     conn.close()
 
     stats = {
-        "total_users": total_users,
-        "new_today": new_today,
-        "banned_users": banned_users,
-        "total_videos": total_videos,
-        "pending_payments": pending_payments,
+        "total_users":      total_users,
+        "new_today":        new_today,
+        "banned_users":     banned_users,
+        "total_notes":      total_notes,
+        "pending_reminders": pending_reminders,
     }
     return stats, recent
 
@@ -276,11 +276,10 @@ async def handle_index(request):
 
 async def handle_health(request):
     mode = "webhook" if _bot_application is not None else "polling"
-    return web.json_response({"status": "ok", "bot": "lecture_bot", "mode": mode, "host": "heroku"})
+    return web.json_response({"status": "ok", "bot": "lecture_bot", "mode": mode})
 
 
 async def handle_telegram_webhook(request):
-    """Receive Telegram updates via POST /telegram and feed them to the bot."""
     if _bot_application is None:
         return web.Response(status=503, text="Bot not ready")
     try:
@@ -310,18 +309,24 @@ async def handle_admin(request):
 
 
 async def start_web_server():
-    """Start web server on Heroku's PORT"""
-    port = int(os.environ.get("PORT", 5000))
+    import socket
+    for _ in range(5):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("0.0.0.0", PORT))
+            s.close()
+            break
+        except OSError:
+            await asyncio.sleep(1)
 
     app = web.Application()
-    app.router.add_get("/", handle_index)
-    app.router.add_get("/health", handle_health)
-    app.router.add_get("/admin", handle_admin)
-    app.router.add_post("/telegram", handle_telegram_webhook)
-
+    app.router.add_get("/",           handle_index)
+    app.router.add_get("/health",     handle_health)
+    app.router.add_get("/admin",      handle_admin)
+    app.router.add_post("/telegram",  handle_telegram_webhook)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
+    site = web.TCPSite(runner, "0.0.0.0", PORT, reuse_address=True)
     await site.start()
-    print(f"🌐 Web server running on port {port}")
-    print(f"📍 Health check: http://localhost:{port}/health")
+    print(f"🌐 Web server running on port {PORT}")
