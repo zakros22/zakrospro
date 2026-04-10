@@ -24,18 +24,15 @@ def clean_text(text: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# استخراج النص من PDF - الحل الجذري (Thread + Timeout)
+# استخراج النص من PDF - مع Thread و Timeout
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
-    """
-    استخراج النص من PDF بشكل غير متزامن حقيقي.
-    يستخدم pypdf (أسرع من PyPDF2) ويعمل في Thread منفصل مع Timeout.
-    """
-    from pypdf import PdfReader
+    """استخراج النص من PDF في Thread منفصل مع timeout"""
+    import PyPDF2
     
     def _extract():
-        reader = PdfReader(io.BytesIO(pdf_bytes))
+        reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
         pages = []
         for page in reader.pages:
             page_text = page.extract_text() or ""
@@ -46,7 +43,6 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
     loop = asyncio.get_event_loop()
     
     try:
-        # تشغيل الاستخراج في Thread منفصل مع timeout 60 ثانية
         text = await asyncio.wait_for(
             loop.run_in_executor(None, _extract),
             timeout=60.0
