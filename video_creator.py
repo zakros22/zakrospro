@@ -8,30 +8,6 @@ from PIL import Image as PILImage, ImageDraw, ImageFont
 TARGET_W, TARGET_H = 854, 480
 WATERMARK = "@zakros_probot"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# البحث عن خط عربي متاح
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _find_font():
-    paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/app/fonts/Amiri-Bold.ttf",
-        "fonts/Amiri-Bold.ttf",
-    ]
-    for p in paths:
-        if os.path.exists(p):
-            return p
-    return None
-
-FONT_PATH = _find_font()
-print(f"📝 Using font: {FONT_PATH}")
-
-_ENC_FACTOR = 0.6
-_MIN_ENC_SEC = 20.0
-
 # ألوان
 COLORS = [
     (231, 76, 126),   # وردي
@@ -42,74 +18,38 @@ COLORS = [
 ]
 
 def estimate_encoding_seconds(total_video_seconds: float) -> float:
-    return max(_MIN_ENC_SEC, total_video_seconds * _ENC_FACTOR)
+    return max(20.0, total_video_seconds * 0.6)
 
 
 def _get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    if FONT_PATH and os.path.exists(FONT_PATH):
-        try:
-            return ImageFont.truetype(FONT_PATH, size)
-        except Exception:
-            pass
-    try:
-        return ImageFont.load_default()
-    except Exception:
-        return ImageFont.load_default()
+    font_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/app/fonts/Amiri-Bold.ttf",
+        "fonts/Amiri-Bold.ttf",
+    ]
+    for p in font_paths:
+        if os.path.exists(p):
+            try:
+                return ImageFont.truetype(p, size)
+            except:
+                pass
+    return ImageFont.load_default()
 
 
 def _prepare_text(text: str) -> str:
-    """تجهيز النص للعرض (يدعم العربي والإنجليزي)"""
     if not text:
         return ""
     try:
         import arabic_reshaper
         from bidi.algorithm import get_display
-        # تحقق إذا كان النص يحتوي على عربي
         if any('\u0600' <= c <= '\u06FF' for c in text):
             reshaped = arabic_reshaper.reshape(text)
             return get_display(reshaped)
-    except Exception:
+    except:
         pass
     return text
 
-
-def _get_text_width(text: str, font: ImageFont.FreeTypeFont) -> int:
-    try:
-        bbox = font.getbbox(text)
-        return bbox[2] - bbox[0]
-    except:
-        return len(text) * (font.size // 2)
-
-
-def _wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list:
-    words = text.split()
-    lines = []
-    current = []
-    for w in words:
-        current.append(w)
-        line = ' '.join(current)
-        if _get_text_width(line, font) > max_width:
-            current.pop()
-            if current:
-                lines.append(' '.join(current))
-            current = [w]
-    if current:
-        lines.append(' '.join(current))
-    return lines if lines else [text]
-
-
-def _draw_text_centered(draw, text: str, y: int, font: ImageFont.FreeTypeFont, color: tuple):
-    """رسم نص في المنتصف مع ظل"""
-    text_width = _get_text_width(text, font)
-    x = (TARGET_W - text_width) // 2
-    draw.text((x + 2, y + 2), text, fill=(200, 200, 200), font=font)
-    draw.text((x, y), text, fill=color, font=font)
-    return y + font.size + 10
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. شريحة المقدمة - شعار كبير
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _draw_welcome_slide() -> str:
     img_fd, img_path = tempfile.mkstemp(prefix="welcome_", suffix=".jpg")
@@ -121,7 +61,7 @@ def _draw_welcome_slide() -> str:
     draw.rectangle([(0, 0), (TARGET_W, 8)], fill=COLORS[0])
     draw.rectangle([(0, TARGET_H-8), (TARGET_W, TARGET_H)], fill=COLORS[0])
 
-    # إطار كبير للشعار
+    # إطار الشعار
     frame_x, frame_y = 150, 100
     frame_w, frame_h = 550, 200
     draw.rounded_rectangle(
@@ -129,20 +69,26 @@ def _draw_welcome_slide() -> str:
         radius=25, outline=COLORS[0], width=8
     )
 
-    # الشعار
     font_logo = _get_font(60, bold=True)
     logo_text = WATERMARK
-    logo_width = _get_text_width(logo_text, font_logo)
-    logo_x = (TARGET_W - logo_width) // 2
+    try:
+        bbox = font_logo.getbbox(logo_text)
+        logo_w = bbox[2] - bbox[0]
+    except:
+        logo_w = len(logo_text) * 35
+    logo_x = (TARGET_W - logo_w) // 2
     logo_y = frame_y + 60
     draw.text((logo_x + 4, logo_y + 4), logo_text, fill=(200, 200, 200), font=font_logo)
     draw.text((logo_x, logo_y), logo_text, fill=COLORS[0], font=font_logo)
 
-    # أهلاً ومرحباً بكم
     welcome_text = _prepare_text("أهلاً ومرحباً بكم")
     font_welcome = _get_font(36, bold=True)
-    welcome_width = _get_text_width(welcome_text, font_welcome)
-    welcome_x = (TARGET_W - welcome_width) // 2
+    try:
+        bbox = font_welcome.getbbox(welcome_text)
+        welcome_w = bbox[2] - bbox[0]
+    except:
+        welcome_w = len(welcome_text) * 20
+    welcome_x = (TARGET_W - welcome_w) // 2
     welcome_y = frame_y + frame_h + 40
     draw.text((welcome_x + 3, welcome_y + 3), welcome_text, fill=(200, 200, 200), font=font_welcome)
     draw.text((welcome_x, welcome_y), welcome_text, fill=(44, 62, 80), font=font_welcome)
@@ -150,10 +96,6 @@ def _draw_welcome_slide() -> str:
     img.save(img_path, "JPEG", quality=90)
     return img_path
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. شريحة عنوان المحاضرة
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _draw_title_slide(lecture_data: dict) -> str:
     img_fd, img_path = tempfile.mkstemp(prefix="title_", suffix=".jpg")
@@ -164,31 +106,42 @@ def _draw_title_slide(lecture_data: dict) -> str:
 
     draw.rectangle([(0, 0), (TARGET_W, 6)], fill=COLORS[1])
 
-    raw_title = lecture_data.get("title", "المحاضرة التعليمية")
-    title_text = _prepare_text(raw_title)
+    title_text = _prepare_text(lecture_data.get("title", "المحاضرة التعليمية"))
     font_title = _get_font(38, bold=True)
     
-    lines = _wrap_text(title_text, font_title, TARGET_W - 80)
-    y = TARGET_H//2 - (len(lines) * 45)//2
+    # تقسيم النص
+    words = title_text.split()
+    lines = []
+    current = []
+    for w in words:
+        current.append(w)
+        line = ' '.join(current)
+        try:
+            bbox = font_title.getbbox(line)
+            if bbox[2] - bbox[0] > TARGET_W - 80:
+                current.pop()
+                lines.append(' '.join(current))
+                current = [w]
+        except:
+            pass
+    if current:
+        lines.append(' '.join(current))
     
+    y = TARGET_H//2 - (len(lines) * 45)//2
     for line in lines:
-        line_width = _get_text_width(line, font_title)
-        x = (TARGET_W - line_width) // 2
+        try:
+            bbox = font_title.getbbox(line)
+            tw = bbox[2] - bbox[0]
+        except:
+            tw = len(line) * 22
+        x = (TARGET_W - tw) // 2
         draw.text((x + 3, y + 3), line, fill=(200, 200, 200), font=font_title)
         draw.text((x, y), line, fill=(44, 62, 80), font=font_title)
         y += 45
 
-    font_wm = _get_font(14, bold=True)
-    wm_width = _get_text_width(WATERMARK, font_wm)
-    draw.text((TARGET_W - wm_width - 25, TARGET_H - 35), WATERMARK, fill=COLORS[1], font=font_wm)
-
     img.save(img_path, "JPEG", quality=90)
     return img_path
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 3. شريحة خريطة الأقسام
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _draw_sections_map(sections: list) -> str:
     img_fd, img_path = tempfile.mkstemp(prefix="map_", suffix=".jpg")
@@ -201,8 +154,12 @@ def _draw_sections_map(sections: list) -> str:
 
     map_title = _prepare_text("📋 خريطة المحاضرة")
     font_title = _get_font(30, bold=True)
-    title_width = _get_text_width(map_title, font_title)
-    x = (TARGET_W - title_width) // 2
+    try:
+        bbox = font_title.getbbox(map_title)
+        tw = bbox[2] - bbox[0]
+    except:
+        tw = len(map_title) * 18
+    x = (TARGET_W - tw) // 2
     draw.text((x, 30), map_title, fill=COLORS[2], font=font_title)
 
     y = 90
@@ -214,8 +171,7 @@ def _draw_sections_map(sections: list) -> str:
         font_num = _get_font(15, bold=True)
         draw.text((41, y + 3), num_str, fill=(255, 255, 255), font=font_num)
         
-        sec_title = section.get("title", f"القسم {i+1}")[:30]
-        sec_text = _prepare_text(sec_title)
+        sec_text = _prepare_text(section.get("title", f"القسم {i+1}")[:30])
         font_sec = _get_font(20, bold=True)
         draw.text((70, y), sec_text, fill=(44, 62, 80), font=font_sec)
         
@@ -228,19 +184,11 @@ def _draw_sections_map(sections: list) -> str:
         
         y += 60
 
-    font_wm = _get_font(13, bold=True)
-    wm_width = _get_text_width(WATERMARK, font_wm)
-    draw.text((TARGET_W - wm_width - 25, TARGET_H - 30), WATERMARK, fill=COLORS[2], font=font_wm)
-
     img.save(img_path, "JPEG", quality=90)
     return img_path
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4. شريحة عنوان القسم
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _draw_section_title_card(section: dict, idx: int, total: int) -> str:
+def _draw_section_title_card(section: dict, idx: int) -> str:
     img_fd, img_path = tempfile.mkstemp(prefix=f"sec_title_{idx}_", suffix=".jpg")
     os.close(img_fd)
 
@@ -254,91 +202,37 @@ def _draw_section_title_card(section: dict, idx: int, total: int) -> str:
     draw.ellipse([cx - cr, cy - cr, cx + cr, cy + cr], fill=color)
     num_str = str(idx + 1)
     font_num = _get_font(40, bold=True)
-    num_width = _get_text_width(num_str, font_num)
-    draw.text((cx - num_width//2, cy - 22), num_str, fill=(255, 255, 255), font=font_num)
+    try:
+        bbox = font_num.getbbox(num_str)
+        nw = bbox[2] - bbox[0]
+    except:
+        nw = 25
+    draw.text((cx - nw//2, cy - 22), num_str, fill=(255, 255, 255), font=font_num)
 
-    raw_title = section.get("title", f"القسم {idx + 1}")
-    title_text = _prepare_text(raw_title)
+    title_text = _prepare_text(section.get("title", f"القسم {idx + 1}"))
     font_title = _get_font(32, bold=True)
-    title_width = _get_text_width(title_text, font_title)
-    x = (TARGET_W - title_width) // 2
+    try:
+        bbox = font_title.getbbox(title_text)
+        tw = bbox[2] - bbox[0]
+    except:
+        tw = len(title_text) * 18
+    x = (TARGET_W - tw) // 2
     draw.text((x, cy + cr + 35), title_text, fill=(44, 62, 80), font=font_title)
-
-    font_wm = _get_font(13, bold=True)
-    wm_width = _get_text_width(WATERMARK, font_wm)
-    draw.text((TARGET_W - wm_width - 25, TARGET_H - 30), WATERMARK, fill=color, font=font_wm)
 
     img.save(img_path, "JPEG", quality=90)
     return img_path
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 5. إنشاء صورة للكلمة المفتاحية (تلائم الشرح دائماً)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _make_keyword_image(keyword: str, color: tuple, term_en: str = "") -> bytes:
-    """إنشاء صورة تعليمية للكلمة المفتاحية"""
-    W, H = 400, 300
-    
-    img = PILImage.new("RGB", (W, H), (255, 255, 255))
-    draw = ImageDraw.Draw(img)
-    
-    # خلفية متدرجة خفيفة
-    for y in range(H):
-        t = y / H
-        r = int(255 * (1 - t) + color[0] * t * 0.15)
-        g = int(255 * (1 - t) + color[1] * t * 0.15)
-        b = int(255 * (1 - t) + color[2] * t * 0.15)
-        draw.line([(0, y), (W, y)], fill=(r, g, b))
-    
-    # إطار ملون
-    draw.rounded_rectangle([(8, 8), (W-8, H-8)], radius=12, outline=color, width=5)
-    
-    # دائرة زخرفية
-    draw.ellipse([(W//2-55, H//2-55), (W//2+55, H//2+55)], fill=(*color, 25))
-    
-    # تحضير النص الرئيسي (عربي)
-    keyword_disp = _prepare_text(keyword[:25])
-    font_kw = _get_font(32, bold=True)
-    lines = _wrap_text(keyword_disp, font_kw, W - 40)
-    
-    y = H//2 - (len(lines) * 35)//2 - 10
-    for line in lines:
-        line_width = _get_text_width(line, font_kw)
-        x = (W - line_width) // 2
-        draw.text((x+2, y+2), line, fill=(200, 200, 200), font=font_kw)
-        draw.text((x, y), line, fill=color, font=font_kw)
-        y += 40
-    
-    # إضافة المصطلح الإنجليزي إذا وجد
-    if term_en:
-        term_en_disp = term_en[:30]
-        font_en = _get_font(18, bold=True)
-        en_width = _get_text_width(term_en_disp, font_en)
-        en_x = (W - en_width) // 2
-        draw.text((en_x, y + 15), term_en_disp, fill=(100, 100, 100), font=font_en)
-    
-    buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=90)
-    return buf.getvalue()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 6. شريحة السبورة المتراكمة
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _draw_accumulating_board(
-    accumulated_keywords: list[str],
-    accumulated_terms_en: list[str],
-    current_kw_idx: int,
+def _draw_content_slide(
+    keywords: list[str],
+    terms_en: list[str],
+    current_idx: int,
     total_kw: int,
     section_title: str,
     section_idx: int,
 ) -> str:
-    """
-    سبورة تتراكم عليها الصور والكلمات المفتاحية مع تقدم الشرح
-    """
-    fd, path = tempfile.mkstemp(prefix="board_", suffix=".jpg")
+    """شريحة محتوى تتراكم فيها الكلمات مع صورها"""
+    fd, path = tempfile.mkstemp(prefix="content_", suffix=".jpg")
     os.close(fd)
 
     color = COLORS[section_idx % len(COLORS)]
@@ -350,19 +244,24 @@ def _draw_accumulating_board(
     # عنوان القسم
     header_text = _prepare_text(section_title[:40])
     font_header = _get_font(18, bold=True)
-    header_width = _get_text_width(header_text, font_header)
-    hx = (TARGET_W - header_width) // 2
+    try:
+        bbox = font_header.getbbox(header_text)
+        hw = bbox[2] - bbox[0]
+    except:
+        hw = len(header_text) * 10
+    hx = (TARGET_W - hw) // 2
     draw.text((hx, 15), header_text, fill=(44, 62, 80), font=font_header)
-    draw.rectangle([(hx, 38), (hx + header_width, 40)], fill=color)
+    draw.rectangle([(hx, 38), (hx + hw, 40)], fill=color)
 
-    n_items = len(accumulated_keywords)
+    n_items = current_idx + 1
     
     if n_items == 1:
-        # عنصر واحد - صورة كبيرة
-        kw = accumulated_keywords[0]
-        term_en = accumulated_terms_en[0] if accumulated_terms_en else ""
+        # عنصر واحد
+        kw = keywords[0] if keywords else ""
+        term_en = terms_en[0] if terms_en else ""
         
-        img_bytes = _make_keyword_image(kw, color, term_en)
+        # صورة
+        img_bytes = _make_simple_image(kw, color, term_en)
         try:
             pil_img = PILImage.open(io.BytesIO(img_bytes)).convert("RGB")
             iw, ih = pil_img.size
@@ -382,7 +281,7 @@ def _draw_accumulating_board(
         except:
             pass
     else:
-        # عناصر متعددة - شبكة 2x2
+        # عناصر متعددة
         cols = 2
         rows = (n_items + 1) // 2
         cell_w = (TARGET_W - 100) // cols
@@ -395,11 +294,11 @@ def _draw_accumulating_board(
             cx = 50 + col * (cell_w + 20)
             cy = 70 + row * (cell_h + 20)
             
-            kw = accumulated_keywords[i]
-            term_en = accumulated_terms_en[i] if i < len(accumulated_terms_en) else ""
+            kw = keywords[i] if i < len(keywords) else ""
+            term_en = terms_en[i] if i < len(terms_en) else ""
             cell_color = COLORS[i % len(COLORS)]
             
-            img_bytes = _make_keyword_image(kw, cell_color, term_en)
+            img_bytes = _make_simple_image(kw, cell_color, term_en)
             try:
                 pil_img = PILImage.open(io.BytesIO(img_bytes)).convert("RGB")
                 iw, ih = pil_img.size
@@ -434,24 +333,88 @@ def _draw_accumulating_board(
     
     for i in range(total_kw):
         dx = start_x + i * dot_gap
-        dot_color = color if i <= current_kw_idx else (220, 220, 220)
-        r = dot_r if i <= current_kw_idx else dot_r - 2
+        dot_color = color if i <= current_idx else (220, 220, 220)
+        r = dot_r if i <= current_idx else dot_r - 2
         draw.ellipse([(dx - r, dot_y - r), (dx + r, dot_y + r)], fill=dot_color)
 
     # حقوق
     font_wm = _get_font(12, bold=True)
-    wm_width = _get_text_width(WATERMARK, font_wm)
-    draw.text((TARGET_W - wm_width - 20, TARGET_H - 25), WATERMARK, fill=color, font=font_wm)
+    try:
+        bbox = font_wm.getbbox(WATERMARK)
+        wm_w = bbox[2] - bbox[0]
+    except:
+        wm_w = len(WATERMARK) * 7
+    draw.text((TARGET_W - wm_w - 20, TARGET_H - 25), WATERMARK, fill=color, font=font_wm)
 
     img.save(path, "JPEG", quality=92)
     return path
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 7. شريحة الخاتمة
-# ─────────────────────────────────────────────────────────────────────────────
+def _make_simple_image(keyword: str, color: tuple, term_en: str = "") -> bytes:
+    """صورة بسيطة ملونة"""
+    W, H = 400, 300
+    img = PILImage.new("RGB", (W, H), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    
+    for y in range(H):
+        t = y / H
+        r = int(255 * (1 - t) + color[0] * t * 0.15)
+        g = int(255 * (1 - t) + color[1] * t * 0.15)
+        b = int(255 * (1 - t) + color[2] * t * 0.15)
+        draw.line([(0, y), (W, y)], fill=(r, g, b))
+    
+    draw.rounded_rectangle([(8, 8), (W-8, H-8)], radius=12, outline=color, width=5)
+    draw.ellipse([(W//2-55, H//2-55), (W//2+55, H//2+55)], fill=(*color, 25))
+    
+    font = _get_font(32, bold=True)
+    keyword_disp = _prepare_text(keyword[:20])
+    
+    words = keyword_disp.split()
+    lines = []
+    current = []
+    for w in words:
+        current.append(w)
+        line = ' '.join(current)
+        try:
+            bbox = font.getbbox(line)
+            if bbox[2] - bbox[0] > W - 40:
+                current.pop()
+                lines.append(' '.join(current))
+                current = [w]
+        except:
+            pass
+    if current:
+        lines.append(' '.join(current))
+    
+    y = H//2 - (len(lines) * 35)//2 - 10
+    for line in lines:
+        try:
+            bbox = font.getbbox(line)
+            tw = bbox[2] - bbox[0]
+        except:
+            tw = len(line) * 18
+        x = (W - tw) // 2
+        draw.text((x+2, y+2), line, fill=(200, 200, 200), font=font)
+        draw.text((x, y), line, fill=color, font=font)
+        y += 40
+    
+    if term_en:
+        font_en = _get_font(18, bold=True)
+        term_disp = term_en[:30]
+        try:
+            bbox = font_en.getbbox(term_disp)
+            tw = bbox[2] - bbox[0]
+        except:
+            tw = len(term_disp) * 10
+        x = (W - tw) // 2
+        draw.text((x, y + 15), term_disp, fill=(100, 100, 100), font=font_en)
+    
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=90)
+    return buf.getvalue()
 
-def _draw_final_summary(sections: list, lecture_data: dict) -> str:
+
+def _draw_final_summary(sections: list) -> str:
     img_fd, img_path = tempfile.mkstemp(prefix="summary_", suffix=".jpg")
     os.close(img_fd)
 
@@ -463,8 +426,12 @@ def _draw_final_summary(sections: list, lecture_data: dict) -> str:
 
     title_text = _prepare_text("📋 ملخص المحاضرة")
     font_title = _get_font(30, bold=True)
-    title_width = _get_text_width(title_text, font_title)
-    tx = (TARGET_W - title_width) // 2
+    try:
+        bbox = font_title.getbbox(title_text)
+        tw = bbox[2] - bbox[0]
+    except:
+        tw = len(title_text) * 18
+    tx = (TARGET_W - tw) // 2
     draw.text((tx, 35), title_text, fill=(44, 62, 80), font=font_title)
 
     y = 90
@@ -475,11 +442,16 @@ def _draw_final_summary(sections: list, lecture_data: dict) -> str:
         kw_disp = _prepare_text(kw_text)
         font_kw = _get_font(16, bold=True)
         
-        kw_width = _get_text_width(kw_disp, font_kw)
-        x = (TARGET_W - kw_width) // 2
+        try:
+            bbox = font_kw.getbbox(kw_disp)
+            kw_w = bbox[2] - bbox[0]
+        except:
+            kw_w = len(kw_disp) * 9
+        
+        x = (TARGET_W - kw_w) // 2
         
         draw.rounded_rectangle(
-            [(x - 15, y - 8), (x + kw_width + 15, y + 28)],
+            [(x - 15, y - 8), (x + kw_w + 15, y + 28)],
             radius=8, fill=(*color, 20), outline=color, width=2
         )
         draw.text((x, y), kw_disp, fill=color, font=font_kw)
@@ -487,14 +459,14 @@ def _draw_final_summary(sections: list, lecture_data: dict) -> str:
 
     thanks_text = _prepare_text("🙏 شكراً لحسن استماعكم")
     font_thanks = _get_font(26, bold=True)
-    thanks_width = _get_text_width(thanks_text, font_thanks)
-    tx = (TARGET_W - thanks_width) // 2
+    try:
+        bbox = font_thanks.getbbox(thanks_text)
+        tw = bbox[2] - bbox[0]
+    except:
+        tw = len(thanks_text) * 15
+    tx = (TARGET_W - tw) // 2
     draw.text((tx + 3, TARGET_H - 65), thanks_text, fill=(200, 200, 200), font=font_thanks)
     draw.text((tx, TARGET_H - 68), thanks_text, fill=COLORS[0], font=font_thanks)
-
-    font_wm = _get_font(15, bold=True)
-    wm_width = _get_text_width(WATERMARK, font_wm)
-    draw.text((TARGET_W - wm_width - 30, TARGET_H - 40), WATERMARK, fill=COLORS[0], font=font_wm)
 
     img.save(img_path, "JPEG", quality=90)
     return img_path
@@ -548,10 +520,6 @@ def _ffmpeg_concat(segment_paths: list[str], output_path: str) -> None:
             pass
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# بناء المقاطع
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _build_segment_list(
     sections: list,
     audio_results: list,
@@ -560,31 +528,30 @@ def _build_segment_list(
     segments: list[dict] = []
     tmp_files: list[str] = []
     total_secs = 0.0
-    n_sections = len(sections)
 
-    # 1. المقدمة
+    # 1. مقدمة
     welcome_path = _draw_welcome_slide()
     tmp_files.append(welcome_path)
     segments.append({"img": welcome_path, "audio": None, "audio_start": 0.0, "dur": 3.5})
     total_secs += 3.5
 
-    # 2. عنوان المحاضرة
+    # 2. عنوان
     title_path = _draw_title_slide(lecture_data)
     tmp_files.append(title_path)
     segments.append({"img": title_path, "audio": None, "audio_start": 0.0, "dur": 4.0})
     total_secs += 4.0
 
-    # 3. خريطة الأقسام
+    # 3. خريطة
     map_path = _draw_sections_map(sections)
     tmp_files.append(map_path)
     segments.append({"img": map_path, "audio": None, "audio_start": 0.0, "dur": 5.0})
     total_secs += 5.0
 
-    # 4. الأقسام
+    # 4. أقسام
     for sec_idx, (section, audio_info) in enumerate(zip(sections, audio_results)):
-        sec_title_path = _draw_section_title_card(section, sec_idx, n_sections)
-        tmp_files.append(sec_title_path)
-        segments.append({"img": sec_title_path, "audio": None, "audio_start": 0.0, "dur": 3.0})
+        title_path = _draw_section_title_card(section, sec_idx)
+        tmp_files.append(title_path)
+        segments.append({"img": title_path, "audio": None, "audio_start": 0.0, "dur": 3.0})
         total_secs += 3.0
 
         keywords = section.get("keywords", ["مفهوم"])
@@ -605,36 +572,27 @@ def _build_segment_list(
 
         sec_title = section.get("title", "")
         
-        accum_kw = []
-        accum_en = []
-        
         for kw_idx in range(n_kw):
-            accum_kw.append(keywords[kw_idx])
-            if kw_idx < len(terms_en):
-                accum_en.append(terms_en[kw_idx])
-            else:
-                accum_en.append("")
-            
-            board_path = _draw_accumulating_board(
-                accumulated_keywords=accum_kw.copy(),
-                accumulated_terms_en=accum_en.copy(),
-                current_kw_idx=kw_idx,
+            content_path = _draw_content_slide(
+                keywords=keywords,
+                terms_en=terms_en,
+                current_idx=kw_idx,
                 total_kw=n_kw,
                 section_title=sec_title,
                 section_idx=sec_idx,
             )
-            tmp_files.append(board_path)
+            tmp_files.append(content_path)
             
             segments.append({
-                "img": board_path,
+                "img": content_path,
                 "audio": apath,
                 "audio_start": kw_idx * kw_dur,
                 "dur": kw_dur,
             })
             total_secs += kw_dur
 
-    # 5. الخاتمة
-    final_path = _draw_final_summary(sections, lecture_data)
+    # 5. خاتمة
+    final_path = _draw_final_summary(sections)
     tmp_files.append(final_path)
     segments.append({"img": final_path, "audio": None, "audio_start": 0.0, "dur": 6.0})
     total_secs += 6.0
@@ -672,6 +630,8 @@ async def create_video_from_sections(
     for section in sections:
         if "keywords" not in section or not section["keywords"]:
             section["keywords"] = ["مفهوم", "تعريف", "شرح", "تحليل"]
+        if "terms_en" not in section:
+            section["terms_en"] = []
 
     segments, tmp_files, total_video_secs = await loop.run_in_executor(
         None, _build_segment_list, sections, audio_results, lecture_data
