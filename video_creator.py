@@ -196,42 +196,84 @@ def _summary(keywords):
     img.save(p, "JPEG", quality=90)
     return p
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FFmpeg - متوافق مع تيليجرام 100%
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def _ffmpeg_seg(img, dur, aud, start, out):
+    """تشفير مقطع واحد - متوافق مع تيليجرام"""
     dstr = f"{dur:.3f}"
-    a = ["-ss", f"{start:.3f}", "-t", dstr, "-i", aud] if aud else ["-f", "lavfi", "-i", "anullsrc"]
-    cmd = ["ffmpeg", "-y", "-loop", "1", "-t", dstr, "-i", img, *a,
-           "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p", "-r", "15",
-           "-vf", "scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2",
-           "-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "96k", "-t", dstr, out]
-    subprocess.run(cmd, capture_output=True)
+    
+    if aud and os.path.exists(aud):
+        # مع صوت
+        cmd = [
+            "ffmpeg", "-y",
+            "-loop", "1", "-i", img,
+            "-ss", f"{start:.3f}", "-t", dstr, "-i", aud,
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-vf", f"scale={TARGET_W}:{TARGET_H}:force_original_aspect_ratio=decrease,pad={TARGET_W}:{TARGET_H}:(ow-iw)/2:(oh-ih)/2",
+            "-r", "15",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+            "-shortest", "-t", dstr, out
+        ]
+    else:
+        # بدون صوت (صامت)
+        cmd = [
+            "ffmpeg", "-y",
+            "-loop", "1", "-i", img,
+            "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-vf", f"scale={TARGET_W}:{TARGET_H}:force_original_aspect_ratio=decrease,pad={TARGET_W}:{TARGET_H}:(ow-iw)/2:(oh-ih)/2",
+            "-r", "15",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+            "-shortest", "-t", dstr, out
+        ]
+    
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        print(f"FFmpeg error: {result.stderr.decode()[:500]}")
+        raise RuntimeError(f"FFmpeg failed")
+
 
 def _ffmpeg_cat(segs, out):
+    """دمج المقاطع"""
     fd, lst = tempfile.mkstemp(suffix=".txt")
     os.close(fd)
     with open(lst, "w") as f:
         for s in segs:
             f.write(f"file '{s}'\n")
-    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", out], capture_output=True)
+    cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", out]
+    result = subprocess.run(cmd, capture_output=True)
     os.remove(lst)
+    if result.returncode != 0:
+        raise RuntimeError(f"FFmpeg concat failed")
+
 
 def _build(sections, audio_results, title, all_kw):
     segs, tmps, total = [], [], 0
     
+    # 1. مقدمة
     p = _welcome()
     tmps.append(p)
     segs.append({"img": p, "audio": None, "audio_start": 0, "dur": 3.5})
     total += 3.5
     
+    # 2. عنوان
     p = _title(title)
     tmps.append(p)
     segs.append({"img": p, "audio": None, "audio_start": 0, "dur": 4})
     total += 4
     
+    # 3. خريطة
     p = _map([s.get("title", "") for s in sections])
     tmps.append(p)
     segs.append({"img": p, "audio": None, "audio_start": 0, "dur": 5})
     total += 5
     
+    # 4. أقسام
     for i, (s, a) in enumerate(zip(sections, audio_results)):
         p = _sec_title(s.get("title", f"قسم {i+1}"), i)
         tmps.append(p)
@@ -258,6 +300,7 @@ def _build(sections, audio_results, title, all_kw):
             segs.append({"img": p, "audio": ap, "audio_start": j*kd, "dur": kd})
             total += kd
     
+    # 5. ملخص
     p = _summary(all_kw)
     tmps.append(p)
     segs.append({"img": p, "audio": None, "audio_start": 0, "dur": 6})
@@ -265,16 +308,25 @@ def _build(sections, audio_results, title, all_kw):
     
     return segs, tmps, total
 
+
 def _encode(segs, out):
     paths = []
-    for i, s in enumerate(segs):
-        fd, p = tempfile.mkstemp(suffix=".mp4")
-        os.close(fd)
-        paths.append(p)
-        _ffmpeg_seg(s["img"], s["dur"], s["audio"], s["audio_start"], p)
-    _ffmpeg_cat(paths, out)
-    for p in paths:
-        os.remove(p)
+    try:
+        for i, s in enumerate(segs):
+            fd, p = tempfile.mkstemp(suffix=".mp4")
+            os.close(fd)
+            paths.append(p)
+            print(f"  Encoding segment {i+1}/{len(segs)}...")
+            _ffmpeg_seg(s["img"], s["dur"], s["audio"], s["audio_start"], p)
+        print(f"  Concatenating...")
+        _ffmpeg_cat(paths, out)
+    finally:
+        for p in paths:
+            try:
+                os.remove(p)
+            except:
+                pass
+
 
 async def create_video_from_sections(sections, audio_results, lecture_data, output_path, dialect="msa", progress_cb=None):
     loop = asyncio.get_event_loop()
@@ -287,7 +339,10 @@ async def create_video_from_sections(sections, audio_results, lecture_data, outp
         if "_image_bytes" not in s:
             s["_image_bytes"] = None
     
+    print(f"[Video] Building segments...")
     segs, tmps, total = await loop.run_in_executor(None, _build, sections, audio_results, title, all_kw)
+    
+    print(f"[Video] Encoding {len(segs)} segments...")
     await loop.run_in_executor(None, _encode, segs, output_path)
     
     for p in tmps:
@@ -296,4 +351,5 @@ async def create_video_from_sections(sections, audio_results, lecture_data, outp
         except:
             pass
     
+    print(f"[Video] Done! Duration: {total:.1f}s")
     return total
