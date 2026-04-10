@@ -93,8 +93,7 @@ CANCEL_KB = InlineKeyboardMarkup([[
     InlineKeyboardButton("❌ إلغاء المعالجة", callback_data="cancel_job")
 ]])
 
-# حجم الملف المسموح - 50 ميجابايت
-MAX_FILE_SIZE = 50 * 1024 * 1024
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 
 
 async def _run_or_cancel(uid: int, coro) -> object:
@@ -189,9 +188,7 @@ async def ensure_user(update: Update) -> dict | None:
                 try:
                     ref_user = get_user(ref_by)
                     name = ref_user.get("full_name", "صديق") if ref_user else "صديق"
-                    await update.effective_message.reply_text(
-                        f"✅ انضممت عبر رابط إحالة {name}!"
-                    )
+                    await update.effective_message.reply_text(f"✅ انضممت عبر رابط إحالة {name}!")
                 except Exception:
                     pass
     if user.get("is_banned"):
@@ -201,7 +198,6 @@ async def ensure_user(update: Update) -> dict | None:
 
 
 # ── /start ────────────────────────────────────────────────────────────────────
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     uid = update.effective_user.id
@@ -238,7 +234,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ── /help ─────────────────────────────────────────────────────────────────────
-
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📖 *كيفية الاستخدام*\n\n"
@@ -252,7 +247,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ── /cancel ───────────────────────────────────────────────────────────────────
-
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user_states.pop(uid, None)
@@ -265,7 +259,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ── Balance ───────────────────────────────────────────────────────────────────
-
 async def my_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await ensure_user(update)
     if not user:
@@ -280,7 +273,6 @@ async def my_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ── Referral ──────────────────────────────────────────────────────────────────
-
 async def referral_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await ensure_user(update)
     if not user:
@@ -300,10 +292,9 @@ async def referral_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ── استقبال الملفات والنصوص (المعالج الرئيسي) ─────────────────────────────────
-
+# ── استقبال المحتوى (نص، PDF، TXT) ───────────────────────────────────────────
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """المعالج الرئيسي لجميع الرسائل - نصوص، ملفات PDF، TXT"""
+    """المعالج الرئيسي - يستقبل النصوص والملفات"""
     
     user = await ensure_user(update)
     if not user:
@@ -312,21 +303,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     msg = update.message
 
-    # ── Admin ──────────────────────────────────────────────────────────────────
+    # Admin
     if is_owner(uid):
         consumed = await handle_admin_text_search(update, context)
         if consumed:
             return
 
-    # ── أزرار لوحة المفاتيح ───────────────────────────────────────────────────
+    # أزرار لوحة المفاتيح
     if msg.text:
         text = msg.text.strip()
         if text == "📤 رفع محاضرة":
             await msg.reply_text(
                 "📤 *أرسل المحاضرة*\n\n"
-                "• ملف PDF 📄\n"
+                "• ملف PDF 📄 (حتى 50MB)\n"
                 "• ملف TXT 📃\n"
-                "• أو اكتب النص مباشرة (100 حرف على الأقل)",
+                "• أو اكتب النص مباشرة",
                 parse_mode="Markdown",
             )
             return
@@ -340,20 +331,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await help_cmd(update, context)
             return
 
-    # ── هل المستخدم قيد المعالجة؟ ─────────────────────────────────────────────
+    # هل المستخدم قيد المعالجة؟
     if uid in _active_jobs:
         await msg.reply_text("⏳ محاضرتك قيد المعالجة...")
         return
 
-    # ── التحقق من المحاولات ───────────────────────────────────────────────────
+    # التحقق من المحاولات
     if user["attempts_left"] <= 0:
         await send_payment_required_message(update, context)
         return
 
-    # ── استخراج النص من الرسالة ───────────────────────────────────────────────
+    # استخراج النص
     lecture_text = None
     filename = "lecture"
-    file_size = 0
 
     # 1. ملف PDF أو TXT
     if msg.document:
@@ -362,21 +352,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_size = doc.file_size or 0
         ext = fname.lower().split(".")[-1] if "." in fname else ""
 
-        # التحقق من نوع الملف
         if ext not in ("pdf", "txt"):
             await msg.reply_text("⚠️ الملف غير مدعوم. أرسل PDF أو TXT فقط.")
             return
 
-        # التحقق من الحجم
         if file_size > MAX_FILE_SIZE:
             await msg.reply_text(f"⚠️ حجم الملف كبير. الحد الأقصى: {MAX_FILE_SIZE // 1048576}MB")
             return
 
-        # إرسال رسالة انتظار
         wait_msg = await msg.reply_text(
-            f"📥 *جاري تحميل الملف...*\n"
-            f"📄 `{fname}`\n"
-            f"📦 {file_size // 1024}KB",
+            f"📥 *جاري تحميل الملف...*\n📄 `{fname}`\n📦 {file_size // 1024}KB",
             parse_mode="Markdown",
         )
 
@@ -385,11 +370,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             file = await context.bot.get_file(doc.file_id)
             raw = await file.download_as_bytearray()
 
-            await wait_msg.edit_text(
-                f"📥 *تم التحميل!*\n"
-                f"🔍 جاري استخراج النص...",
-                parse_mode="Markdown",
-            )
+            await wait_msg.edit_text(f"📥 *تم التحميل!*\n🔍 جاري استخراج النص...", parse_mode="Markdown")
 
             if ext == "pdf":
                 lecture_text = await extract_full_text_from_pdf(bytes(raw))
@@ -412,22 +393,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             words = len(text.split())
             await msg.reply_text(f"✅ *تم استلام النص!* ({words:,} كلمة)", parse_mode="Markdown")
         else:
-            await msg.reply_text(
-                "⚠️ النص قصير جداً.\n\n"
-                "• أرسل 100 حرف على الأقل\n"
-                "• أو أرسل ملف PDF/TXT"
-            )
+            await msg.reply_text("⚠️ النص قصير جداً. أرسل 100 حرف على الأقل أو ملف PDF/TXT")
             return
     else:
         await msg.reply_text("⚠️ أرسل ملف PDF، TXT، أو نص مباشر.")
         return
 
-    # ── التحقق من النص المستخرج ───────────────────────────────────────────────
+    # التحقق من النص المستخرج
     if not lecture_text or len(lecture_text.strip()) < 50:
         await msg.reply_text("❌ لم أتمكن من استخراج نص كافٍ. تأكد من محتوى الملف.")
         return
 
-    # ── حفظ الحالة وعرض خيارات اللهجة ─────────────────────────────────────────
+    # حفظ الحالة وعرض خيارات اللهجة
     user_states[uid] = {
         "state": "awaiting_dialect",
         "text": lecture_text,
@@ -455,7 +432,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ── Callback handler ──────────────────────────────────────────────────────────
-
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     data = q.data
@@ -467,7 +443,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await q.answer()
 
-    # Payment callbacks
     if data == "pay_stars":
         await handle_pay_stars(update, context)
         return
@@ -497,7 +472,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Dialect selection
     if data.startswith("dial_"):
         dialect = data[5:]
         state = user_states.get(uid, {})
@@ -534,7 +508,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ── معالجة المحاضرة وإنشاء الفيديو ───────────────────────────────────────────
-
 async def _process_lecture(
     uid: int,
     text: str,
@@ -564,7 +537,7 @@ async def _process_lecture(
 
     async with _Q_SEM:
         try:
-            # ── 1. تحليل المحاضرة ────────────────────────────────────────────
+            # 1. تحليل المحاضرة
             _check()
             await upd(5, "🔍 قراءة وتحليل المحتوى...")
             
@@ -577,7 +550,7 @@ async def _process_lecture(
             n_sections = len(sections)
             await upd(25, f"✅ تم التحليل — {n_sections} أقسام")
 
-            # ── 2. جلب الصور ────────────────────────────────────────────────
+            # 2. جلب الصور
             _check()
             await upd(30, "🎨 جلب الصور التعليمية...")
 
@@ -601,7 +574,7 @@ async def _process_lecture(
             sections = await asyncio.gather(*[fetch_images(s) for s in sections])
             await upd(50, "✅ تم جلب الصور")
 
-            # ── 3. توليد الصوت ──────────────────────────────────────────────
+            # 3. توليد الصوت
             _check()
             await upd(55, "🎤 توليد الصوت...")
             
@@ -609,7 +582,7 @@ async def _process_lecture(
             audio_results = voice_res["results"]
             await upd(70, "✅ تم توليد الصوت")
 
-            # ── 4. إنشاء الفيديو ────────────────────────────────────────────
+            # 4. إنشاء الفيديو
             _check()
             await upd(75, "🎬 إنتاج الفيديو...")
 
@@ -631,7 +604,7 @@ async def _process_lecture(
 
             await upd(99, "✅ اكتمل! جاري الإرسال...")
 
-            # ── 5. إرسال الفيديو ────────────────────────────────────────────
+            # 5. إرسال الفيديو
             decrement_attempts(uid)
             increment_total_videos(uid)
             update_video_request(req_id, "done", video_path)
@@ -692,21 +665,18 @@ async def _process_lecture(
 
 
 # ── Admin ─────────────────────────────────────────────────────────────────────
-
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_owner(update.effective_user.id):
         await handle_admin_command(update, context)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-
 async def main():
     init_db()
     logger.info("🤖 Bot starting...")
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("cancel", cancel))
@@ -722,17 +692,11 @@ async def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, handle_successful_payment))
     app.add_handler(CallbackQueryHandler(callback_handler))
     
-    # ⭐ المعالج الرئيسي - يستقبل النصوص والملفات
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT | filters.Document.ALL,
-            handle_message,
-        )
-    )
+    # المعالج الرئيسي - نصوص وملفات
+    app.add_handler(MessageHandler(filters.TEXT | filters.Document.ALL, handle_message))
 
     logger.info("✅ Ready")
 
-    # Webhook for Heroku
     app_url = os.getenv("HEROKU_APP_NAME", "")
     webhook_url = f"https://{app_url}.herokuapp.com/telegram" if app_url else os.getenv("WEBHOOK_URL", "").rstrip("/")
 
