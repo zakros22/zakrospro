@@ -8,7 +8,6 @@ from PIL import Image as PILImage, ImageDraw, ImageFont
 TARGET_W, TARGET_H = 854, 480
 WATERMARK = "@zakros_probot"
 
-# ألوان
 COLORS = [
     (231, 76, 126),   # وردي
     (52, 152, 219),   # أزرق
@@ -22,7 +21,6 @@ def estimate_encoding_seconds(total_video_seconds: float) -> float:
 
 
 def _get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    """تحميل خط مضمون"""
     font_paths = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -39,18 +37,15 @@ def _get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
 
 
 def _draw_welcome_slide() -> str:
-    """شريحة المقدمة مع شعار كبير"""
     img_fd, img_path = tempfile.mkstemp(prefix="welcome_", suffix=".jpg")
     os.close(img_fd)
 
     img = PILImage.new("RGB", (TARGET_W, TARGET_H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
 
-    # إطارات
     draw.rectangle([(0, 0), (TARGET_W, 8)], fill=COLORS[0])
     draw.rectangle([(0, TARGET_H-8), (TARGET_W, TARGET_H)], fill=COLORS[0])
 
-    # إطار الشعار
     frame_x, frame_y = 150, 100
     frame_w, frame_h = 550, 200
     draw.rounded_rectangle(
@@ -59,16 +54,15 @@ def _draw_welcome_slide() -> str:
     )
 
     font_logo = _get_font(60, bold=True)
-    logo_text = WATERMARK
     try:
-        bbox = font_logo.getbbox(logo_text)
+        bbox = font_logo.getbbox(WATERMARK)
         logo_w = bbox[2] - bbox[0]
     except:
-        logo_w = len(logo_text) * 35
+        logo_w = len(WATERMARK) * 35
     logo_x = (TARGET_W - logo_w) // 2
     logo_y = frame_y + 60
-    draw.text((logo_x + 4, logo_y + 4), logo_text, fill=(200, 200, 200), font=font_logo)
-    draw.text((logo_x, logo_y), logo_text, fill=COLORS[0], font=font_logo)
+    draw.text((logo_x + 4, logo_y + 4), WATERMARK, fill=(200, 200, 200), font=font_logo)
+    draw.text((logo_x, logo_y), WATERMARK, fill=COLORS[0], font=font_logo)
 
     font_welcome = _get_font(36, bold=True)
     welcome_text = "أهلاً ومرحباً بكم"
@@ -87,7 +81,6 @@ def _draw_welcome_slide() -> str:
 
 
 def _draw_title_slide(title: str) -> str:
-    """شريحة عنوان المحاضرة"""
     img_fd, img_path = tempfile.mkstemp(prefix="title_", suffix=".jpg")
     os.close(img_fd)
 
@@ -98,7 +91,6 @@ def _draw_title_slide(title: str) -> str:
 
     font_title = _get_font(38, bold=True)
     
-    # تقسيم النص يدوياً
     words = title.split()
     lines = []
     current = []
@@ -133,7 +125,6 @@ def _draw_title_slide(title: str) -> str:
 
 
 def _draw_sections_map(section_titles: list) -> str:
-    """شريحة خريطة الأقسام"""
     img_fd, img_path = tempfile.mkstemp(prefix="map_", suffix=".jpg")
     os.close(img_fd)
 
@@ -171,7 +162,6 @@ def _draw_sections_map(section_titles: list) -> str:
 
 
 def _draw_section_title_card(title: str, idx: int) -> str:
-    """شريحة عنوان القسم"""
     img_fd, img_path = tempfile.mkstemp(prefix=f"sec_title_{idx}_", suffix=".jpg")
     os.close(img_fd)
 
@@ -206,13 +196,11 @@ def _draw_section_title_card(title: str, idx: int) -> str:
 
 
 def _make_keyword_card(keyword: str, color: tuple, idx: int) -> bytes:
-    """إنشاء بطاقة ملونة للكلمة المفتاحية"""
     W, H = 380, 280
     
     img = PILImage.new("RGB", (W, H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
     
-    # خلفية متدرجة
     for y in range(H):
         t = y / H
         r = int(255 * (1 - t) + color[0] * t * 0.15)
@@ -220,10 +208,8 @@ def _make_keyword_card(keyword: str, color: tuple, idx: int) -> bytes:
         b = int(255 * (1 - t) + color[2] * t * 0.15)
         draw.line([(0, y), (W, y)], fill=(r, g, b))
     
-    # إطار
     draw.rounded_rectangle([(8, 8), (W-8, H-8)], radius=15, outline=color, width=6)
     
-    # رقم
     font_num = _get_font(20, bold=True)
     draw.ellipse([(20, 20), (50, 50)], fill=color)
     num_str = str(idx + 1)
@@ -234,10 +220,8 @@ def _make_keyword_card(keyword: str, color: tuple, idx: int) -> bytes:
         nw = 12
     draw.text((35 - nw//2, 28), num_str, fill=(255, 255, 255), font=font_num)
     
-    # الكلمة المفتاحية
     font_kw = _get_font(28, bold=True)
     
-    # تقسيم الكلمة إذا كانت طويلة
     words = keyword.split()
     lines = []
     current = []
@@ -279,7 +263,6 @@ def _draw_accumulating_board(
     section_title: str,
     section_idx: int,
 ) -> str:
-    """سبورة تتراكم عليها بطاقات الكلمات المفتاحية"""
     fd, path = tempfile.mkstemp(prefix="board_", suffix=".jpg")
     os.close(fd)
 
@@ -289,7 +272,6 @@ def _draw_accumulating_board(
 
     draw.rectangle([(0, 0), (TARGET_W, 6)], fill=color)
 
-    # عنوان القسم
     font_header = _get_font(18, bold=True)
     try:
         bbox = font_header.getbbox(section_title[:40])
@@ -303,7 +285,6 @@ def _draw_accumulating_board(
     n_items = len(accumulated_keywords)
     
     if n_items == 1:
-        # عنصر واحد - كبير
         kw = accumulated_keywords[0]
         card_bytes = _make_keyword_card(kw, color, 0)
         try:
@@ -325,7 +306,6 @@ def _draw_accumulating_board(
         except:
             pass
     else:
-        # عناصر متعددة - شبكة
         cols = 2
         rows = (n_items + 1) // 2
         cell_w = 380
@@ -358,7 +338,6 @@ def _draw_accumulating_board(
             except:
                 pass
 
-    # مؤشر التقدم
     dot_y = TARGET_H - 30
     dot_r = 6
     dot_gap = 25
@@ -371,7 +350,6 @@ def _draw_accumulating_board(
         r = dot_r if i <= current_idx else dot_r - 2
         draw.ellipse([(dx - r, dot_y - r), (dx + r, dot_y + r)], fill=dot_color)
 
-    # حقوق
     font_wm = _get_font(12, bold=True)
     try:
         bbox = font_wm.getbbox(WATERMARK)
@@ -385,7 +363,6 @@ def _draw_accumulating_board(
 
 
 def _draw_final_summary(all_keywords: list) -> str:
-    """شريحة الملخص النهائي"""
     img_fd, img_path = tempfile.mkstemp(prefix="summary_", suffix=".jpg")
     os.close(img_fd)
 
@@ -405,7 +382,6 @@ def _draw_final_summary(all_keywords: list) -> str:
     tx = (TARGET_W - tw) // 2
     draw.text((tx, 35), title_text, fill=(44, 62, 80), font=font_title)
 
-    # عرض الكلمات في شبكة
     y = 90
     for i, kw in enumerate(all_keywords[:12]):
         color = COLORS[i % len(COLORS)]
@@ -441,10 +417,6 @@ def _draw_final_summary(all_keywords: list) -> str:
     img.save(img_path, "JPEG", quality=90)
     return img_path
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# FFmpeg
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _ffmpeg_segment(img_path: str, duration: float, audio_path: str | None,
                     audio_start: float, out_path: str) -> None:
@@ -494,6 +466,7 @@ def _build_segment_list(
     sections: list,
     audio_results: list,
     lecture_title: str,
+    all_keywords: list,
 ) -> tuple[list[dict], list[str], float]:
     segments: list[dict] = []
     tmp_files: list[str] = []
@@ -518,8 +491,6 @@ def _build_segment_list(
     segments.append({"img": map_path, "audio": None, "audio_start": 0.0, "dur": 5.0})
     total_secs += 5.0
 
-    all_keywords = []
-
     # 4. أقسام
     for sec_idx, (section, audio_info) in enumerate(zip(sections, audio_results)):
         title_path = _draw_section_title_card(section.get("title", f"القسم {sec_idx+1}"), sec_idx)
@@ -528,8 +499,6 @@ def _build_segment_list(
         total_secs += 3.0
 
         keywords = section.get("keywords", ["مفهوم", "تعريف", "شرح", "تحليل"])
-        all_keywords.extend(keywords)
-        
         audio_bytes = audio_info.get("audio")
         total_dur = max(float(audio_info.get("duration", 30)), 5.0)
         
@@ -604,13 +573,14 @@ async def create_video_from_sections(
     loop = asyncio.get_event_loop()
     
     lecture_title = lecture_data.get("title", "المحاضرة التعليمية")
+    all_keywords = lecture_data.get("all_keywords", [])
 
     for section in sections:
         if "keywords" not in section or not section["keywords"]:
             section["keywords"] = ["مفهوم", "تعريف", "شرح", "تحليل"]
 
     segments, tmp_files, total_video_secs = await loop.run_in_executor(
-        None, _build_segment_list, sections, audio_results, lecture_title
+        None, _build_segment_list, sections, audio_results, lecture_title, all_keywords
     )
 
     if not segments:
