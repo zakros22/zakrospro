@@ -64,21 +64,6 @@ def _load_groq_keys():
     return keys
 
 _groq_keys = _load_groq_keys()
-_current_groq_idx = 0
-
-def _get_next_groq_key():
-    global _current_groq_idx
-    if not _groq_keys:
-        return None
-    key = _groq_keys[_current_groq_idx % len(_groq_keys)]
-    _current_groq_idx += 1
-    return key
-
-_GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it"]
-
-# ──────────────────────────────────────────────────────────────────────────────
-# دوال التوليد
-# ──────────────────────────────────────────────────────────────────────────────
 
 async def _generate_with_google(prompt: str, max_tokens: int = 8192) -> str:
     models = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
@@ -119,35 +104,32 @@ async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
     if not _groq_keys:
         raise Exception("No Groq keys")
     
-    key = _get_next_groq_key()
-    if not key:
-        raise Exception("No Groq keys available")
-    
-    for model in _GROQ_MODELS:
-        try:
-            headers = {
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-            }
-            payload = {
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": min(max_tokens, 8192),
-                "temperature": 0.3,
-            }
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=60),
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        print(f"✅ Groq success with {model}")
-                        return data["choices"][0]["message"]["content"].strip()
-        except Exception:
-            continue
+    for key in _groq_keys:
+        for model in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
+            try:
+                headers = {
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                }
+                payload = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": min(max_tokens, 8192),
+                    "temperature": 0.3,
+                }
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers=headers,
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=60),
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            print(f"✅ Groq success with {model}")
+                            return data["choices"][0]["message"]["content"].strip()
+            except Exception:
+                continue
     
     raise Exception("Groq failed")
 
@@ -168,18 +150,12 @@ async def _generate_with_rotation(prompt: str, max_output_tokens: int = 8192) ->
     raise Exception("All AI services failed")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# استخراج الكلمات المفتاحية
-# ──────────────────────────────────────────────────────────────────────────────
-
 def _extract_keywords_from_text(text: str, max_words: int = 20) -> list:
     stop_words = {'و', 'في', 'من', 'على', 'إلى', 'أن', 'هو', 'هي', 'هذا', 'هذه', 'كان', 
                   'كانت', 'مع', 'ما', 'لا', 'عن', 'إذا', 'لم', 'لن', 'قد', 'ثم', 'أو', 
-                  'أم', 'لكن', 'حتى', 'بل', 'كل', 'بعض', 'أي', 'تلك', 'ذلك', 'هؤلاء', 
-                  'الذي', 'التي', 'الذين', 'ماذا', 'كيف', 'أين', 'متى', 'نحن', 'هم',
-                  'the', 'a', 'an', 'is', 'are', 'was', 'were', 'of', 'to', 'in',
-                  'that', 'it', 'be', 'for', 'on', 'with', 'as', 'at', 'by', 'this',
-                  'and', 'or', 'but'}
+                  'أم', 'لكن', 'حتى', 'بل', 'كل', 'بعض', 'the', 'a', 'an', 'is', 'are',
+                  'was', 'were', 'of', 'to', 'in', 'that', 'it', 'be', 'for', 'on',
+                  'with', 'as', 'at', 'by', 'this', 'and', 'or', 'but'}
     
     words = re.findall(r'[\u0600-\u06FF]{4,}|[a-zA-Z]{4,}', text)
     word_freq = {}
@@ -195,12 +171,12 @@ def _extract_keywords_from_text(text: str, max_words: int = 20) -> list:
 def _detect_lecture_type(text: str) -> str:
     text_lower = text.lower()
     
-    medical = ['مرض', 'علاج', 'طبيب', 'جراحة', 'دواء', 'تشخيص', 'مريض', 'عرض', 'قلب', 'دم', 'خلية', 'ورم', 'سرطان', 'endometriosis', 'cyst', 'inflammation', 'pain', 'bleeding', 'menstrual', 'pelvic']
-    math = ['معادلة', 'دالة', 'تفاضل', 'تكامل', 'جبر', 'هندسة', 'عدد', 'متغير', 'رياضيات', 'equation', 'function', 'calculus', 'algebra']
-    physics = ['قوة', 'طاقة', 'حركة', 'سرعة', 'تسارع', 'جاذبية', 'كهرباء', 'مغناطيس', 'فيزياء', 'force', 'energy', 'motion']
+    medical = ['مرض', 'علاج', 'طبيب', 'جراحة', 'دواء', 'تشخيص', 'مريض', 'قلب', 'دم', 'خلية', 'ورم', 'سرطان', 'endometriosis', 'cyst', 'inflammation', 'pain', 'bleeding', 'menstrual']
+    math = ['معادلة', 'دالة', 'تفاضل', 'تكامل', 'جبر', 'هندسة', 'رياضيات', 'equation', 'function', 'calculus', 'algebra']
+    physics = ['قوة', 'طاقة', 'حركة', 'سرعة', 'جاذبية', 'كهرباء', 'مغناطيس', 'فيزياء', 'force', 'energy', 'motion']
     chemistry = ['تفاعل', 'عنصر', 'مركب', 'جزيء', 'ذرة', 'حمض', 'قاعدة', 'كيمياء', 'reaction', 'element', 'compound']
-    history = ['تاريخ', 'حرب', 'معركة', 'حضارة', 'إمبراطورية', 'ملك', 'ثورة', 'قرن', 'history', 'war', 'battle']
-    biology = ['نبات', 'حيوان', 'بيئة', 'وراثة', 'حمض نووي', 'تطور', 'خلية', 'biology', 'plant', 'animal', 'cell']
+    history = ['تاريخ', 'حرب', 'معركة', 'حضارة', 'إمبراطورية', 'ملك', 'ثورة', 'history', 'war', 'battle']
+    biology = ['نبات', 'حيوان', 'بيئة', 'وراثة', 'تطور', 'خلية', 'biology', 'plant', 'animal', 'cell']
     
     scores = {
         'medicine': sum(1 for kw in medical if kw in text_lower),
@@ -218,7 +194,7 @@ def _detect_lecture_type(text: str) -> str:
 
 
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
-    """تحليل المحاضرة مع شرح مفصل"""
+    """تحليل المحاضرة مع شرح مفصل وكامل"""
     
     extracted_keywords = _extract_keywords_from_text(text, 20)
     lecture_type = _detect_lecture_type(text)
@@ -233,26 +209,28 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     else:
         num_sections = 6
     
-    text_limit = min(len(text), 4000)
+    text_limit = min(len(text), 5000)
     
     dialect_instructions = {
-        "iraq": "باللهجة العراقية. اشرح كمعلم عراقي: استخدم (هواية، گلت، يعني، هسا، چي، شلون، أكو).",
-        "egypt": "باللهجة المصرية. اشرح كمعلم مصري: استخدم (أوي، معلش، يعني، كده، عايز، النهارده).",
-        "syria": "باللهجة الشامية. اشرح كمعلم سوري: استخدم (هلق، شو، كتير، منيح، هيك، عم).",
-        "gulf": "باللهجة الخليجية. اشرح كمعلم خليجي: استخدم (زين، وايد، عاد، هاذي، أبشر).",
-        "msa": "بالعربية الفصحى البسيطة والواضحة."
+        "iraq": "باللهجة العراقية. تكلم كمعلم عراقي: استخدم (هواية، گلت، يعني، هسا، چي، شلون، أكو، ماكو).",
+        "egypt": "باللهجة المصرية. تكلم كمعلم مصري: استخدم (أوي، معلش، يعني، كده، عايز، النهارده، يا جماعة).",
+        "syria": "باللهجة الشامية. تكلم كمعلم سوري: استخدم (هلق، شو، كتير، منيح، هيك، عم، فيكن).",
+        "gulf": "باللهجة الخليجية. تكلم كمعلم خليجي: استخدم (زين، وايد، عاد، هاذي، أبشر، يالحبيب).",
+        "msa": "بالعربية الفصحى البسيطة والواضحة. تكلم كمعلم فصيح."
     }
     
     dialect_inst = dialect_instructions.get(dialect, dialect_instructions["msa"])
 
-    prompt = f"""أنت معلم خبير ومتخصص في تبسيط المعلومات. مهمتك شرح المحاضرة التالية بشكل مفصل جداً.
+    prompt = f"""أنت معلم خبير ومتخصص في تبسيط العلوم. مهمتك شرح المحاضرة التالية شرحاً كاملاً ومفصلاً.
 
-**تعليمات مهمة:**
+**تعليمات صارمة:**
 - {dialect_inst}
-- اشرح كل مفهوم بالتفصيل (15-20 جملة لكل قسم)
-- فسر المصطلحات العلمية بلغة بسيطة
-- أعطِ أمثلة واقعية
+- اشرح كل مفهوم بالتفصيل الممل (20-25 جملة لكل قسم)
+- لا تكرر نفس الجملة أبداً
+- فسر كل المصطلحات العلمية
+- أعطِ أمثلة واقعية من الحياة
 - اربط بين المفاهيم
+- استخدم أسلوب المعلم الذي يشرح لطلابه
 
 **المحاضرة:**
 ---
@@ -263,7 +241,7 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
 
 **المطلوب - {num_sections} أقسام:**
 
-أرجع JSON فقط:
+أرجع JSON فقط بهذا التنسيق بالضبط:
 
 {{
   "lecture_type": "{lecture_type}",
@@ -272,18 +250,18 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     {{
       "title": "عنوان القسم",
       "keywords": ["كلمة1", "كلمة2", "كلمة3", "كلمة4"],
-      "narration": "نص الشرح الصوتي الكامل والمفصل (15-20 جملة). اشرح هنا بالتفصيل. استخدم اللهجة المطلوبة.",
-      "duration_estimate": 90
+      "narration": "نص الشرح الصوتي الكامل والمفصل جداً (20-25 جملة). هذا هو النص الذي سينطقه المعلم. اشرح هنا كل شيء بالتفصيل. لا تكرر الجمل. استخدم اللهجة المطلوبة.",
+      "duration_estimate": 120
     }}
   ],
-  "summary": "ملخص شامل (5-7 جمل)",
+  "summary": "ملخص شامل (6-8 جمل)",
   "key_points": ["نقطة1", "نقطة2", "نقطة3", "نقطة4", "نقطة5"]
 }}
 
-**تنبيهات:**
-- keywords: 4 كلمات مفتاحية لكل قسم.
-- narration: اكتب شرحاً طويلاً ومفصلاً (15-20 جملة على الأقل).
-- أرجع JSON فقط.
+**تنبيهات مهمة جداً:**
+- keywords: 4 كلمات مفتاحية مختلفة لكل قسم.
+- narration: اكتب شرحاً طويلاً جداً ومفصلاً. لا تكرر الجمل. كل جملة يجب أن تضيف معلومات جديدة.
+- أرجع JSON فقط بدون أي نص إضافي.
 """
 
     try:
@@ -318,12 +296,9 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
             if "title" not in section or not section["title"]:
                 section["title"] = section["keywords"][0] if section["keywords"] else f"القسم {i+1}"
             
-            if "narration" not in section or not section["narration"]:
+            if "narration" not in section or not section["narration"] or len(section["narration"]) < 100:
                 kw_str = ', '.join(section.get('keywords', ['المفاهيم'])[:3])
-                section["narration"] = f"في هذا القسم سنتعرف على {kw_str}. " * 12
-            
-            if "duration_estimate" not in section:
-                section["duration_estimate"] = 90
+                section["narration"] = f"في هذا القسم سنتعرف على {kw_str}. " + f"دعونا نفهم {kw_str} بشكل أعمق. " * 15
             
             section["_keyword_images"] = [None] * 4
             section["_image_bytes"] = None
@@ -343,13 +318,13 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
                 if extracted_keywords[idx] not in kw:
                     kw.append(extracted_keywords[idx])
             
-            narration = f"في هذا القسم سنتعرف على {kw[0] if kw else 'المفاهيم الأساسية'}. " * 12
+            narration = f"في هذا القسم سنتعرف على {kw[0] if kw else 'المفاهيم الأساسية'}. " * 20
             
             sections.append({
                 "title": kw[0] if kw else f"القسم {i+1}",
                 "keywords": kw if kw else ["مفهوم", "تعريف", "شرح", "تحليل"],
                 "narration": narration,
-                "duration_estimate": 90,
+                "duration_estimate": 120,
                 "_keyword_images": [None] * 4,
                 "_image_bytes": None
             })
@@ -397,7 +372,6 @@ async def _pollinations_generate(prompt: str) -> bytes | None:
 
 
 async def _picsum_generate() -> bytes | None:
-    """موقع Picsum - صور عشوائية مجانية"""
     try:
         url = f"https://picsum.photos/400/300?random={random.randint(1, 1000)}"
         async with aiohttp.ClientSession() as session:
@@ -410,7 +384,6 @@ async def _picsum_generate() -> bytes | None:
 
 
 def _make_colored_image(keyword: str, lecture_type: str = "other") -> bytes:
-    """صورة ملونة مكتوب عليها الكلمة المفتاحية"""
     W, H = 400, 300
     
     colors = {
@@ -427,18 +400,14 @@ def _make_colored_image(keyword: str, lecture_type: str = "other") -> bytes:
     img = PILImage.new("RGB", (W, H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
     
-    # خلفية متدرجة بسيطة
     for y in range(H):
         t = y / H
-        r = int(255 * (1 - t) + accent[0] * t * 0.3)
-        g = int(255 * (1 - t) + accent[1] * t * 0.3)
-        b = int(255 * (1 - t) + accent[2] * t * 0.3)
+        r = int(255 * (1 - t) + accent[0] * t * 0.2)
+        g = int(255 * (1 - t) + accent[1] * t * 0.2)
+        b = int(255 * (1 - t) + accent[2] * t * 0.2)
         draw.line([(0, y), (W, y)], fill=(r, g, b))
     
-    # إطار
     draw.rounded_rectangle([(10, 10), (W-10, H-10)], radius=10, outline=accent, width=4)
-    
-    # دائرة في المنتصف
     draw.ellipse([(W//2-50, H//2-50), (W//2+50, H//2+50)], fill=(*accent, 30))
     
     try:
@@ -457,35 +426,16 @@ def _make_colored_image(keyword: str, lecture_type: str = "other") -> bytes:
     except Exception:
         keyword_disp = keyword[:20]
     
-    # تقسيم النص الطويل
-    words = keyword_disp.split()
-    lines = []
-    current = []
-    for w in words:
-        current.append(w)
-        line = ' '.join(current)
-        try:
-            bbox = draw.textbbox((0, 0), line, font=font)
-            if bbox[2] - bbox[0] > W - 40:
-                current.pop()
-                lines.append(' '.join(current))
-                current = [w]
-        except Exception:
-            pass
-    if current:
-        lines.append(' '.join(current))
+    try:
+        bbox = draw.textbbox((0, 0), keyword_disp, font=font)
+        tw = bbox[2] - bbox[0]
+    except Exception:
+        tw = len(keyword_disp) * 15
     
-    y = H//2 - (len(lines) * 20)
-    for line in lines:
-        try:
-            bbox = draw.textbbox((0, 0), line, font=font)
-            tw = bbox[2] - bbox[0]
-        except Exception:
-            tw = len(line) * 15
-        x = (W - tw) // 2
-        draw.text((x+2, y+2), line, fill=(200, 200, 200), font=font)
-        draw.text((x, y), line, fill=accent, font=font)
-        y += 35
+    x = (W - tw) // 2
+    y = H // 2 - 15
+    draw.text((x+2, y+2), keyword_disp, fill=(200, 200, 200), font=font)
+    draw.text((x, y), keyword_disp, fill=accent, font=font)
     
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=90)
@@ -498,23 +448,21 @@ async def fetch_image_for_keyword(
     lecture_type: str,
     image_search_en: str = "",
 ) -> bytes:
-    """جلب صورة للكلمة المفتاحية"""
-    
     print(f"🖼️ Fetching image for: {keyword}")
     
     # 1. محاولة Pollinations
-    prompt = f"simple educational illustration of {keyword}, clean style"
+    prompt = f"simple educational illustration of {keyword}, clean white background"
     img_bytes = await _pollinations_generate(prompt)
     if img_bytes:
-        print(f"✅ Pollinations success for {keyword}")
+        print(f"✅ Pollinations success")
         return img_bytes
     
     # 2. محاولة Picsum
     img_bytes = await _picsum_generate()
     if img_bytes:
-        print(f"✅ Picsum fallback for {keyword}")
+        print(f"✅ Picsum fallback")
         return img_bytes
     
     # 3. صورة ملونة
-    print(f"⚠️ Using colored placeholder for {keyword}")
+    print(f"⚠️ Using colored placeholder")
     return _make_colored_image(keyword, lecture_type)
