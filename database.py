@@ -126,6 +126,30 @@ def add_attempts(user_id: int, count: int):
     conn.close()
     return result['attempts_left'] if result else 0
 
+def set_attempts(user_id: int, count: int):
+    """تعيين عدد المحاولات مباشرة"""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET attempts_left = %s, updated_at = NOW() WHERE user_id = %s", (count, user_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def subtract_attempts(user_id: int, count: int):
+    """خصم محاولات (الحد الأدنى صفر)"""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE users SET attempts_left = GREATEST(0, attempts_left - %s), updated_at = NOW()
+        WHERE user_id = %s
+        RETURNING attempts_left
+    """, (count, user_id))
+    result = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return result['attempts_left'] if result else 0
+
 def increment_total_videos(user_id: int):
     conn = get_connection()
     cur = conn.cursor()
