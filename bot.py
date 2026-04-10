@@ -48,7 +48,7 @@ from ai_analyzer import (
     extract_full_text_from_pdf,
     fetch_image_for_keyword,
     clean_text,
-    _detect_type,
+    _detect_lecture_type,  # ✅ الاسم الصحيح
 )
 from voice_generator import generate_sections_audio
 from video_creator import create_video_from_sections, estimate_encoding_seconds
@@ -363,7 +363,7 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     words = len(lecture_text.split())
-    detected = _detect_type(lecture_text)
+    detected = _detect_lecture_type(lecture_text)  # ✅ استخدام الاسم الصحيح
     type_name = LECTURE_TYPE_NAMES.get(detected, '📚 تعليمية')
 
     await msg.reply_text(
