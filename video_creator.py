@@ -14,30 +14,14 @@ FONT_AR_REG = os.path.join(_FONTS_DIR, "Amiri-Regular.ttf")
 _ENC_FACTOR = 0.6
 _MIN_ENC_SEC = 20.0
 
-# ألوان Osmosis المميزة
-OSMOSIS_PINK = (231, 76, 126)      # وردي للأسهم والعناوين
-OSMOSIS_BLUE = (52, 152, 219)      # أزرق للتعليقات
-OSMOSIS_GREEN = (46, 204, 113)     # أخضر للمفاهيم الإيجابية
-OSMOSIS_RED = (231, 76, 60)        # أحمر للتحذيرات/الأمراض
-OSMOSIS_PURPLE = (155, 89, 182)    # بنفسجي
-OSMOSIS_ORANGE = (230, 126, 34)    # برتقالي
-OSMOSIS_DARK = (44, 62, 80)        # أزرق داكن للنصوص
-OSMOSIS_GRAY = (127, 140, 141)     # رمادي
-
-# خلفية السبورة
-BOARD_BG = (255, 255, 255)          # أبيض ناصع
-
-# ألوان حسب نوع المحاضرة
-TYPE_COLORS = {
-    'medicine': OSMOSIS_PINK,
-    'math': OSMOSIS_BLUE,
-    'physics': OSMOSIS_BLUE,
-    'chemistry': OSMOSIS_GREEN,
-    'history': OSMOSIS_ORANGE,
-    'biology': OSMOSIS_GREEN,
-    'computer': OSMOSIS_PURPLE,
-    'other': OSMOSIS_PINK
-}
+# ألوان
+COLORS = [
+    (231, 76, 126),   # وردي
+    (52, 152, 219),   # أزرق
+    (46, 204, 113),   # أخضر
+    (155, 89, 182),   # بنفسجي
+    (230, 126, 34),   # برتقالي
+]
 
 def estimate_encoding_seconds(total_video_seconds: float) -> float:
     return max(_MIN_ENC_SEC, total_video_seconds * _ENC_FACTOR)
@@ -63,367 +47,156 @@ def _prepare_text(text: str, is_arabic: bool) -> str:
     try:
         import arabic_reshaper
         from bidi.algorithm import get_display
-        reshaped = arabic_reshaper.reshape(text)
-        return get_display(reshaped)
+        return get_display(arabic_reshaper.reshape(text))
     except Exception:
         return text
 
-
-def _draw_osmosis_arrow(draw, x1, y1, x2, y2, color=OSMOSIS_PINK, width=3):
-    """رسم سهم بأسلوب Osmosis"""
-    import math
-    draw.line([(x1, y1), (x2, y2)], fill=color, width=width)
-    
-    angle = math.atan2(y2 - y1, x2 - x1)
-    arrow_len = 12
-    arrow_angle = 0.4
-    
-    x3 = x2 - arrow_len * math.cos(angle - arrow_angle)
-    y3 = y2 - arrow_len * math.sin(angle - arrow_angle)
-    x4 = x2 - arrow_len * math.cos(angle + arrow_angle)
-    y4 = y2 - arrow_len * math.sin(angle + arrow_angle)
-    
-    draw.polygon([(x2, y2), (x3, y3), (x4, y4)], fill=color)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# شريحة المقدمة - Osmosis Style
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _draw_intro_slide(lecture_data: dict, sections: list, is_arabic: bool) -> str:
     img_fd, img_path = tempfile.mkstemp(prefix="intro_", suffix=".jpg")
     os.close(img_fd)
 
-    lecture_type = lecture_data.get("lecture_type", "other")
-    accent = TYPE_COLORS.get(lecture_type, OSMOSIS_PINK)
-    
-    img = PILImage.new("RGB", (TARGET_W, TARGET_H), BOARD_BG)
+    img = PILImage.new("RGB", (TARGET_W, TARGET_H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
 
     # شريط علوي
-    draw.rectangle([(0, 0), (TARGET_W, 6)], fill=accent)
+    draw.rectangle([(0, 0), (TARGET_W, 6)], fill=COLORS[0])
 
-    # عنوان المحاضرة
+    # عنوان
     raw_title = lecture_data.get("title", "المحاضرة التعليمية")
     title_txt = _prepare_text(raw_title, is_arabic)
     title_font = _get_font(36, bold=True, arabic=is_arabic)
     
-    # تقسيم العنوان
-    words = title_txt.split()
-    lines = []
-    current = []
-    for w in words:
-        current.append(w)
-        line = ' '.join(current)
-        try:
-            bbox = draw.textbbox((0, 0), line, font=title_font)
-            if bbox[2] - bbox[0] > TARGET_W - 100:
-                current.pop()
-                lines.append(' '.join(current))
-                current = [w]
-        except Exception:
-            pass
-    if current:
-        lines.append(' '.join(current))
-    
-    y = TARGET_H // 2 - (len(lines) * 50) // 2
-    for line in lines:
-        try:
-            bbox = draw.textbbox((0, 0), line, font=title_font)
-            tw = bbox[2] - bbox[0]
-        except Exception:
-            tw = len(line) * 20
-        x = (TARGET_W - tw) // 2
-        # ظل
-        draw.text((x + 2, y + 2), line, fill=(220, 220, 220), font=title_font)
-        # نص رئيسي
-        draw.text((x, y), line, fill=OSMOSIS_DARK, font=title_font)
-        y += 50
-
-    # خط تحت العنوان
-    draw.rectangle([(TARGET_W//4, y + 10), (TARGET_W*3//4, y + 12)], fill=accent)
-
-    # نوع المحاضرة
-    type_names = {
-        'medicine': '🩺 محاضرة طبية',
-        'math': '📐 محاضرة رياضيات',
-        'physics': '⚡ محاضرة فيزياء',
-        'chemistry': '🧪 محاضرة كيمياء',
-        'history': '📜 محاضرة تاريخية',
-        'biology': '🧬 محاضرة أحياء',
-        'other': '📚 محاضرة تعليمية'
-    }
-    type_txt = type_names.get(lecture_type, '📚 محاضرة تعليمية')
-    type_disp = _prepare_text(type_txt, is_arabic)
-    type_font = _get_font(20, arabic=is_arabic)
     try:
-        bbox = draw.textbbox((0, 0), type_disp, font=type_font)
+        bbox = draw.textbbox((0, 0), title_txt, font=title_font)
         tw = bbox[2] - bbox[0]
     except Exception:
-        tw = len(type_disp) * 12
+        tw = len(title_txt) * 20
+    
     x = (TARGET_W - tw) // 2
-    draw.text((x, y + 35), type_disp, fill=accent, font=type_font)
+    draw.text((x + 2, TARGET_H//2 - 30), title_txt, fill=(220, 220, 220), font=title_font)
+    draw.text((x, TARGET_H//2 - 32), title_txt, fill=(44, 62, 80), font=title_font)
 
     # عدد الأقسام
     n_sec = len(sections)
-    info_txt = f"📚 {n_sec} أقسام تعليمية" if is_arabic else f"📚 {n_sec} Sections"
+    info_txt = f"📚 {n_sec} أقسام"
     info_disp = _prepare_text(info_txt, is_arabic)
-    info_font = _get_font(16, arabic=is_arabic)
+    info_font = _get_font(18, arabic=is_arabic)
     try:
         bbox = draw.textbbox((0, 0), info_disp, font=info_font)
         tw = bbox[2] - bbox[0]
     except Exception:
         tw = len(info_disp) * 10
     x = (TARGET_W - tw) // 2
-    draw.text((x, y + 70), info_disp, fill=OSMOSIS_GRAY, font=info_font)
-
-    # علامة مائية
-    wm_font = _get_font(12)
-    wm_disp = _prepare_text(WATERMARK, is_arabic)
-    try:
-        bbox = draw.textbbox((0, 0), wm_disp, font=wm_font)
-        ww = bbox[2] - bbox[0]
-    except Exception:
-        ww = len(wm_disp) * 7
-    draw.text(((TARGET_W - ww) // 2, TARGET_H - 30), wm_disp, fill=OSMOSIS_GRAY, font=wm_font)
+    draw.text((x, TARGET_H//2 + 30), info_disp, fill=(127, 140, 141), font=info_font)
 
     img.save(img_path, "JPEG", quality=90)
     return img_path
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# شريحة عنوان القسم
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _draw_section_title_card(section: dict, idx: int, total: int, is_arabic: bool, lecture_type: str) -> str:
+def _draw_section_title_card(section: dict, idx: int, total: int, is_arabic: bool) -> str:
     img_fd, img_path = tempfile.mkstemp(prefix=f"sec_title_{idx}_", suffix=".jpg")
     os.close(img_fd)
 
-    colors = [OSMOSIS_PINK, OSMOSIS_BLUE, OSMOSIS_GREEN, OSMOSIS_PURPLE, OSMOSIS_ORANGE]
-    accent = colors[idx % len(colors)]
-    
-    img = PILImage.new("RGB", (TARGET_W, TARGET_H), BOARD_BG)
+    color = COLORS[idx % len(COLORS)]
+    img = PILImage.new("RGB", (TARGET_W, TARGET_H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
 
-    # شريط علوي
-    draw.rectangle([(0, 0), (TARGET_W, 6)], fill=accent)
+    draw.rectangle([(0, 0), (TARGET_W, 6)], fill=color)
 
-    # دائرة مرقمة
-    cx, cy, cr = TARGET_W // 2, TARGET_H // 2 - 50, 45
-    draw.ellipse([cx - cr, cy - cr, cx + cr, cy + cr], fill=accent)
+    # رقم القسم
+    cx, cy, cr = TARGET_W // 2, TARGET_H // 2 - 40, 40
+    draw.ellipse([cx - cr, cy - cr, cx + cr, cy + cr], fill=color)
     num_str = str(idx + 1)
-    num_font = _get_font(40, bold=True)
-    try:
-        bbox = draw.textbbox((0, 0), num_str, font=num_font)
-        nw, nh = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    except Exception:
-        nw, nh = 22, 40
-    draw.text((cx - nw // 2, cy - nh // 2), num_str, fill=(255, 255, 255), font=num_font)
-
-    # "القسم X من Y"
-    label_raw = f"القسم {idx + 1} من {total}" if is_arabic else f"Section {idx + 1} of {total}"
-    label_disp = _prepare_text(label_raw, is_arabic)
-    label_font = _get_font(18, arabic=is_arabic)
-    try:
-        bbox = draw.textbbox((0, 0), label_disp, font=label_font)
-        tw = bbox[2] - bbox[0]
-    except Exception:
-        tw = len(label_disp) * 10
-    x = (TARGET_W - tw) // 2
-    draw.text((x, cy + cr + 20), label_disp, fill=OSMOSIS_GRAY, font=label_font)
+    num_font = _get_font(36, bold=True)
+    draw.text((cx - 10, cy - 20), num_str, fill=(255, 255, 255), font=num_font)
 
     # عنوان القسم
     raw_title = section.get("title", f"القسم {idx + 1}")
     title_disp = _prepare_text(raw_title, is_arabic)
-    title_font = _get_font(32, bold=True, arabic=is_arabic)
+    title_font = _get_font(30, bold=True, arabic=is_arabic)
     
-    words = title_disp.split()
-    lines = []
-    current = []
-    for w in words:
-        current.append(w)
-        line = ' '.join(current)
-        try:
-            bbox = draw.textbbox((0, 0), line, font=title_font)
-            if bbox[2] - bbox[0] > TARGET_W - 80:
-                current.pop()
-                lines.append(' '.join(current))
-                current = [w]
-        except Exception:
-            pass
-    if current:
-        lines.append(' '.join(current))
+    try:
+        bbox = draw.textbbox((0, 0), title_disp, font=title_font)
+        tw = bbox[2] - bbox[0]
+    except Exception:
+        tw = len(title_disp) * 17
     
-    y = cy + cr + 60
-    for line in lines:
-        try:
-            bbox = draw.textbbox((0, 0), line, font=title_font)
-            tw = bbox[2] - bbox[0]
-        except Exception:
-            tw = len(line) * 18
-        x = (TARGET_W - tw) // 2
-        draw.text((x, y), line, fill=OSMOSIS_DARK, font=title_font)
-        y += 45
+    x = (TARGET_W - tw) // 2
+    draw.text((x, cy + cr + 30), title_disp, fill=(44, 62, 80), font=title_font)
 
     img.save(img_path, "JPEG", quality=90)
     return img_path
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# شريحة السبورة البيضاء - Osmosis Style (العرض التراكمي مع النصوص العربية)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _draw_osmosis_board_slide(
-    keywords: list[str],
-    images: list[bytes | None],
-    current_kw_idx: int,
+def _draw_content_slide(
+    image_bytes: bytes | None,
+    keyword: str,
+    kw_idx: int,
     total_kw: int,
     section_title: str,
     section_idx: int,
     is_arabic: bool,
-    lecture_type: str,
 ) -> str:
-    """
-    سبورة Osmosis تتراكم عليها العناصر تدريجياً مع النصوص العربية
-    """
-    fd, path = tempfile.mkstemp(prefix="osmosis_", suffix=".jpg")
+    """شريحة محتوى بسيطة: صورة + كلمة مفتاحية"""
+    fd, path = tempfile.mkstemp(prefix="content_", suffix=".jpg")
     os.close(fd)
 
-    colors = [OSMOSIS_PINK, OSMOSIS_BLUE, OSMOSIS_GREEN, OSMOSIS_PURPLE, OSMOSIS_ORANGE]
-    accent = colors[section_idx % len(colors)]
-    
-    img = PILImage.new("RGB", (TARGET_W, TARGET_H), BOARD_BG)
+    color = COLORS[section_idx % len(COLORS)]
+    img = PILImage.new("RGB", (TARGET_W, TARGET_H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
 
-    # إطار بسيط
-    draw.rectangle([(4, 4), (TARGET_W-4, TARGET_H-4)], outline=(240, 240, 240), width=1)
-    
     # شريط علوي
-    draw.rectangle([(0, 0), (TARGET_W, 6)], fill=accent)
+    draw.rectangle([(0, 0), (TARGET_W, 5)], fill=color)
 
-    # عنوان القسم في الأعلى
-    header_disp = _prepare_text(section_title[:40], is_arabic)
-    header_font = _get_font(20, bold=True, arabic=is_arabic)
+    # عنوان القسم
+    header_disp = _prepare_text(section_title[:35], is_arabic)
+    header_font = _get_font(16, bold=True, arabic=is_arabic)
     try:
         bbox = draw.textbbox((0, 0), header_disp, font=header_font)
         hw = bbox[2] - bbox[0]
     except Exception:
-        hw = len(header_disp) * 12
-    
+        hw = len(header_disp) * 9
     hx = (TARGET_W - hw) // 2
-    draw.text((hx, 18), header_disp, fill=OSMOSIS_DARK, font=header_font)
-    
-    # خط تحت العنوان
-    draw.rectangle([(hx, 42), (hx + hw, 44)], fill=accent)
+    draw.text((hx, 15), header_disp, fill=(44, 62, 80), font=header_font)
 
-    # ── منطقة المحتوى الرئيسية ─────────────────────────────────────────────
-    content_y = 60
-    
-    n_revealed = current_kw_idx + 1
-    
-    if n_revealed == 1:
-        # عنصر واحد: صورة في المنتصف والكلمة تحتها
-        kw = keywords[0] if keywords else ""
-        img_bytes = images[0] if images else None
-        
-        # صورة
-        if img_bytes:
-            try:
-                pil_img = PILImage.open(io.BytesIO(img_bytes)).convert("RGB")
-                iw, ih = pil_img.size
-                max_w, max_h = 400, 250
-                scale = min(max_w / iw, max_h / ih)
-                nw, nh = int(iw * scale), int(ih * scale)
-                pil_img = pil_img.resize((nw, nh), PILImage.LANCZOS)
-                
-                px = (TARGET_W - nw) // 2
-                py = content_y + 20
-                
-                # إطار للصورة
-                draw.rounded_rectangle(
-                    [(px - 5, py - 5), (px + nw + 5, py + nh + 5)],
-                    radius=8, outline=accent, width=3
-                )
-                img.paste(pil_img, (px, py))
-                
-                content_y = py + nh + 30
-            except Exception:
-                pass
-        
-        # الكلمة المفتاحية
-        kw_disp = _prepare_text(kw, is_arabic)
-        kw_font = _get_font(28, bold=True, arabic=is_arabic)
+    # صورة
+    img_y = 50
+    if image_bytes:
         try:
-            bbox = draw.textbbox((0, 0), kw_disp, font=kw_font)
-            kww = bbox[2] - bbox[0]
+            pil_img = PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
+            iw, ih = pil_img.size
+            max_w, max_h = 500, 280
+            scale = min(max_w / iw, max_h / ih)
+            nw, nh = int(iw * scale), int(ih * scale)
+            pil_img = pil_img.resize((nw, nh), PILImage.LANCZOS)
+            
+            px = (TARGET_W - nw) // 2
+            py = img_y + (max_h - nh) // 2
+            
+            draw.rounded_rectangle(
+                [(px - 4, py - 4), (px + nw + 4, py + nh + 4)],
+                radius=8, outline=color, width=3
+            )
+            img.paste(pil_img, (px, py))
         except Exception:
-            kww = len(kw_disp) * 16
-        
-        kw_x = (TARGET_W - kww) // 2
-        draw.text((kw_x + 2, content_y + 2), kw_disp, fill=(220, 220, 220), font=kw_font)
-        draw.text((kw_x, content_y), kw_disp, fill=accent, font=kw_font)
-        
-    else:
-        # عناصر متعددة: شبكة
-        cols = 2
-        rows = (n_revealed + 1) // 2
-        
-        cell_w = (TARGET_W - 80) // cols
-        cell_h = 180
-        
-        for i in range(n_revealed):
-            col = i % cols
-            row = i // cols
-            
-            cx = 40 + col * (cell_w + 20)
-            cy = content_y + row * (cell_h + 20)
-            
-            kw = keywords[i] if i < len(keywords) else ""
-            img_bytes = images[i] if i < len(images) else None
-            cell_color = colors[i % len(colors)]
-            
-            # صورة مصغرة
-            img_h = cell_h - 40
-            if img_bytes:
-                try:
-                    pil_img = PILImage.open(io.BytesIO(img_bytes)).convert("RGB")
-                    iw, ih = pil_img.size
-                    max_w, max_h = cell_w - 10, img_h
-                    scale = min(max_w / iw, max_h / ih)
-                    nw, nh = int(iw * scale), int(ih * scale)
-                    pil_img = pil_img.resize((nw, nh), PILImage.LANCZOS)
-                    
-                    px = cx + (cell_w - nw) // 2
-                    py = cy
-                    
-                    draw.rounded_rectangle(
-                        [(px - 3, py - 3), (px + nw + 3, py + nh + 3)],
-                        radius=6, outline=cell_color, width=2
-                    )
-                    img.paste(pil_img, (px, py))
-                except Exception:
-                    pass
-            
-            # الكلمة المفتاحية
-            kw_disp = _prepare_text(kw[:20], is_arabic)
-            kw_font = _get_font(16, bold=True, arabic=is_arabic)
-            try:
-                bbox = draw.textbbox((0, 0), kw_disp, font=kw_font)
-                kww = bbox[2] - bbox[0]
-            except Exception:
-                kww = len(kw_disp) * 10
-            
-            kw_x = cx + (cell_w - kww) // 2
-            kw_y = cy + img_h + 8
-            draw.text((kw_x, kw_y), kw_disp, fill=cell_color, font=kw_font)
-            
-            # رقم صغير
-            num_str = str(i + 1)
-            num_font = _get_font(12, bold=True)
-            draw.ellipse([(cx - 5, cy - 5), (cx + 15, cy + 15)], fill=cell_color)
-            draw.text((cx + 2, cy - 2), num_str, fill=(255, 255, 255), font=num_font)
+            pass
 
-    # ── مؤشر التقدم (نقاط) ─────────────────────────────────────────────────
+    # الكلمة المفتاحية
+    kw_disp = _prepare_text(keyword, is_arabic)
+    kw_font = _get_font(28, bold=True, arabic=is_arabic)
+    try:
+        bbox = draw.textbbox((0, 0), kw_disp, font=kw_font)
+        kww = bbox[2] - bbox[0]
+    except Exception:
+        kww = len(kw_disp) * 16
+    
+    kw_x = (TARGET_W - kww) // 2
+    kw_y = 360
+    draw.text((kw_x + 2, kw_y + 2), kw_disp, fill=(220, 220, 220), font=kw_font)
+    draw.text((kw_x, kw_y), kw_disp, fill=color, font=kw_font)
+
+    # مؤشر التقدم
     dot_y = TARGET_H - 30
     dot_r = 5
     dot_gap = 22
@@ -432,9 +205,9 @@ def _draw_osmosis_board_slide(
     
     for i in range(total_kw):
         dx = start_x + i * dot_gap
-        color = accent if i <= current_kw_idx else (220, 220, 220)
-        r = dot_r if i <= current_kw_idx else dot_r - 2
-        draw.ellipse([(dx - r, dot_y - r), (dx + r, dot_y + r)], fill=color)
+        dot_color = color if i <= kw_idx else (220, 220, 220)
+        r = dot_r if i <= kw_idx else dot_r - 2
+        draw.ellipse([(dx - r, dot_y - r), (dx + r, dot_y + r)], fill=dot_color)
 
     # علامة مائية
     wm_font = _get_font(11)
@@ -444,110 +217,61 @@ def _draw_osmosis_board_slide(
         ww = bbox[2] - bbox[0]
     except Exception:
         ww = len(wm_disp) * 6
-    draw.text((TARGET_W - ww - 15, TARGET_H - 18), wm_disp, fill=OSMOSIS_GRAY, font=wm_font)
+    draw.text((TARGET_W - ww - 15, TARGET_H - 18), wm_disp, fill=(180, 180, 180), font=wm_font)
 
     img.save(path, "JPEG", quality=92)
     return path
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# شريحة الملخص النهائي
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _draw_final_summary(sections: list, lecture_data: dict, is_arabic: bool) -> str:
-    img_fd, img_path = tempfile.mkstemp(prefix="final_summary_", suffix=".jpg")
+    img_fd, img_path = tempfile.mkstemp(prefix="summary_", suffix=".jpg")
     os.close(img_fd)
 
-    lecture_type = lecture_data.get("lecture_type", "other")
-    accent = TYPE_COLORS.get(lecture_type, OSMOSIS_PINK)
-    
-    img = PILImage.new("RGB", (TARGET_W, TARGET_H), BOARD_BG)
+    img = PILImage.new("RGB", (TARGET_W, TARGET_H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
 
-    draw.rectangle([(0, 0), (TARGET_W, 6)], fill=accent)
+    draw.rectangle([(0, 0), (TARGET_W, 6)], fill=COLORS[0])
 
     # عنوان
     title_disp = _prepare_text("📋 ملخص المحاضرة", is_arabic)
-    title_font = _get_font(30, bold=True, arabic=is_arabic)
+    title_font = _get_font(28, bold=True, arabic=is_arabic)
     try:
         bbox = draw.textbbox((0, 0), title_disp, font=title_font)
         tw = bbox[2] - bbox[0]
     except Exception:
-        tw = len(title_disp) * 17
+        tw = len(title_disp) * 16
     tx = (TARGET_W - tw) // 2
-    draw.text((tx, 30), title_disp, fill=OSMOSIS_DARK, font=title_font)
+    draw.text((tx, 30), title_disp, fill=(44, 62, 80), font=title_font)
 
-    draw.rectangle([(TARGET_W//4, 65), (TARGET_W*3//4, 67)], fill=accent)
-
-    # قائمة الأقسام والكلمات المفتاحية
-    y = 90
-    colors = [OSMOSIS_PINK, OSMOSIS_BLUE, OSMOSIS_GREEN, OSMOSIS_PURPLE, OSMOSIS_ORANGE]
-    
+    y = 80
     for i, section in enumerate(sections):
-        color = colors[i % len(colors)]
+        color = COLORS[i % len(COLORS)]
+        keywords = section.get("keywords", [])
+        kw_text = " • ".join(keywords[:4])
+        kw_disp = _prepare_text(kw_text, is_arabic)
+        kw_font = _get_font(16, arabic=is_arabic)
         
-        # مربع ملون
-        draw.rectangle([(30, y), (48, y + 18)], fill=color)
+        try:
+            bbox = draw.textbbox((0, 0), kw_disp, font=kw_font)
+            tw = bbox[2] - bbox[0]
+        except Exception:
+            tw = len(kw_disp) * 9
         
-        # عنوان القسم
-        sec_title = section.get("title", f"القسم {i+1}")[:35]
-        sec_disp = _prepare_text(sec_title, is_arabic)
-        sec_font = _get_font(18, bold=True, arabic=is_arabic)
-        draw.text((60, y - 2), sec_disp, fill=OSMOSIS_DARK, font=sec_font)
-        
-        # الكلمات المفتاحية
-        keywords = section.get("keywords", [])[:4]
-        if keywords:
-            kw_text = " • ".join(keywords)
-            kw_disp = _prepare_text(kw_text, is_arabic)
-            kw_font = _get_font(14, arabic=is_arabic)
-            draw.text((75, y + 22), kw_disp, fill=color, font=kw_font)
-        
-        y += 60
-
-    # ملخص
-    summary = lecture_data.get("summary", "")
-    if summary:
-        summary_disp = _prepare_text(summary[:150], is_arabic)
-        summary_font = _get_font(14, arabic=is_arabic)
-        
-        words = summary_disp.split()
-        lines = []
-        current = []
-        for w in words:
-            current.append(w)
-            line = ' '.join(current)
-            try:
-                bbox = draw.textbbox((0, 0), line, font=summary_font)
-                if bbox[2] - bbox[0] > TARGET_W - 80:
-                    current.pop()
-                    lines.append(' '.join(current))
-                    current = [w]
-            except Exception:
-                pass
-        if current:
-            lines.append(' '.join(current))
-        
-        for line in lines[:3]:
-            try:
-                bbox = draw.textbbox((0, 0), line, font=summary_font)
-                tw = bbox[2] - bbox[0]
-            except Exception:
-                tw = len(line) * 8
-            x = (TARGET_W - tw) // 2
-            draw.text((x, y + 20), line, fill=OSMOSIS_GRAY, font=summary_font)
-            y += 22
+        x = (TARGET_W - tw) // 2
+        draw.rectangle([(x - 10, y - 5), (x + tw + 10, y + 25)], fill=(*color, 20))
+        draw.text((x, y), kw_disp, fill=color, font=kw_font)
+        y += 45
 
     # رسالة ختامية
     thanks_disp = _prepare_text("🎓 تم بحمد الله", is_arabic)
-    thanks_font = _get_font(24, bold=True, arabic=is_arabic)
+    thanks_font = _get_font(22, bold=True, arabic=is_arabic)
     try:
         bbox = draw.textbbox((0, 0), thanks_disp, font=thanks_font)
         tw = bbox[2] - bbox[0]
     except Exception:
-        tw = len(thanks_disp) * 14
+        tw = len(thanks_disp) * 13
     tx = (TARGET_W - tw) // 2
-    draw.text((tx, TARGET_H - 55), thanks_disp, fill=accent, font=thanks_font)
+    draw.text((tx, TARGET_H - 50), thanks_disp, fill=COLORS[0], font=thanks_font)
 
     img.save(img_path, "JPEG", quality=90)
     return img_path
@@ -579,10 +303,7 @@ def _ffmpeg_segment(img_path: str, duration: float, audio_path: str | None,
         "-c:a", "aac", "-b:a", "96k", "-ar", "44100", "-ac", "2",
         "-t", dur_str, out_path,
     ]
-
-    result = subprocess.run(cmd, capture_output=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"FFmpeg segment failed: {result.stderr[-600:]}")
+    subprocess.run(cmd, capture_output=True)
 
 
 def _ffmpeg_concat(segment_paths: list[str], output_path: str) -> None:
@@ -597,19 +318,13 @@ def _ffmpeg_concat(segment_paths: list[str], output_path: str) -> None:
             "-f", "concat", "-safe", "0", "-i", list_path,
             "-c", "copy", output_path,
         ]
-        result = subprocess.run(cmd, capture_output=True)
-        if result.returncode != 0:
-            raise RuntimeError(f"FFmpeg concat failed: {result.stderr[-400:]}")
+        subprocess.run(cmd, capture_output=True)
     finally:
         try:
             os.remove(list_path)
         except Exception:
             pass
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# بناء المقاطع
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _build_segment_list(
     sections: list,
@@ -621,18 +336,17 @@ def _build_segment_list(
     tmp_files: list[str] = []
     total_secs = 0.0
     n_sections = len(sections)
-    lecture_type = lecture_data.get("lecture_type", "other")
 
-    # 1. مقدمة (5 ثواني)
+    # مقدمة
     intro_path = _draw_intro_slide(lecture_data, sections, is_arabic)
     tmp_files.append(intro_path)
-    segments.append({"img": intro_path, "audio": None, "audio_start": 0.0, "dur": 5.0})
-    total_secs += 5.0
+    segments.append({"img": intro_path, "audio": None, "audio_start": 0.0, "dur": 4.0})
+    total_secs += 4.0
 
-    # 2. الأقسام
+    # الأقسام
     for sec_idx, (section, audio_info) in enumerate(zip(sections, audio_results)):
-        # عنوان القسم (3 ثواني)
-        title_path = _draw_section_title_card(section, sec_idx, n_sections, is_arabic, lecture_type)
+        # عنوان القسم
+        title_path = _draw_section_title_card(section, sec_idx, n_sections, is_arabic)
         tmp_files.append(title_path)
         segments.append({"img": title_path, "audio": None, "audio_start": 0.0, "dur": 3.0})
         total_secs += 3.0
@@ -655,33 +369,32 @@ def _build_segment_list(
 
         sec_title = section.get("title", "")
         
-        # شرائح المحتوى المتراكم
         for kw_idx in range(n_kw):
-            board_path = _draw_osmosis_board_slide(
-                keywords=keywords,
-                images=kw_images,
-                current_kw_idx=kw_idx,
+            img_bytes = kw_images[kw_idx] if kw_idx < len(kw_images) else None
+            content_path = _draw_content_slide(
+                image_bytes=img_bytes,
+                keyword=keywords[kw_idx],
+                kw_idx=kw_idx,
                 total_kw=n_kw,
                 section_title=sec_title,
                 section_idx=sec_idx,
                 is_arabic=is_arabic,
-                lecture_type=lecture_type,
             )
-            tmp_files.append(board_path)
+            tmp_files.append(content_path)
             
             segments.append({
-                "img": board_path,
+                "img": content_path,
                 "audio": apath,
                 "audio_start": kw_idx * kw_dur,
                 "dur": kw_dur,
             })
             total_secs += kw_dur
 
-    # 3. ملخص نهائي (6 ثواني)
+    # ملخص نهائي
     final_path = _draw_final_summary(sections, lecture_data, is_arabic)
     tmp_files.append(final_path)
-    segments.append({"img": final_path, "audio": None, "audio_start": 0.0, "dur": 6.0})
-    total_secs += 6.0
+    segments.append({"img": final_path, "audio": None, "audio_start": 0.0, "dur": 5.0})
+    total_secs += 5.0
 
     return segments, tmp_files, total_secs
 
@@ -693,9 +406,7 @@ def _encode_all_sync(segments: list[dict], output_path: str) -> None:
             fd, seg_out = tempfile.mkstemp(prefix=f"seg_{i}_", suffix=".mp4")
             os.close(fd)
             seg_paths.append(seg_out)
-            _ffmpeg_segment(
-                seg["img"], seg["dur"], seg["audio"], seg["audio_start"], seg_out
-            )
+            _ffmpeg_segment(seg["img"], seg["dur"], seg["audio"], seg["audio_start"], seg_out)
         _ffmpeg_concat(seg_paths, output_path)
     finally:
         for p in seg_paths:
@@ -704,10 +415,6 @@ def _encode_all_sync(segments: list[dict], output_path: str) -> None:
             except Exception:
                 pass
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# الدالة الرئيسية
-# ─────────────────────────────────────────────────────────────────────────────
 
 async def create_video_from_sections(
     sections: list,
@@ -727,7 +434,6 @@ async def create_video_from_sections(
     if not segments:
         raise RuntimeError("No valid segments")
 
-    estimated_enc = estimate_encoding_seconds(total_video_secs)
     encode_task = loop.run_in_executor(None, _encode_all_sync, segments, output_path)
 
     start = loop.time()
@@ -737,7 +443,7 @@ async def create_video_from_sections(
             elapsed = loop.time() - start
             if progress_cb:
                 try:
-                    await progress_cb(elapsed, estimated_enc)
+                    await progress_cb(elapsed, total_video_secs * 0.6)
                 except Exception:
                     pass
         await encode_task
