@@ -35,7 +35,8 @@ async def generate_sections_audio(sections: list, dialect: str) -> dict:
     _sem = asyncio.Semaphore(3)
 
     async def _gen_one(i: int, section: dict) -> dict:
-        text = section.get("original_text", "")
+        # استخدام شرح AI
+        text = section.get("narration", "")
         if not text:
             text = " ".join(section.get("keywords", ["مفهوم"]))
         
@@ -54,7 +55,7 @@ async def generate_sections_audio(sections: list, dialect: str) -> dict:
                 return {
                     "index": i,
                     "audio": None,
-                    "duration": 30,
+                    "duration": 45,
                     "ok": False,
                 }
 
@@ -65,4 +66,4 @@ async def generate_sections_audio(sections: list, dialect: str) -> dict:
         "results": results,
         "used_fallback": True,
         "all_failed": all(not r.get("ok") for r in results),
-        }
+    }
