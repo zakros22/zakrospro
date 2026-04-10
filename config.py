@@ -19,15 +19,10 @@ def _load_dotenv():
 _load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+GOOGLE_API_KEYS = os.getenv("GOOGLE_API_KEYS", "")
+GROQ_API_KEYS = os.getenv("GROQ_API_KEYS", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
-
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
-GOOGLE_API_KEYS = os.getenv("GOOGLE_API_KEYS", "")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_API_KEYS = os.getenv("GROQ_API_KEYS", "")
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
-ELEVENLABS_API_KEYS = os.getenv("ELEVENLABS_API_KEYS", "")
 
 OWNER_ID = int(os.getenv("OWNER_ID", "7021542402"))
 OWNER_USERNAME = os.getenv("OWNER_USERNAME", "@zakros22bot")
@@ -49,4 +44,4 @@ TEMP_DIR = "/tmp/telegram_bot"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 if not TELEGRAM_BOT_TOKEN:
-    print("WARNING: TELEGRAM_BOT_TOKEN not set", file=sys.stderr)
+    print("⚠️ TELEGRAM_BOT_TOKEN غير موجود", file=sys.stderr)
