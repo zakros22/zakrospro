@@ -1,10 +1,13 @@
 import json
 import re
+import io
 import asyncio
 import aiohttp
+import random
+import os
+from PIL import Image as PILImage, ImageDraw, ImageFont
 from google import genai
 from google.genai import types as genai_types
-import os
 
 # ─────────────────────────────────────────────────────────────────────────────
 # تحميل مفاتيح Google
@@ -142,8 +145,11 @@ async def _generate_with_rotation(prompt: str, max_output_tokens: int = 8192) ->
     raise Exception("All AI services failed")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# دوال استخراج الكلمات المفتاحية
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _extract_keywords(text: str, max_words: int = 20) -> list:
-    """استخراج الكلمات المفتاحية من النص"""
     stop_words = {'و', 'في', 'من', 'على', 'إلى', 'أن', 'هو', 'هي', 'هذا', 'هذه', 'كان', 
                   'كانت', 'مع', 'ما', 'لا', 'عن', 'إذا', 'لم', 'لن', 'قد', 'ثم', 'أو', 
                   'أم', 'لكن', 'حتى', 'بل', 'كل', 'بعض', 'the', 'a', 'an', 'is', 'are',
@@ -161,21 +167,43 @@ def _extract_keywords(text: str, max_words: int = 20) -> list:
     return [w[0] for w in sorted_words[:max_words]]
 
 
+def _detect_lecture_type(text: str) -> str:
+    text_lower = text.lower()
+    
+    medical = ['مرض', 'علاج', 'طبيب', 'جراحة', 'دواء', 'تشخيص', 'مريض', 'قلب', 'دم', 'خلية', 'ورم', 'سرطان', 'endometriosis', 'cyst', 'inflammation', 'pain', 'bleeding', 'menstrual']
+    math = ['معادلة', 'دالة', 'تفاضل', 'تكامل', 'جبر', 'هندسة', 'رياضيات', 'equation', 'function', 'calculus', 'algebra']
+    physics = ['قوة', 'طاقة', 'حركة', 'سرعة', 'جاذبية', 'كهرباء', 'مغناطيس', 'فيزياء', 'force', 'energy', 'motion']
+    chemistry = ['تفاعل', 'عنصر', 'مركب', 'جزيء', 'ذرة', 'حمض', 'قاعدة', 'كيمياء', 'reaction', 'element', 'compound']
+    history = ['تاريخ', 'حرب', 'معركة', 'حضارة', 'إمبراطورية', 'ملك', 'ثورة', 'history', 'war', 'battle']
+    biology = ['نبات', 'حيوان', 'بيئة', 'وراثة', 'تطور', 'خلية', 'biology', 'plant', 'animal', 'cell']
+    
+    scores = {
+        'medicine': sum(1 for kw in medical if kw in text_lower),
+        'math': sum(1 for kw in math if kw in text_lower),
+        'physics': sum(1 for kw in physics if kw in text_lower),
+        'chemistry': sum(1 for kw in chemistry if kw in text_lower),
+        'history': sum(1 for kw in history if kw in text_lower),
+        'biology': sum(1 for kw in biology if kw in text_lower),
+    }
+    
+    best_type = max(scores, key=scores.get)
+    if scores[best_type] > 1:
+        return best_type
+    return 'other'
+
+
 def _split_text_into_sections(text: str, num_sections: int) -> list:
-    """تقسيم النص الأصلي إلى أقسام متساوية"""
     paragraphs = text.split('\n\n')
     if len(paragraphs) < num_sections:
         paragraphs = text.split('\n')
     
     if len(paragraphs) < num_sections:
-        # تقسيم بالجمل
         sentences = re.split(r'(?<=[.!?؟])\s+', text)
         chunk_size = max(1, len(sentences) // num_sections)
         paragraphs = []
         for i in range(0, len(sentences), chunk_size):
             paragraphs.append(' '.join(sentences[i:i+chunk_size]))
     
-    # توزيع متساوي
     sections = []
     chunk_size = len(paragraphs) // num_sections
     for i in range(num_sections):
@@ -186,13 +214,16 @@ def _split_text_into_sections(text: str, num_sections: int) -> list:
     return sections
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# دوال تحليل المحاضرة (المطلوبة من bot.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     """تحليل المحاضرة واستخراج الأقسام والكلمات المفتاحية"""
     
-    # استخراج الكلمات المفتاحية
     all_keywords = _extract_keywords(text, 30)
+    lecture_type = _detect_lecture_type(text)
     
-    # تحديد عدد الأقسام
     word_count = len(text.split())
     if word_count < 300:
         num_sections = 3
@@ -203,12 +234,11 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     else:
         num_sections = 6
     
-    # استخدام AI لاستخراج العنوان والكلمات المفتاحية لكل قسم
     text_preview = text[:3000]
     
     prompt = f"""حلل النص التالي وأعطني:
 
-1. عنوان مناسب للمحاضرة (عنوان واحد فقط)
+1. عنوان مناسب للمحاضرة
 2. للأقسام الـ {num_sections}، أعطني لكل قسم:
    - عنوان القسم
    - 4 كلمات مفتاحية من النص
@@ -218,18 +248,11 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
 {text_preview}
 ---
 
-الكلمات المفتاحية المستخرجة تلقائياً: {', '.join(all_keywords[:15])}
+الكلمات المفتاحية المستخرجة: {', '.join(all_keywords[:15])}
 
 أرجع JSON فقط:
-{{
-  "title": "عنوان المحاضرة",
-  "sections": [
-    {{"title": "عنوان القسم 1", "keywords": ["ك1", "ك2", "ك3", "ك4"]}},
-    {{"title": "عنوان القسم 2", "keywords": ["ك1", "ك2", "ك3", "ك4"]}}
-  ]
-}}
-
-استخدم الكلمات من القائمة المستخرجة. أرجع JSON فقط."""
+{{"title": "عنوان المحاضرة", "sections": [{{"title": "عنوان", "keywords": ["ك1", "ك2", "ك3", "ك4"]}}]}}
+"""
 
     try:
         content = await _generate_with_rotation(prompt, max_output_tokens=4096)
@@ -246,15 +269,12 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         title = all_keywords[0] if all_keywords else "المحاضرة التعليمية"
         ai_sections = []
 
-    # تقسيم النص الأصلي إلى أقسام
     original_sections = _split_text_into_sections(text, num_sections)
     
-    # بناء الأقسام النهائية
     final_sections = []
     for i in range(num_sections):
         section_text = original_sections[i] if i < len(original_sections) else ""
         
-        # الكلمات المفتاحية
         if i < len(ai_sections) and ai_sections[i].get("keywords"):
             keywords = ai_sections[i]["keywords"][:4]
         else:
@@ -265,7 +285,6 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
                 if all_keywords[idx] not in keywords:
                     keywords.append(all_keywords[idx])
         
-        # العنوان
         if i < len(ai_sections) and ai_sections[i].get("title"):
             section_title = ai_sections[i]["title"]
         else:
@@ -275,19 +294,22 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
             "title": section_title,
             "keywords": keywords,
             "original_text": section_text,
-            "duration_estimate": max(30, len(section_text.split()) // 3)
+            "duration_estimate": max(30, len(section_text.split()) // 3),
+            "_keyword_images": [None] * 4,
+            "_image_bytes": None
         })
     
     return {
+        "lecture_type": lecture_type,
         "title": title,
         "sections": final_sections,
         "summary": f"شرحنا في هذه المحاضرة: {', '.join(all_keywords[:8])}",
+        "key_points": all_keywords[:5],
         "all_keywords": all_keywords
     }
 
 
 async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
-    import io
     import PyPDF2
     reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
     pages = []
@@ -296,3 +318,121 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
         if page_text.strip():
             pages.append(page_text)
     return "\n\n".join(pages)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# دوال توليد الصور (المطلوبة من bot.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
+    font_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    ]
+    for p in font_paths:
+        if os.path.exists(p):
+            try:
+                return ImageFont.truetype(p, size)
+            except:
+                pass
+    return ImageFont.load_default()
+
+
+def _make_colored_image(keyword: str, color: tuple) -> bytes:
+    W, H = 400, 300
+    
+    img = PILImage.new("RGB", (W, H), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    
+    for y in range(H):
+        t = y / H
+        r = int(255 * (1 - t) + color[0] * t * 0.2)
+        g = int(255 * (1 - t) + color[1] * t * 0.2)
+        b = int(255 * (1 - t) + color[2] * t * 0.2)
+        draw.line([(0, y), (W, y)], fill=(r, g, b))
+    
+    draw.rounded_rectangle([(8, 8), (W-8, H-8)], radius=15, outline=color, width=6)
+    
+    font = _get_font(28, bold=True)
+    
+    words = keyword.split()
+    lines = []
+    current = []
+    for w in words:
+        current.append(w)
+        line = ' '.join(current)
+        try:
+            bbox = font.getbbox(line)
+            if bbox[2] - bbox[0] > W - 60:
+                current.pop()
+                lines.append(' '.join(current))
+                current = [w]
+        except:
+            pass
+    if current:
+        lines.append(' '.join(current))
+    
+    y = H//2 - (len(lines) * 40)//2
+    for line in lines:
+        try:
+            bbox = font.getbbox(line)
+            tw = bbox[2] - bbox[0]
+        except:
+            tw = len(line) * 16
+        x = (W - tw) // 2
+        draw.text((x+2, y+2), line, fill=(200, 200, 200), font=font)
+        draw.text((x, y), line, fill=color, font=font)
+        y += 45
+    
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=90)
+    return buf.getvalue()
+
+
+async def _pollinations_generate(prompt: str) -> bytes | None:
+    import urllib.parse
+    clean_prompt = prompt[:200].replace("\n", " ")
+    encoded = urllib.parse.quote(clean_prompt)
+    url = f"https://image.pollinations.ai/prompt/{encoded}?width=400&height=300&nologo=true"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    raw = await resp.read()
+                    if len(raw) > 5000:
+                        return raw
+    except:
+        pass
+    return None
+
+
+async def fetch_image_for_keyword(
+    keyword: str,
+    section_title: str,
+    lecture_type: str,
+    image_search_en: str = "",
+) -> bytes:
+    """جلب صورة للكلمة المفتاحية - الدالة المطلوبة من bot.py"""
+    
+    colors = {
+        'medicine': (231, 76, 126),
+        'math': (52, 152, 219),
+        'physics': (52, 152, 219),
+        'chemistry': (46, 204, 113),
+        'history': (230, 126, 34),
+        'biology': (46, 204, 113),
+        'other': (155, 89, 182)
+    }
+    color = colors.get(lecture_type, (231, 76, 126))
+    
+    # محاولة Pollinations
+    prompt = f"simple educational illustration of {keyword}, clean white background"
+    img_bytes = await _pollinations_generate(prompt)
+    if img_bytes:
+        return img_bytes
+    
+    # صورة ملونة احتياطية
+    return _make_colored_image(keyword, color)
