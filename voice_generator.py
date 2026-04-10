@@ -1,6 +1,5 @@
 import asyncio
 import io
-import re
 from gtts import gTTS
 
 GTTS_LANG_MAP = {
@@ -33,12 +32,10 @@ async def get_audio_duration(audio_bytes: bytes) -> float:
 
 
 async def generate_sections_audio(sections: list, dialect: str) -> dict:
-    """توليد صوت لكل قسم باستخدام النص الأصلي"""
     _sem = asyncio.Semaphore(3)
 
     async def _gen_one(i: int, section: dict) -> dict:
-        # استخدام النص الأصلي للقسم
-        text = section.get("original_text", section.get("content", ""))
+        text = section.get("original_text", "")
         if not text:
             text = " ".join(section.get("keywords", ["مفهوم"]))
         
@@ -68,4 +65,4 @@ async def generate_sections_audio(sections: list, dialect: str) -> dict:
         "results": results,
         "used_fallback": True,
         "all_failed": all(not r.get("ok") for r in results),
-                }
+        }
