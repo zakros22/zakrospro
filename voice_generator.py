@@ -5,15 +5,17 @@ import re
 from gtts import gTTS
 
 def clean_text(text: str) -> str:
-    if not text: return ""
+    if not text:
+        return ""
     text = str(text).replace('\x00', '').replace('\0', '')
     text = re.sub(r'[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
-    return re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
 
 GTTS_LANG = {"iraq": "ar", "egypt": "ar", "syria": "ar", "gulf": "ar", "msa": "ar"}
 
 async def generate_voice(text: str, dialect: str = "msa") -> tuple[bytes, bool]:
-    text = clean_text(text) or "محاضرة تعليمية"
+    text = clean_text(text) or "محاضرة"
     lang = GTTS_LANG.get(dialect, "ar")
     def _synth():
         buf = io.BytesIO()
