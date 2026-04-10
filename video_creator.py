@@ -14,7 +14,6 @@ FONT_AR_REG = os.path.join(_FONTS_DIR, "Amiri-Regular.ttf")
 _ENC_FACTOR = 0.6
 _MIN_ENC_SEC = 20.0
 
-# ألوان
 COLORS = [
     (231, 76, 126),   # وردي
     (52, 152, 219),   # أزرق
@@ -59,10 +58,8 @@ def _draw_intro_slide(lecture_data: dict, sections: list, is_arabic: bool) -> st
     img = PILImage.new("RGB", (TARGET_W, TARGET_H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
 
-    # شريط علوي
     draw.rectangle([(0, 0), (TARGET_W, 6)], fill=COLORS[0])
 
-    # عنوان
     raw_title = lecture_data.get("title", "المحاضرة التعليمية")
     title_txt = _prepare_text(raw_title, is_arabic)
     title_font = _get_font(36, bold=True, arabic=is_arabic)
@@ -77,9 +74,8 @@ def _draw_intro_slide(lecture_data: dict, sections: list, is_arabic: bool) -> st
     draw.text((x + 2, TARGET_H//2 - 30), title_txt, fill=(220, 220, 220), font=title_font)
     draw.text((x, TARGET_H//2 - 32), title_txt, fill=(44, 62, 80), font=title_font)
 
-    # عدد الأقسام
     n_sec = len(sections)
-    info_txt = f"📚 {n_sec} أقسام"
+    info_txt = f"📚 {n_sec} أقسام تعليمية"
     info_disp = _prepare_text(info_txt, is_arabic)
     info_font = _get_font(18, arabic=is_arabic)
     try:
@@ -89,6 +85,16 @@ def _draw_intro_slide(lecture_data: dict, sections: list, is_arabic: bool) -> st
         tw = len(info_disp) * 10
     x = (TARGET_W - tw) // 2
     draw.text((x, TARGET_H//2 + 30), info_disp, fill=(127, 140, 141), font=info_font)
+
+    # حقوق البوت
+    wm_font = _get_font(14, bold=True)
+    wm_disp = WATERMARK
+    try:
+        bbox = draw.textbbox((0, 0), wm_disp, font=wm_font)
+        ww = bbox[2] - bbox[0]
+    except Exception:
+        ww = len(wm_disp) * 8
+    draw.text((TARGET_W - ww - 20, TARGET_H - 30), wm_disp, fill=COLORS[0], font=wm_font)
 
     img.save(img_path, "JPEG", quality=90)
     return img_path
@@ -104,14 +110,17 @@ def _draw_section_title_card(section: dict, idx: int, total: int, is_arabic: boo
 
     draw.rectangle([(0, 0), (TARGET_W, 6)], fill=color)
 
-    # رقم القسم
     cx, cy, cr = TARGET_W // 2, TARGET_H // 2 - 40, 40
     draw.ellipse([cx - cr, cy - cr, cx + cr, cy + cr], fill=color)
     num_str = str(idx + 1)
     num_font = _get_font(36, bold=True)
-    draw.text((cx - 10, cy - 20), num_str, fill=(255, 255, 255), font=num_font)
+    try:
+        bbox = draw.textbbox((0, 0), num_str, font=num_font)
+        nw = bbox[2] - bbox[0]
+    except Exception:
+        nw = 20
+    draw.text((cx - nw//2, cy - 20), num_str, fill=(255, 255, 255), font=num_font)
 
-    # عنوان القسم
     raw_title = section.get("title", f"القسم {idx + 1}")
     title_disp = _prepare_text(raw_title, is_arabic)
     title_font = _get_font(30, bold=True, arabic=is_arabic)
@@ -124,6 +133,30 @@ def _draw_section_title_card(section: dict, idx: int, total: int, is_arabic: boo
     
     x = (TARGET_W - tw) // 2
     draw.text((x, cy + cr + 30), title_disp, fill=(44, 62, 80), font=title_font)
+
+    # الكلمات المفتاحية
+    keywords = section.get("keywords", [])
+    if keywords:
+        kw_text = " • ".join(keywords[:4])
+        kw_disp = _prepare_text(kw_text, is_arabic)
+        kw_font = _get_font(16, arabic=is_arabic)
+        try:
+            bbox = draw.textbbox((0, 0), kw_disp, font=kw_font)
+            tw = bbox[2] - bbox[0]
+        except Exception:
+            tw = len(kw_disp) * 9
+        x = (TARGET_W - tw) // 2
+        draw.text((x, cy + cr + 80), kw_disp, fill=color, font=kw_font)
+
+    # حقوق البوت
+    wm_font = _get_font(12)
+    wm_disp = WATERMARK
+    try:
+        bbox = draw.textbbox((0, 0), wm_disp, font=wm_font)
+        ww = bbox[2] - bbox[0]
+    except Exception:
+        ww = len(wm_disp) * 7
+    draw.text((TARGET_W - ww - 20, TARGET_H - 25), wm_disp, fill=(180, 180, 180), font=wm_font)
 
     img.save(img_path, "JPEG", quality=90)
     return img_path
@@ -138,7 +171,6 @@ def _draw_content_slide(
     section_idx: int,
     is_arabic: bool,
 ) -> str:
-    """شريحة محتوى بسيطة: صورة + كلمة مفتاحية"""
     fd, path = tempfile.mkstemp(prefix="content_", suffix=".jpg")
     os.close(fd)
 
@@ -146,7 +178,6 @@ def _draw_content_slide(
     img = PILImage.new("RGB", (TARGET_W, TARGET_H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
 
-    # شريط علوي
     draw.rectangle([(0, 0), (TARGET_W, 5)], fill=color)
 
     # عنوان القسم
@@ -209,15 +240,15 @@ def _draw_content_slide(
         r = dot_r if i <= kw_idx else dot_r - 2
         draw.ellipse([(dx - r, dot_y - r), (dx + r, dot_y + r)], fill=dot_color)
 
-    # علامة مائية
-    wm_font = _get_font(11)
-    wm_disp = _prepare_text(WATERMARK, is_arabic)
+    # حقوق البوت
+    wm_font = _get_font(12, bold=True)
+    wm_disp = WATERMARK
     try:
         bbox = draw.textbbox((0, 0), wm_disp, font=wm_font)
         ww = bbox[2] - bbox[0]
     except Exception:
-        ww = len(wm_disp) * 6
-    draw.text((TARGET_W - ww - 15, TARGET_H - 18), wm_disp, fill=(180, 180, 180), font=wm_font)
+        ww = len(wm_disp) * 7
+    draw.text((TARGET_W - ww - 20, TARGET_H - 25), wm_disp, fill=color, font=wm_font)
 
     img.save(path, "JPEG", quality=92)
     return path
@@ -232,7 +263,6 @@ def _draw_final_summary(sections: list, lecture_data: dict, is_arabic: bool) -> 
 
     draw.rectangle([(0, 0), (TARGET_W, 6)], fill=COLORS[0])
 
-    # عنوان
     title_disp = _prepare_text("📋 ملخص المحاضرة", is_arabic)
     title_font = _get_font(28, bold=True, arabic=is_arabic)
     try:
@@ -262,7 +292,6 @@ def _draw_final_summary(sections: list, lecture_data: dict, is_arabic: bool) -> 
         draw.text((x, y), kw_disp, fill=color, font=kw_font)
         y += 45
 
-    # رسالة ختامية
     thanks_disp = _prepare_text("🎓 تم بحمد الله", is_arabic)
     thanks_font = _get_font(22, bold=True, arabic=is_arabic)
     try:
@@ -273,13 +302,19 @@ def _draw_final_summary(sections: list, lecture_data: dict, is_arabic: bool) -> 
     tx = (TARGET_W - tw) // 2
     draw.text((tx, TARGET_H - 50), thanks_disp, fill=COLORS[0], font=thanks_font)
 
+    # حقوق البوت
+    wm_font = _get_font(14, bold=True)
+    wm_disp = WATERMARK
+    try:
+        bbox = draw.textbbox((0, 0), wm_disp, font=wm_font)
+        ww = bbox[2] - bbox[0]
+    except Exception:
+        ww = len(wm_disp) * 8
+    draw.text((TARGET_W - ww - 20, TARGET_H - 30), wm_disp, fill=COLORS[0], font=wm_font)
+
     img.save(img_path, "JPEG", quality=90)
     return img_path
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# FFmpeg
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _ffmpeg_segment(img_path: str, duration: float, audio_path: str | None,
                     audio_start: float, out_path: str) -> None:
@@ -348,8 +383,8 @@ def _build_segment_list(
         # عنوان القسم
         title_path = _draw_section_title_card(section, sec_idx, n_sections, is_arabic)
         tmp_files.append(title_path)
-        segments.append({"img": title_path, "audio": None, "audio_start": 0.0, "dur": 3.0})
-        total_secs += 3.0
+        segments.append({"img": title_path, "audio": None, "audio_start": 0.0, "dur": 4.0})
+        total_secs += 4.0
 
         keywords = section.get("keywords", ["مفهوم"])
         kw_images = section.get("_keyword_images", [])
