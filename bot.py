@@ -50,13 +50,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# المتغيرات العامة - حل مشكلة التوقف
+# المتغيرات العامة
 # ═══════════════════════════════════════════════════════════════════════════════
 
 user_states = {}
-_active_jobs = {}        # uid -> status
-_active_tasks = {}       # uid -> Task (يعمل في الخلفية)
-_cancel_flags = {}       # uid -> Event (للإلغاء)
+_active_jobs = {}
+_active_tasks = {}
+_cancel_flags = {}
 
 CANCEL_KB = InlineKeyboardMarkup([[
     InlineKeyboardButton("❌ إلغاء المعالجة", callback_data="cancel_job")
@@ -112,10 +112,6 @@ async def _safe_edit(msg, text, parse_mode="Markdown", reply_markup=None):
     except:
         pass
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# دالة الإلغاء - أساسية لحل مشكلة التوقف
-# ═══════════════════════════════════════════════════════════════════════════════
 
 async def _run_or_cancel(uid, coro):
     """تشغيل مهمة مع إمكانية الإلغاء"""
@@ -185,6 +181,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📖 *كيفية الاستخدام*\n\n"
+        "1️⃣ أرسل PDF أو نص\n"
+        "2️⃣ اختر اللهجة\n"
+        "3️⃣ انتظر الفيديو\n\n"
+        "/cancel - إلغاء",
+        parse_mode="Markdown"
+    )
+
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user_states.pop(uid, None)
@@ -207,8 +214,22 @@ async def my_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def referral_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = await ensure_user(update)
+    if not user:
+        return
+    uid = update.effective_user.id
+    stats = get_referral_stats(uid)
+    bot = await context.bot.get_me()
+    ref_link = f"https://t.me/{bot.username}?start=ref_{uid}"
+    await update.message.reply_text(
+        f"🔗 *رابطك*\n`{ref_link}`\n👥 {stats['total_referrals']} شخص",
+        parse_mode="Markdown"
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
-# استلام المحتوى - مع تحرير فوري للطلب (حل مشكلة التوقف)
+# استلام المحتوى - مع حل مشكلة PDF
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -231,8 +252,13 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == "📊 رصيدي":
             await my_balance(update, context)
             return
+        if text == "🔗 رابط الإحالة":
+            await referral_cmd(update, context)
+            return
+        if text == "❓ مساعدة":
+            await help_cmd(update, context)
+            return
 
-    # منع تشغيل أكثر من عملية
     if uid in _active_jobs:
         await msg.reply_text("⏳ لديك محاضرة قيد المعالجة")
         return
@@ -246,17 +272,31 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text("⚠️ PDF أو TXT فقط")
             return
 
-        wait = await msg.reply_text("📥 جاري قراءة الملف...")
+        wait = await msg.reply_text("📥 جاري تحميل الملف...")
+        
         try:
             file = await msg.document.get_file()
             raw = await file.download_as_bytearray()
+            
+            await wait.edit_text("📖 جاري استخراج النص...")
+            
             if ext == "pdf":
-                lecture_text = await extract_full_text_from_pdf(bytes(raw))
+                try:
+                    # timeout 90 ثانية لاستخراج النص
+                    lecture_text = await asyncio.wait_for(
+                        extract_full_text_from_pdf(bytes(raw)),
+                        timeout=90.0
+                    )
+                except asyncio.TimeoutError:
+                    await wait.edit_text("❌ الملف كبير جداً. أرسل ملف أصغر.")
+                    return
             else:
                 lecture_text = raw.decode("utf-8", errors="ignore")
+            
             await wait.delete()
+            
         except Exception as e:
-            await wait.edit_text(f"❌ خطأ: {e}")
+            await wait.edit_text(f"❌ خطأ: {str(e)[:100]}")
             return
 
     elif msg.text and len(msg.text.strip()) >= 200:
@@ -267,6 +307,7 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     lecture_text = clean_text(lecture_text)
+    
     if not lecture_text or len(lecture_text) < 50:
         await msg.reply_text("❌ نص غير كاف")
         return
@@ -292,7 +333,7 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Callback Handler - بدء المعالجة في الخلفية (الحل الجذري)
+# Callback Handler
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -315,11 +356,25 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_pay_crypto(update, context)
         return
 
+    if data.startswith("sent_"):
+        await handle_payment_sent(update, context)
+        return
+
     if data == "cancel_job":
         ev = _cancel_flags.get(uid)
         if ev and not ev.is_set():
             ev.set()
             await q.edit_message_text("⛔ تم الإلغاء")
+        return
+
+    if data == "show_referral":
+        stats = get_referral_stats(uid)
+        bot = await context.bot.get_me()
+        ref_link = f"https://t.me/{bot.username}?start=ref_{uid}"
+        await q.message.reply_text(
+            f"🔗 *رابطك*\n`{ref_link}`\n👥 {stats['total_referrals']} شخص",
+            parse_mode="Markdown"
+        )
         return
 
     if data.startswith("dial_"):
@@ -344,10 +399,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = state["text"]
         user_states.pop(uid, None)
 
-        # ═══════════════════════════════════════════════════════════════════════
-        # الحل الجذري: بدء المعالجة في الخلفية وعدم انتظارها
-        # هذا يمنع Heroku من قتل العملية بسبب timeout
-        # ═══════════════════════════════════════════════════════════════════════
+        # بدء المعالجة في الخلفية
         task = asyncio.create_task(
             _process_lecture(uid, text, dialect, prog_msg, context)
         )
@@ -356,7 +408,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# دالة المعالجة الرئيسية (تعمل في الخلفية)
+# دالة المعالجة الرئيسية
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def _process_lecture(uid, text, dialect, prog_msg, context):
@@ -472,7 +524,9 @@ async def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("cancel", cancel))
+    app.add_handler(CommandHandler("referral", referral_cmd))
     app.add_handler(CommandHandler("admin", admin_cmd))
     app.add_handler(CommandHandler("add", handle_add_attempts))
     app.add_handler(CommandHandler("set", handle_set_attempts))
