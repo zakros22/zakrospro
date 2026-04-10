@@ -10,7 +10,7 @@ def clean_text(text: str) -> str:
     text = re.sub(r'[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
     return re.sub(r'\s+', ' ', text).strip()
 
-GTTS_LANG = {"iraq": "ar", "egypt": "ar", "syria": "ar", "gulf": "ar", "msa": "ar", "english": "en", "british": "en"}
+GTTS_LANG = {"iraq": "ar", "egypt": "ar", "syria": "ar", "gulf": "ar", "msa": "ar"}
 
 async def generate_voice(text: str, dialect: str = "msa") -> tuple[bytes, bool]:
     text = clean_text(text) or "محاضرة تعليمية"
