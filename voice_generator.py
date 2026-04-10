@@ -1,12 +1,28 @@
+# -*- coding: utf-8 -*-
 import asyncio
 import io
 from gtts import gTTS
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# إعدادات اللغات
+# ═══════════════════════════════════════════════════════════════════════════════
+
 GTTS_LANG_MAP = {
-    "iraq": "ar", "egypt": "ar", "syria": "ar", "gulf": "ar", "msa": "ar",
+    "iraq": "ar",
+    "egypt": "ar",
+    "syria": "ar",
+    "gulf": "ar",
+    "msa": "ar",
+    "english": "en",
+    "british": "en",
 }
 
+
 async def generate_voice(text: str, dialect: str = "msa") -> tuple[bytes, bool]:
+    """
+    توليد الصوت باستخدام gTTS المجاني.
+    Returns: (audio_bytes, used_elevenlabs) - used_elevenlabs دائماً False
+    """
     lang = GTTS_LANG_MAP.get(dialect, "ar")
     
     def _synth():
@@ -22,32 +38,55 @@ async def generate_voice(text: str, dialect: str = "msa") -> tuple[bytes, bool]:
 
 
 async def get_audio_duration(audio_bytes: bytes) -> float:
+    """
+    حساب مدة الصوت بالثواني
+    """
     try:
         from pydub import AudioSegment
         audio = AudioSegment.from_mp3(io.BytesIO(audio_bytes))
         return len(audio) / 1000.0
-    except:
+    except Exception:
+        # تقدير تقريبي: 1 ثانية = 16000 بايت
         return len(audio_bytes) / 16000
 
 
 async def generate_sections_audio(sections: list, dialect: str) -> dict:
-    _sem = asyncio.Semaphore(3)
+    """
+    توليد الصوت لجميع الأقسام بالتوازي
+    """
+    _sem = asyncio.Semaphore(3)  # أقصى حد 3 طلبات متزامنة
 
     async def _gen_one(i: int, section: dict) -> dict:
+        # استخدام النص الأصلي للقسم
         text = section.get("narration", "")
         if not text:
-            text = " ".join(section.get("keywords", ["مفهوم"]))
+            text = " ".join(section.get("keywords", ["مفهوم"])) * 5
         
         async with _sem:
             try:
                 audio_bytes, _ = await generate_voice(text, dialect)
                 duration = await get_audio_duration(audio_bytes)
-                return {"index": i, "audio": audio_bytes, "duration": duration, "ok": True}
+                return {
+                    "index": i,
+                    "audio": audio_bytes,
+                    "duration": duration,
+                    "ok": True,
+                }
             except Exception as e:
-                print(f"TTS failed: {e}")
-                return {"index": i, "audio": None, "duration": 30, "ok": False}
+                print(f"[ERROR] TTS failed for section {i}: {e}")
+                return {
+                    "index": i,
+                    "audio": None,
+                    "duration": 45,  # مدة افتراضية
+                    "ok": False,
+                }
 
+    print(f"[INFO] Generating audio for {len(sections)} sections...")
     raw = await asyncio.gather(*[_gen_one(i, s) for i, s in enumerate(sections)])
     results = sorted(raw, key=lambda r: r["index"])
     
-    return {"results": results, "used_fallback": True, "all_failed": False}
+    return {
+        "results": results,
+        "used_fallback": True,  # gTTS دائماً
+        "all_failed": all(not r.get("ok") for r in results),
+    }
