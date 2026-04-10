@@ -4,10 +4,14 @@ import io
 import asyncio
 import aiohttp
 import os
+from concurrent.futures import ThreadPoolExecutor
 from PIL import Image as PILImage, ImageDraw, ImageFont
 from google import genai
 from google.genai import types as genai_types
 from config import GOOGLE_API_KEY, GOOGLE_API_KEYS, GROQ_API_KEYS, OPENROUTER_API_KEYS, OPENAI_API_KEY
+
+# ── Thread Pool للعمليات الثقيلة ─────────────────────────────────────────────
+_thread_pool = ThreadPoolExecutor(max_workers=4)
 
 # ── Google API key pool ────────────────────────────────────────────────────────
 _key_pool: list[str] = list(GOOGLE_API_KEYS) if GOOGLE_API_KEYS else ([GOOGLE_API_KEY] if GOOGLE_API_KEY else [])
@@ -76,8 +80,9 @@ async def _generate_with_openrouter(prompt: str, max_tokens: int = 8192) -> str:
 
 async def _generate_with_rotation(prompt: str, max_output_tokens: int = 8192) -> str:
     global _current_key_idx
-    gemini_models = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
+    gemini_models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
     
+    # تجربة Gemini أولاً
     for i in range(len(_key_pool)):
         key_idx = (_current_key_idx + i) % len(_key_pool)
         key = _key_pool[key_idx]
@@ -91,25 +96,36 @@ async def _generate_with_rotation(prompt: str, max_output_tokens: int = 8192) ->
                 _current_key_idx = key_idx
                 print(f"✅ Gemini: {model}")
                 return response.text.strip()
-            except:
-                continue
+            except Exception as e:
+                err = str(e)
+                if "429" in err or "quota" in err.lower() or "exhausted" in err.lower():
+                    print(f"⚠️ Gemini {model} quota exhausted, trying next...")
+                    continue
+                else:
+                    print(f"⚠️ Gemini {model} error: {err[:50]}")
+                    continue
     
+    # تجربة Groq
     if _groq_pool:
+        print("🔄 Trying Groq...")
         try:
             return await _generate_with_groq(prompt, max_output_tokens)
-        except:
+        except QuotaExhaustedError:
             pass
     
+    # تجربة OpenRouter
     if _or_pool:
+        print("🔄 Trying OpenRouter...")
         try:
             return await _generate_with_openrouter(prompt, max_output_tokens)
-        except:
+        except QuotaExhaustedError:
             pass
     
-    raise QuotaExhaustedError("QUOTA_EXHAUSTED")
+    raise QuotaExhaustedError("QUOTA_EXHAUSTED: جميع المفاتيح منتهية")
 
 
 def _compute_lecture_scale(text: str) -> tuple:
+    """حساب عدد الأقسام بناءً على طول النص"""
     word_count = len(text.split())
     if word_count < 300:
         return 3, "6-8", 3000
@@ -117,46 +133,52 @@ def _compute_lecture_scale(text: str) -> tuple:
         return 4, "8-10", 5000
     elif word_count < 1500:
         return 5, "10-12", 6000
+    elif word_count < 3000:
+        return 6, "12-15", 7000
     else:
-        return 6, "12-15", 8000
+        return 7, "15-18", 8000
 
 
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
+    """تحليل المحاضرة واستخراج الأقسام"""
+    
     dialect_instructions = {
-        "iraq": "استخدم اللهجة العراقية في الشرح، مع كلمات عراقية أصيلة مثل (هواية، گلت، يعني، بس، هسا)",
-        "egypt": "استخدم اللهجة المصرية في الشرح، مع كلمات مصرية مثل (أوي، معلش، يعني، بس، كده)",
-        "syria": "استخدم اللهجة الشامية في الشرح، مع كلمات شامية مثل (هلق، شو، كتير، منيح، هيك)",
-        "gulf": "استخدم اللهجة الخليجية في الشرح، مع كلمات خليجية مثل (زين، وايد، عاد، هاذي، أبشر)",
+        "iraq": "استخدم اللهجة العراقية في الشرح، مع كلمات عراقية أصيلة مثل (هواية، گلت، يعني، بس، هسا، چان، عگب)",
+        "egypt": "استخدم اللهجة المصرية في الشرح، مع كلمات مصرية مثل (أوي، معلش، يعني، بس، كده، إيه، مش)",
+        "syria": "استخدم اللهجة الشامية في الشرح، مع كلمات شامية مثل (هلق، شو، كتير، منيح، هيك، شي، عنجد)",
+        "gulf": "استخدم اللهجة الخليجية في الشرح، مع كلمات خليجية مثل (زين، وايد، عاد، هاذي، أبشر، يمعود)",
         "msa": "استخدم العربية الفصحى الواضحة والمبسطة",
         "english": "Use clear, simple English. Explain like a teacher to students.",
         "british": "Use British English with a professional, clear academic tone."
     }
 
     instruction = dialect_instructions.get(dialect, dialect_instructions["msa"])
-    num_sections, narration_sentences, _ = _compute_lecture_scale(text)
-    text_limit = min(len(text), 4000 + num_sections * 1500)
+    num_sections, narration_sentences, max_tokens = _compute_lecture_scale(text)
+    
+    # تقليل النص المرسل للتحليل لتسريع العملية
+    text_limit = min(len(text), 5000)
     is_english = dialect in ("english", "british")
 
     if is_english:
-        summary_hint = "A clear, concise summary of the lecture in English (4-5 sentences)."
+        summary_hint = "A clear, concise summary (4-5 sentences)"
         key_points_hint = '["Key point 1", "Key point 2", "Key point 3", "Key point 4"]'
-        title_hint = "Lecture title in English"
-        section_title_hint = "Section title in English"
-        content_hint = f"Simplified section content in English ({narration_sentences} sentences)"
+        title_hint = "Lecture title"
+        section_title_hint = "Section title"
+        content_hint = f"Simplified section content ({narration_sentences} sentences)"
         keywords_hint = '["keyword1", "keyword2", "keyword3", "keyword4"]'
-        narration_hint = f"Full narration in English ({narration_sentences} sentences)"
-        lang_note = "IMPORTANT: Write ALL text fields in English."
+        narration_hint = f"Full narration ({narration_sentences} sentences)"
+        lang_note = "Write ALL text in English."
     else:
         summary_hint = "ملخص المحاضرة بأسلوب مبسط (4-5 جمل)"
         key_points_hint = '["نقطة رئيسية 1", "نقطة رئيسية 2", "نقطة رئيسية 3", "نقطة رئيسية 4"]'
         title_hint = "عنوان المحاضرة"
         section_title_hint = "عنوان القسم"
-        content_hint = f"محتوى القسم المبسط بأسلوب ممتع وسهل الفهم ({narration_sentences} جمل)"
-        keywords_hint = '["مصطلح رئيسي 1", "مصطلح رئيسي 2", "مصطلح رئيسي 3", "مصطلح رئيسي 4"]'
-        narration_hint = f"نص الشرح الكامل بالنص الطبيعي للمحاضر مع اللهجة المطلوبة ({narration_sentences} جمل)"
-        lang_note = "النص يجب أن يكون باللهجة المطلوبة بالكامل"
+        content_hint = f"محتوى القسم المبسط ({narration_sentences} جمل)"
+        keywords_hint = '["مصطلح 1", "مصطلح 2", "مصطلح 3", "مصطلح 4"]'
+        narration_hint = f"نص الشرح الكامل باللهجة المطلوبة ({narration_sentences} جمل)"
+        lang_note = "النص يجب أن يكون باللهجة المطلوبة"
 
-    prompt = f"""أنت معلم خبير ومتخصص في تبسيط المحاضرات العلمية.
+    prompt = f"""أنت معلم خبير في تبسيط المحاضرات.
 
 {instruction}
 
@@ -165,10 +187,10 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
 {text[:text_limit]}
 ---
 
-قم بتحليل المحاضرة وأرجع JSON فقط بالتنسيق التالي. يجب أن يحتوي على بالضبط {num_sections} أقسام:
+أرجع JSON فقط بالتنسيق التالي. {num_sections} أقسام بالضبط:
 
 {{
-  "lecture_type": "one of: medicine/science/math/literature/history/computer/business/other",
+  "lecture_type": "medicine/science/math/literature/history/computer/business/other",
   "title": "{title_hint}",
   "sections": [
     {{
@@ -176,54 +198,64 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
       "content": "{content_hint}",
       "keywords": {keywords_hint},
       "keyword_images": [
-        "cartoon educational illustration description for keyword1 - 3-5 English words",
-        "cartoon educational illustration description for keyword2 - 3-5 English words",
-        "cartoon educational illustration description for keyword3 - 3-5 English words",
-        "cartoon educational illustration description for keyword4 - 3-5 English words"
+        "cartoon illustration description for keyword1 - 3-5 English words",
+        "cartoon illustration description for keyword2 - 3-5 English words",
+        "cartoon illustration description for keyword3 - 3-5 English words",
+        "cartoon illustration description for keyword4 - 3-5 English words"
       ],
       "narration": "{narration_hint}",
       "duration_estimate": 45
     }}
   ],
   "summary": "{summary_hint}",
-  "key_points": {key_points_hint},
-  "total_sections": {num_sections}
+  "key_points": {key_points_hint}
 }}
 
 مهم جداً:
 - {lang_note}
-- يجب أن تكون {num_sections} أقسام بالضبط
-- keywords: 4 مصطلحات أساسية
-- keyword_images: وصف إنجليزي لصورة كرتونية تعليمية (3-5 كلمات)
-- أرجع JSON فقط بدون أي نص إضافي
+- {num_sections} أقسام بالضبط
+- keywords: 4 مصطلحات
+- keyword_images: وصف إنجليزي لصورة كرتونية (3-5 كلمات)
+- أرجع JSON فقط بدون أي نص إضافي أو ```json
 """
 
-    content = await _generate_with_rotation(prompt, max_output_tokens=8192)
+    content = await _generate_with_rotation(prompt, max_tokens)
     content = content.strip()
+    
+    # تنظيف JSON
     content = re.sub(r'^```json\s*', '', content)
     content = re.sub(r'\s*```$', '', content)
     content = content.strip()
 
     try:
-        return json.loads(content)
+        result = json.loads(content)
+        # التأكد من عدد الأقسام
+        if len(result.get("sections", [])) != num_sections:
+            # تعديل عدد الأقسام إذا لزم
+            sections = result.get("sections", [])
+            if len(sections) > num_sections:
+                result["sections"] = sections[:num_sections]
+        return result
     except json.JSONDecodeError:
+        # محاولة استخراج JSON من النص
         json_match = re.search(r'\{[\s\S]*\}', content)
         if json_match:
-            return json.loads(json_match.group())
-        raise ValueError(f"Failed to parse JSON: {content[:500]}")
+            try:
+                return json.loads(json_match.group())
+            except:
+                pass
+        raise ValueError(f"Failed to parse JSON: {content[:300]}")
 
 
-# ── استخراج النص من PDF بسرعة ────────────────────────────────────────────────
-async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
-    """استخراج النص من PDF بسرعة وفعالية"""
-    import PyPDF2
-    
-    def _extract():
+# ── استخراج النص من PDF (متزامن - للاستخدام في ThreadPool) ───────────────────
+def extract_full_text_from_pdf_sync(pdf_bytes: bytes) -> str:
+    """استخراج النص من PDF - نسخة متزامنة"""
+    try:
+        import PyPDF2
         reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
         texts = []
-        total_pages = len(reader.pages)
-        # حد أقصى 100 صفحة للسرعة
-        for page in reader.pages[:100]:
+        # حد أقصى 50 صفحة للسرعة
+        for page in reader.pages[:50]:
             try:
                 txt = page.extract_text()
                 if txt and txt.strip():
@@ -231,26 +263,32 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
             except Exception:
                 pass
         return "\n\n".join(texts)
-    
+    except Exception as e:
+        print(f"PDF extraction error: {e}")
+        return ""
+
+
+async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
+    """استخراج النص من PDF - غير متزامن"""
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _extract)
+    return await loop.run_in_executor(_thread_pool, extract_full_text_from_pdf_sync, pdf_bytes)
+
+
+async def extract_text_from_pdf(pdf_bytes: bytes) -> str:
+    """نسخة مختصرة للتوافق"""
+    return await extract_full_text_from_pdf(pdf_bytes)
 
 
 # ── إنشاء صورة كرتونية بديلة ─────────────────────────────────────────────────
-def _create_cartoon_placeholder(keyword: str, section_title: str, lecture_type: str) -> bytes:
-    """إنشاء صورة كرتونية بديلة احترافية"""
+def _create_cartoon_placeholder_sync(keyword: str, section_title: str, lecture_type: str) -> bytes:
+    """إنشاء صورة كرتونية بديلة - نسخة متزامنة"""
     W, H = 800, 500
     colors = {
-        "medicine": (255, 107, 107),
-        "science": (78, 205, 196),
-        "math": (255, 209, 102),
-        "physics": (100, 180, 255),
-        "chemistry": (170, 120, 255),
-        "biology": (100, 220, 150),
-        "history": (255, 180, 80),
-        "computer": (80, 200, 220),
-        "business": (255, 200, 100),
-        "literature": (220, 120, 200),
+        "medicine": (255, 107, 107), "science": (78, 205, 196),
+        "math": (255, 209, 102), "physics": (100, 180, 255),
+        "chemistry": (170, 120, 255), "biology": (100, 220, 150),
+        "history": (255, 180, 80), "computer": (80, 200, 220),
+        "business": (255, 200, 100), "literature": (220, 120, 200),
         "other": (150, 150, 220),
     }
     color = colors.get(lecture_type, colors["other"])
@@ -270,13 +308,16 @@ def _create_cartoon_placeholder(keyword: str, section_title: str, lecture_type: 
     draw.rounded_rectangle([(15, 15), (W-15, H-15)], radius=20, outline=color, width=4)
     
     # أيقونة
-    icons = {"medicine": "🩺", "science": "🔬", "math": "📐", "physics": "⚡", "chemistry": "🧪", "biology": "🧬", "history": "🏛️", "computer": "💻", "business": "💼", "literature": "📖", "other": "📚"}
+    icons = {"medicine": "🩺", "science": "🔬", "math": "📐", "physics": "⚡",
+             "chemistry": "🧪", "biology": "🧬", "history": "🏛️", "computer": "💻",
+             "business": "💼", "literature": "📖", "other": "📚"}
     icon = icons.get(lecture_type, "📚")
     
     try:
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 60)
     except:
         font = ImageFont.load_default()
+    
     bbox = draw.textbbox((0, 0), icon, font=font)
     iw = bbox[2] - bbox[0]
     draw.text(((W - iw)//2, 80), icon, fill=color, font=font)
@@ -333,8 +374,14 @@ def _create_cartoon_placeholder(keyword: str, section_title: str, lecture_type: 
     draw.text(((W - hw)//2, 350), hint, fill=(150, 150, 170), font=font_st)
     
     buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=90)
+    img.save(buf, "JPEG", quality=85)
     return buf.getvalue()
+
+
+async def _create_cartoon_placeholder(keyword: str, section_title: str, lecture_type: str) -> bytes:
+    """إنشاء صورة كرتونية بديلة - غير متزامن"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_thread_pool, _create_cartoon_placeholder_sync, keyword, section_title, lecture_type)
 
 
 # ── جلب الصورة مع نظام بدائل متعدد ───────────────────────────────────────────
@@ -348,88 +395,108 @@ async def fetch_image_for_keyword(
     
     subject = (image_search_en or keyword).strip()
     
-    # 1. Pollinations.ai
+    # 1. Pollinations.ai (سريع ومجاني)
     try:
         import urllib.parse, random
-        prompt = f"educational cartoon illustration, {subject}, simple colorful style, clear"
+        prompt = f"educational cartoon illustration, {subject}, simple colorful"
         encoded = urllib.parse.quote(prompt[:200])
         url = f"https://image.pollinations.ai/prompt/{encoded}?width=800&height=500&seed={random.randint(1,99999)}&model=flux"
         
         async with aiohttp.ClientSession() as s:
-            async with s.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
+            async with s.get(url, timeout=aiohttp.ClientTimeout(total=8)) as r:
                 if r.status == 200:
                     data = await r.read()
-                    if len(data) > 5000:
+                    if len(data) > 3000:
                         print(f"✅ Pollinations: {subject[:30]}")
                         return data
-    except Exception as e:
-        print(f"Pollinations failed: {e}")
+    except Exception:
+        pass
     
-    # 2. DALL-E
+    # 2. DALL-E (إذا وجد مفتاح)
     if OPENAI_API_KEY:
         try:
             import base64
-            prompt = f"cartoon educational illustration, {subject}, simple colorful style, white background"
+            prompt = f"cartoon educational illustration, {subject}, simple style, white background"
             payload = {"model": "dall-e-3", "prompt": prompt, "size": "1024x1024", "n": 1, "response_format": "b64_json"}
             headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
             
             async with aiohttp.ClientSession() as s:
-                async with s.post("https://api.openai.com/v1/images/generations", json=payload, headers=headers, timeout=30) as r:
+                async with s.post("https://api.openai.com/v1/images/generations", json=payload, headers=headers, timeout=25) as r:
                     if r.status == 200:
                         data = await r.json()
                         b64 = data["data"][0].get("b64_json", "")
                         if b64:
                             print(f"✅ DALL-E: {subject[:30]}")
                             return base64.b64decode(b64)
-        except Exception as e:
-            print(f"DALL-E failed: {e}")
+        except Exception:
+            pass
     
     # 3. Pexels
     pexels_key = os.getenv("PEXELS_API_KEY", "")
     if pexels_key:
         try:
             import urllib.parse
-            q = urllib.parse.quote(f"{subject} education")
+            q = urllib.parse.quote(f"{subject}")
             headers = {"Authorization": pexels_key}
             async with aiohttp.ClientSession() as s:
                 async with s.get(f"https://api.pexels.com/v1/search?query={q}&per_page=3", headers=headers, timeout=10) as r:
                     if r.status == 200:
                         data = await r.json()
                         for photo in data.get("photos", []):
-                            img_url = photo["src"].get("large")
+                            img_url = photo["src"].get("medium")
                             if img_url:
-                                async with s.get(img_url, timeout=15) as ir:
+                                async with s.get(img_url, timeout=10) as ir:
                                     if ir.status == 200:
                                         print(f"✅ Pexels: {subject[:30]}")
                                         return await ir.read()
-        except Exception as e:
-            print(f"Pexels failed: {e}")
+        except Exception:
+            pass
     
-    # 4. Pixabay
-    pixabay_key = os.getenv("PIXABAY_API_KEY", "")
-    if pixabay_key:
-        try:
-            import urllib.parse
-            q = urllib.parse.quote(f"{subject} cartoon")
-            async with aiohttp.ClientSession() as s:
-                async with s.get(f"https://pixabay.com/api/?key={pixabay_key}&q={q}&per_page=3", timeout=10) as r:
-                    if r.status == 200:
-                        data = await r.json()
-                        for hit in data.get("hits", []):
-                            img_url = hit.get("largeImageURL")
-                            if img_url:
-                                async with s.get(img_url, timeout=15) as ir:
-                                    if ir.status == 200:
-                                        print(f"✅ Pixabay: {subject[:30]}")
-                                        return await ir.read()
-        except Exception as e:
-            print(f"Pixabay failed: {e}")
-    
-    # 5. صورة كرتونية بديلة
-    print(f"🎨 Creating cartoon placeholder for: {subject[:30]}")
-    return _create_cartoon_placeholder(keyword, section_title, lecture_type)
+    # 4. صورة كرتونية بديلة
+    print(f"🎨 Cartoon placeholder: {subject[:30]}")
+    return await _create_cartoon_placeholder(keyword, section_title, lecture_type)
 
 
-async def extract_text_from_pdf(pdf_bytes: bytes) -> str:
-    """نسخة مختصرة للتوافق"""
-    return await extract_full_text_from_pdf(pdf_bytes)
+# ── دوال مساعدة للصور ────────────────────────────────────────────────────────
+async def generate_educational_image(prompt: str, lecture_type: str, keywords: list = None, image_search: str = None, image_search_fallbacks: list = None) -> bytes:
+    """توليد صورة تعليمية - للتوافق"""
+    keyword = keywords[0] if keywords else prompt[:30]
+    return await fetch_image_for_keyword(keyword, "", lecture_type, image_search or prompt)
+
+
+def _is_safe_url(url: str) -> bool:
+    """التحقق من أمان الرابط"""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        return parsed.scheme in ('http', 'https')
+    except:
+        return False
+
+
+async def extract_text_from_url(url: str) -> str:
+    """استخراج النص من رابط"""
+    if not _is_safe_url(url):
+        raise ValueError("رابط غير آمن")
+    try:
+        from bs4 import BeautifulSoup
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, headers=headers, timeout=15) as r:
+                if r.status == 200:
+                    html = await r.text()
+                    soup = BeautifulSoup(html, 'html.parser')
+                    for tag in soup(['script', 'style', 'nav', 'footer', 'header']):
+                        tag.decompose()
+                    text = soup.get_text(separator='\n', strip=True)
+                    lines = [l.strip() for l in text.split('\n') if l.strip() and len(l.strip()) > 20]
+                    return '\n'.join(lines[:200])
+    except Exception as e:
+        print(f"URL extraction error: {e}")
+    return ""
+
+
+async def translate_full_text(text: str, dialect: str) -> str:
+    """ترجمة النص إلى اللهجة المطلوبة"""
+    # للتوافق - يمكن تطويرها لاحقاً
+    return text
