@@ -18,13 +18,11 @@ def _clean_text(text: str) -> str:
     """تنظيف النص من جميع الأحرف غير المرغوبة"""
     if not text:
         return ""
-    # إزالة null bytes
     text = text.replace('\x00', '').replace('\0', '')
-    # إزالة أحرف التحكم
     text = re.sub(r'[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
-    # استبدال المسافات المتعددة بمسافة واحدة
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1. تحميل مفاتيح Google Gemini
@@ -195,6 +193,7 @@ async def _generate_with_rotation(prompt: str, max_output_tokens: int = 8192) ->
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _extract_keywords(text: str, max_words: int = 30) -> list:
+    text = _clean_text(text)
     stop_words = {'و', 'في', 'من', 'على', 'إلى', 'أن', 'هو', 'هي', 'هذا', 'هذه', 'كان', 
                   'كانت', 'مع', 'ما', 'لا', 'عن', 'إذا', 'لم', 'لن', 'قد', 'ثم', 'أو', 
                   'أم', 'لكن', 'حتى', 'بل', 'كل', 'بعض', 'the', 'a', 'an', 'is', 'are',
@@ -213,6 +212,7 @@ def _extract_keywords(text: str, max_words: int = 30) -> list:
 
 
 def _detect_lecture_type(text: str) -> str:
+    text = _clean_text(text)
     text_lower = text.lower()
     
     medical = ['مرض', 'علاج', 'طبيب', 'جراحة', 'دواء', 'تشخيص', 'مريض', 'قلب', 'دم', 'خلية', 'ورم', 'سرطان', 'endometriosis', 'cyst', 'inflammation', 'pain', 'bleeding', 'menstrual']
@@ -238,7 +238,6 @@ def _detect_lecture_type(text: str) -> str:
 
 
 def _generate_fallback_narration(keywords: list, lecture_type: str) -> str:
-    """توليد شرح احترافي افتراضي"""
     kw_str = '، '.join(keywords[:3])
     
     narrations = {
@@ -261,9 +260,6 @@ def _generate_fallback_narration(keywords: list, lecture_type: str) -> str:
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     print("[INFO] Starting lecture analysis...")
     
-    # ═══════════════════════════════════════════════════════════════════════════
-    # تنظيف النص أولاً
-    # ═══════════════════════════════════════════════════════════════════════════
     text = _clean_text(text)
     
     if not text:
@@ -348,9 +344,9 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         content = re.sub(r'\s*```$', '', content)
         
         result = json.loads(content)
-        title = result.get("title", all_keywords[0] if all_keywords else "المحاضرة التعليمية")
+        title = _clean_text(result.get("title", all_keywords[0] if all_keywords else "المحاضرة التعليمية"))
         ai_sections = result.get("sections", [])
-        summary = result.get("summary", f"شرحنا في هذه المحاضرة: {', '.join(all_keywords[:8])}")
+        summary = _clean_text(result.get("summary", f"شرحنا في هذه المحاضرة: {', '.join(all_keywords[:8])}"))
         print(f"[OK] AI generated {len(ai_sections)} sections")
         
     except Exception as e:
@@ -363,24 +359,22 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     for i in range(num_sections):
         if i < len(ai_sections) and ai_sections[i].get("narration"):
             section = ai_sections[i]
-            keywords = section.get("keywords", [])[:4]
-            section_title = section.get("title", f"القسم {i+1}")
-            narration = section.get("narration", "")
+            keywords = [_clean_text(k) for k in section.get("keywords", [])[:4]]
+            section_title = _clean_text(section.get("title", f"القسم {i+1}"))
+            narration = _clean_text(section.get("narration", ""))
         else:
             start_idx = (i * 4) % len(all_keywords)
             keywords = []
             for j in range(4):
                 idx = (start_idx + j) % len(all_keywords)
-                if all_keywords[idx] not in keywords:
-                    keywords.append(all_keywords[idx])
+                kw = _clean_text(all_keywords[idx])
+                if kw and kw not in keywords:
+                    keywords.append(kw)
             section_title = keywords[0] if keywords else f"القسم {i+1}"
             narration = _generate_fallback_narration(keywords, lecture_type)
         
         while len(keywords) < 4:
             keywords.append("مفهوم")
-        
-        # تنظيف النص لكل قسم
-        narration = _clean_text(narration)
         
         final_sections.append({
             "title": section_title,
@@ -396,6 +390,10 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     for section in final_sections:
         section_keywords = section["keywords"]
         search_query = " ".join(section_keywords[:3])
+        search_query = _clean_text(search_query)
+        
+        if not search_query:
+            search_query = "educational concept"
         
         try:
             section["_image_bytes"] = await fetch_image_for_keyword(
@@ -413,15 +411,11 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         "lecture_type": lecture_type,
         "title": title,
         "sections": final_sections,
-        "summary": _clean_text(summary),
+        "summary": summary,
         "key_points": all_keywords[:5],
         "all_keywords": all_keywords
     }
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 6. استخراج النص من PDF
-# ═══════════════════════════════════════════════════════════════════════════════
 
 async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
     import PyPDF2
@@ -432,7 +426,6 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
         if page_text.strip():
             pages.append(page_text)
     text = "\n\n".join(pages)
-    # تنظيف النص
     text = _clean_text(text)
     return text
 
@@ -466,6 +459,10 @@ def _get_font(size: int) -> ImageFont.FreeTypeFont:
 
 
 def _make_colored_image(keyword: str, color: tuple) -> bytes:
+    keyword = _clean_text(keyword)
+    if not keyword:
+        keyword = "مفهوم"
+    
     W, H = 500, 350
     img = PILImage.new("RGB", (W, H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
@@ -524,6 +521,10 @@ def _make_colored_image(keyword: str, color: tuple) -> bytes:
 
 
 async def _pollinations_generate(prompt: str) -> bytes | None:
+    prompt = _clean_text(prompt)
+    if not prompt:
+        return None
+    
     import urllib.parse
     encoded = urllib.parse.quote(prompt[:200])
     url = f"https://image.pollinations.ai/prompt/{encoded}?width=500&height=350&nologo=true"
@@ -559,10 +560,21 @@ async def fetch_image_for_keyword(
     lecture_type: str = "other",
     image_search_en: str = "",
 ) -> bytes:
+    # تنظيف جميع المدخلات
+    keyword = _clean_text(keyword)
+    section_title = _clean_text(section_title)
+    image_search_en = _clean_text(image_search_en)
+    
+    if not keyword:
+        keyword = "educational concept"
+    
     print(f"[INFO] Fetching image for: {keyword[:50]}")
     color = _TYPE_COLORS.get(lecture_type, _TYPE_COLORS['other'])
     
-    img_bytes = await _pollinations_generate(f"educational illustration of {keyword}")
+    prompt = f"educational illustration of {keyword}"
+    prompt = _clean_text(prompt)
+    
+    img_bytes = await _pollinations_generate(prompt)
     if img_bytes:
         return img_bytes
     
