@@ -9,11 +9,11 @@ TARGET_W, TARGET_H = 854, 480
 WATERMARK = "@zakros_probot"
 
 COLORS = [
-    (231, 76, 126),
-    (52, 152, 219),
-    (46, 204, 113),
-    (155, 89, 182),
-    (230, 126, 34),
+    (231, 76, 126),   # وردي
+    (52, 152, 219),   # أزرق
+    (46, 204, 113),   # أخضر
+    (155, 89, 182),   # بنفسجي
+    (230, 126, 34),   # برتقالي
 ]
 
 def estimate_encoding_seconds(total_video_seconds: float) -> float:
@@ -195,16 +195,13 @@ def _draw_section_title_card(title: str, idx: int) -> str:
 
 
 def _make_keyword_card(keyword: str, color: tuple, idx: int, img_bytes: bytes = None) -> bytes:
-    """إنشاء بطاقة للكلمة المفتاحية مع صورة اختيارية"""
+    """إنشاء بطاقة للكلمة المفتاحية"""
     W, H = 360, 280
     
-    # إذا فيه صورة جاهزة، نستخدمها
     if img_bytes:
         try:
             img = PILImage.open(io.BytesIO(img_bytes)).convert("RGB")
             img = img.resize((W, H), PILImage.LANCZOS)
-            
-            # إضافة إطار ورقم
             draw = ImageDraw.Draw(img)
             draw.rounded_rectangle([(4, 4), (W-4, H-4)], radius=12, outline=color, width=5)
             
@@ -218,13 +215,24 @@ def _make_keyword_card(keyword: str, color: tuple, idx: int, img_bytes: bytes = 
                 nw = 10
             draw.text((28 - nw//2, 22), num_str, fill=(255, 255, 255), font=font_num)
             
+            # كتابة الكلمة على الصورة
+            font_kw = _get_font(22, bold=True)
+            try:
+                bbox = font_kw.getbbox(keyword)
+                kw_w = bbox[2] - bbox[0]
+            except:
+                kw_w = len(keyword) * 13
+            kw_x = (W - kw_w) // 2
+            draw.text((kw_x+1, H-35), keyword, fill=(0,0,0), font=font_kw)
+            draw.text((kw_x, H-36), keyword, fill=(255,255,255), font=font_kw)
+            
             buf = io.BytesIO()
             img.save(buf, "JPEG", quality=90)
             return buf.getvalue()
         except:
             pass
     
-    # صورة ملونة افتراضية
+    # صورة افتراضية
     img = PILImage.new("RGB", (W, H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
     
@@ -238,7 +246,6 @@ def _make_keyword_card(keyword: str, color: tuple, idx: int, img_bytes: bytes = 
     draw.rounded_rectangle([(8, 8), (W-8, H-8)], radius=15, outline=color, width=6)
     draw.ellipse([(W//2-50, H//2-50), (W//2+50, H//2+50)], fill=(*color, 25))
     
-    # رقم
     font_num = _get_font(18, bold=True)
     draw.ellipse([(15, 15), (42, 42)], fill=color)
     num_str = str(idx + 1)
@@ -249,9 +256,7 @@ def _make_keyword_card(keyword: str, color: tuple, idx: int, img_bytes: bytes = 
         nw = 10
     draw.text((28 - nw//2, 22), num_str, fill=(255, 255, 255), font=font_num)
     
-    # الكلمة
     font_kw = _get_font(26, bold=True)
-    
     words = keyword.split()
     lines = []
     current = []
@@ -623,6 +628,8 @@ async def create_video_from_sections(
     for section in sections:
         if "keywords" not in section or not section["keywords"]:
             section["keywords"] = ["مفهوم", "تعريف", "شرح", "تحليل"]
+        if "_keyword_images" not in section:
+            section["_keyword_images"] = [None] * len(section.get("keywords", []))
 
     segments, tmp_files, total_video_secs = await loop.run_in_executor(
         None, _build_segment_list, sections, audio_results, lecture_title, all_keywords
