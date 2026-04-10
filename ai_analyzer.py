@@ -221,12 +221,8 @@ def _detect_lecture_type(text: str) -> str:
     return 'other'
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 5. توليد شرح احترافي (وظيفة مساعدة)
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def _generate_fallback_narration(keywords: list, lecture_type: str) -> str:
-    """توليد شرح احترافي افتراضي إذا فشل AI تماماً"""
+    """توليد شرح احترافي افتراضي"""
     kw_str = '، '.join(keywords[:3])
     
     narrations = {
@@ -242,14 +238,14 @@ def _generate_fallback_narration(keywords: list, lecture_type: str) -> str:
         
         'biology': f"في علم الأحياء، ندرس {kw_str}. الحياة مليئة بالأسرار الرائعة. نبدأ بشرح التركيب الأساسي. ثم ننتقل إلى الوظائف الحيوية التي يؤديها. نستخدم التشبيهات لتقريب المفاهيم. مثلاً، نشبه الخلية بالمصنع الصغير. نناقش أيضاً أهمية هذه العمليات للحفاظ على الحياة. نذكر بعض الأمراض المرتبطة بخلل هذه الوظائف. نختم بمراجعة سريعة وتلخيص لأهم المعلومات.",
         
-        'other': f"مرحباً بكم في هذا القسم الذي سنتعرف فيه على {kw_str}. هذا الموضوع مهم جداً ويستحق التركيز. نبدأ بتعريف المصطلحات الأساسية. ثم نستعرض المعلومات بالتفصيل مع أمثلة توضيحية. نربط هذه المعلومات بالواقع العملي. نجيب على الأسئلة الشائعة حول هذا الموضوع. نذكر بعض النصائح والإرشادات المفيدة. أخيراً، نلخص أهم ما تم شرحه في هذا القسم. تذكروا أنه يمكنكم دائماً العودة ومراجعة المادة."
+        'other': f"مرحباً بكم في هذا القسم الذي سنتعرف فيه على {kw_str}. هذا الموضوع مهم جداً ويستحق التركيز. نبدأ بتعريف المصطلحات الأساسية. ثم نستعرض المعلومات بالتفصيل مع أمثلة توضيحية. نربط هذه المعلومات بالواقع العملي. نجيب على الأسئلة الشائعة حول هذا الموضوع. نذكر بعض النصائح والإرشادات المفيدة. أخيراً، نلخص أهم ما تم شرحه في هذا القسم."
     }
     
     return narrations.get(lecture_type, narrations['other'])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 6. الدالة الرئيسية: تحليل المحاضرة
+# 5. الدالة الرئيسية: تحليل المحاضرة
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
@@ -322,7 +318,8 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
       "keywords": ["ك1", "ك2", "ك3", "ك4"],
       "narration": "نص الشرح الكامل (15-20 جملة متنوعة)"
     }}
-  ]
+  ],
+  "summary": "ملخص شامل للمحاضرة (5-7 جمل)"
 }}
 """
 
@@ -335,12 +332,14 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         result = json.loads(content)
         title = result.get("title", all_keywords[0] if all_keywords else "المحاضرة التعليمية")
         ai_sections = result.get("sections", [])
+        summary = result.get("summary", f"شرحنا في هذه المحاضرة: {', '.join(all_keywords[:8])}")
         print(f"[OK] AI generated {len(ai_sections)} sections")
         
     except Exception as e:
         print(f"[WARN] AI failed: {e}. Using fallback narration.")
         title = all_keywords[0] if all_keywords else "المحاضرة التعليمية"
         ai_sections = []
+        summary = f"شرحنا في هذه المحاضرة: {', '.join(all_keywords[:8])}"
 
     final_sections = []
     for i in range(num_sections):
@@ -350,7 +349,6 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
             section_title = section.get("title", f"القسم {i+1}")
             narration = section.get("narration", "")
         else:
-            # استخراج الكلمات المفتاحية
             start_idx = (i * 4) % len(all_keywords)
             keywords = []
             for j in range(4):
@@ -358,7 +356,6 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
                 if all_keywords[idx] not in keywords:
                     keywords.append(all_keywords[idx])
             section_title = keywords[0] if keywords else f"القسم {i+1}"
-            # توليد شرح احترافي افتراضي
             narration = _generate_fallback_narration(keywords, lecture_type)
         
         while len(keywords) < 4:
@@ -370,14 +367,36 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
             "narration": narration,
             "duration_estimate": max(45, len(narration.split()) // 3),
             "_keyword_images": [None] * 4,
-            "_image_bytes": None
+            "_image_bytes": None  # سيتم ملؤه لاحقاً
         })
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # توليد صورة واحدة لكل قسم (شاملة للكلمات المفتاحية)
+    # ═══════════════════════════════════════════════════════════════════════════
+    print("[INFO] Generating section images...")
+    for section in final_sections:
+        # نجمع الكلمات المفتاحية للقسم
+        section_keywords = section["keywords"]
+        # نستخدم أول 3 كلمات لتوليد الصورة
+        search_query = " ".join(section_keywords[:3])
+        
+        try:
+            section["_image_bytes"] = await fetch_image_for_keyword(
+                keyword=search_query,
+                section_title=section["title"],
+                lecture_type=lecture_type,
+                image_search_en=search_query
+            )
+            print(f"[OK] Generated image for section: {section['title']}")
+        except Exception as e:
+            print(f"[WARN] Failed to generate section image: {e}")
+            section["_image_bytes"] = None
     
     return {
         "lecture_type": lecture_type,
         "title": title,
         "sections": final_sections,
-        "summary": f"شرحنا: {', '.join(all_keywords[:8])}",
+        "summary": summary,
         "key_points": all_keywords[:5],
         "all_keywords": all_keywords
     }
@@ -395,7 +414,7 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 7. توليد الصور
+# 6. توليد الصور
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _TYPE_COLORS = {
@@ -409,7 +428,10 @@ _TYPE_COLORS = {
 }
 
 def _get_font(size: int) -> ImageFont.FreeTypeFont:
-    paths = ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]
+    paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
     for p in paths:
         if os.path.exists(p):
             try:
@@ -420,10 +442,11 @@ def _get_font(size: int) -> ImageFont.FreeTypeFont:
 
 
 def _make_colored_image(keyword: str, color: tuple) -> bytes:
-    W, H = 400, 300
+    W, H = 500, 350  # حجم أكبر للصورة الشاملة
     img = PILImage.new("RGB", (W, H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
     
+    # خلفية متدرجة
     for y in range(H):
         t = y / H
         r = int(255 * (1 - t) + color[0] * t * 0.2)
@@ -431,29 +454,51 @@ def _make_colored_image(keyword: str, color: tuple) -> bytes:
         b = int(255 * (1 - t) + color[2] * t * 0.2)
         draw.line([(0, y), (W, y)], fill=(r, g, b))
     
-    draw.rounded_rectangle([(8, 8), (W-8, H-8)], radius=15, outline=color, width=6)
-    draw.ellipse([(W//2-50, H//2-50), (W//2+50, H//2+50)], fill=(*color, 25))
+    # إطار
+    draw.rounded_rectangle([(10, 10), (W-10, H-10)], radius=20, outline=color, width=8)
     
-    font = _get_font(28)
+    # دائرة زخرفية
+    draw.ellipse([(W//2-60, H//2-60), (W//2+60, H//2+60)], fill=(*color, 25))
+    
+    font = _get_font(32)
     
     # تحضير النص العربي
     try:
         import arabic_reshaper
         from bidi.algorithm import get_display
-        keyword = get_display(arabic_reshaper.reshape(keyword))
+        keyword = get_display(arabic_reshaper.reshape(keyword[:30]))
     except:
         pass
     
-    try:
-        bbox = font.getbbox(keyword)
-        tw = bbox[2] - bbox[0]
-    except:
-        tw = len(keyword) * 16
+    # تقسيم النص إذا كان طويلاً
+    words = keyword.split()
+    lines = []
+    current = []
+    for w in words:
+        current.append(w)
+        line = ' '.join(current)
+        try:
+            bbox = font.getbbox(line)
+            if bbox[2] - bbox[0] > W - 60:
+                current.pop()
+                lines.append(' '.join(current))
+                current = [w]
+        except:
+            pass
+    if current:
+        lines.append(' '.join(current))
     
-    x = (W - tw) // 2
-    y = H // 2 - 15
-    draw.text((x+2, y+2), keyword, fill=(200, 200, 200), font=font)
-    draw.text((x, y), keyword, fill=color, font=font)
+    y = H//2 - (len(lines) * 40)//2
+    for line in lines:
+        try:
+            bbox = font.getbbox(line)
+            tw = bbox[2] - bbox[0]
+        except:
+            tw = len(line) * 18
+        x = (W - tw) // 2
+        draw.text((x+3, y+3), line, fill=(200, 200, 200), font=font)
+        draw.text((x, y), line, fill=color, font=font)
+        y += 45
     
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=90)
@@ -463,11 +508,27 @@ def _make_colored_image(keyword: str, color: tuple) -> bytes:
 async def _pollinations_generate(prompt: str) -> bytes | None:
     import urllib.parse
     encoded = urllib.parse.quote(prompt[:200])
-    url = f"https://image.pollinations.ai/prompt/{encoded}?width=400&height=300&nologo=true"
+    url = f"https://image.pollinations.ai/prompt/{encoded}?width=500&height=350&nologo=true"
     try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status == 200:
+                    raw = await resp.read()
+                    if len(raw) > 5000:
+                        print(f"[OK] Pollinations image generated")
+                        return raw
+    except Exception as e:
+        print(f"[WARN] Pollinations failed: {e}")
+    return None
+
+
+async def _picsum_generate() -> bytes | None:
+    try:
+        url = f"https://picsum.photos/500/350?random={random.randint(1, 1000)}"
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status == 200:
+                    print(f"[OK] Picsum fallback image used")
                     return await resp.read()
     except:
         pass
@@ -480,10 +541,21 @@ async def fetch_image_for_keyword(
     lecture_type: str = "other",
     image_search_en: str = "",
 ) -> bytes:
+    """جلب صورة شاملة للكلمات المفتاحية"""
+    print(f"[INFO] Fetching image for: {keyword[:50]}")
     color = _TYPE_COLORS.get(lecture_type, _TYPE_COLORS['other'])
     
-    img_bytes = await _pollinations_generate(f"simple illustration of {keyword}")
+    # 1. محاولة Pollinations
+    prompt = f"educational illustration of {keyword}, simple clean style, white background"
+    img_bytes = await _pollinations_generate(prompt)
     if img_bytes:
         return img_bytes
     
+    # 2. محاولة Picsum
+    img_bytes = await _picsum_generate()
+    if img_bytes:
+        return img_bytes
+    
+    # 3. صورة ملونة احتياطية
+    print(f"[INFO] Using colored placeholder")
     return _make_colored_image(keyword, color)
