@@ -200,6 +200,15 @@ def approve_payment(payment_id: int):
         add_attempts(result['user_id'], 4)
     return result
 
+def mark_payment_approved_without_adding(payment_id: int):
+    """تحديث حالة الدفع إلى approved بدون إضافة محاولات"""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE payments SET status = 'approved' WHERE id = %s", (payment_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+
 def record_referral(referrer_id: int, referred_id: int) -> dict:
     conn = get_connection()
     cur = conn.cursor()
