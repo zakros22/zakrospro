@@ -1,199 +1,95 @@
 # -*- coding: utf-8 -*-
-import json
-import re
-import io
-import asyncio
-import aiohttp
-import os
-import random
-from PIL import Image as PILImage, ImageDraw, ImageFont
+import json, re, io, asyncio, aiohttp, os, random
+from PIL import Image, ImageDraw, ImageFont
 from google import genai
 from google.genai import types as genai_types
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# تنظيف النص
-# ═══════════════════════════════════════════════════════════════════════════════
+def clean_text(t):
+    if not t: return ""
+    t = str(t).replace('\x00','').replace('\0','')
+    t = re.sub(r'[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]', '', t)
+    return re.sub(r'\s+', ' ', t).strip()
 
-def clean_text(text: str) -> str:
-    if not text: return ""
-    text = str(text).replace('\x00', '').replace('\0', '')
-    text = re.sub(r'[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
+# API Keys
+_google_keys = [k.strip() for k in os.getenv("GOOGLE_API_KEYS","").split(",") if k.strip()]
+_groq_keys = [k.strip() for k in os.getenv("GROQ_API_KEYS","").split(",") if k.strip()]
+_curr_g, _exh_g = 0, set()
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# مفاتيح API
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _load_google_keys():
-    keys = []
-    raw = os.getenv("GOOGLE_API_KEYS", "")
-    if raw:
-        for k in raw.split(","):
-            k = k.strip()
-            if k and k not in keys: keys.append(k)
-    for i in range(1, 10):
-        k = os.getenv(f"GOOGLE_API_KEY_{i}", "").strip()
-        if k and k not in keys: keys.append(k)
-    single = os.getenv("GOOGLE_API_KEY", "").strip()
-    if single and single not in keys: keys.append(single)
-    return keys
-
-_google_keys = _load_google_keys()
-_current_google_idx = 0
-_exhausted_google = set()
-
-def _load_groq_keys():
-    keys = []
-    raw = os.getenv("GROQ_API_KEYS", "")
-    if raw:
-        for k in raw.split(","):
-            k = k.strip()
-            if k and k not in keys: keys.append(k)
-    single = os.getenv("GROQ_API_KEY", "").strip()
-    if single and single not in keys: keys.append(single)
-    return keys
-
-_groq_keys = _load_groq_keys()
-_GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
-
-print(f"[AI] Google: {len(_google_keys)} keys, Groq: {len(_groq_keys)} keys")
-
-def _next_google_key():
-    global _current_google_idx
+def _next_google():
+    global _curr_g
     if not _google_keys: return None
     for _ in range(len(_google_keys)):
-        k = _google_keys[_current_google_idx % len(_google_keys)]
-        if k not in _exhausted_google: return k
-        _current_google_idx += 1
+        k = _google_keys[_curr_g % len(_google_keys)]
+        if k not in _exh_g: return k
+        _curr_g += 1
     return None
 
-def _mark_exhausted(k):
-    global _current_google_idx
-    _exhausted_google.add(k)
-    _current_google_idx += 1
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# دوال AI
-# ═══════════════════════════════════════════════════════════════════════════════
-
-async def _google_generate(prompt: str, max_tokens: int = 8192) -> str:
-    models = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
-    for _ in range(len(_google_keys) * 2):
-        key = _next_google_key()
-        if not key: break
-        client = genai.Client(api_key=key)
-        for model in models:
+async def _ai_gen(prompt, max_t=8192):
+    # Google
+    for _ in range(len(_google_keys)*2):
+        k = _next_google()
+        if not k: break
+        client = genai.Client(api_key=k)
+        for m in ["gemini-2.0-flash", "gemini-2.0-flash-lite"]:
             try:
-                resp = await asyncio.to_thread(
-                    client.models.generate_content, model=model, contents=prompt,
-                    config=genai_types.GenerateContentConfig(temperature=0.7, max_output_tokens=max_tokens)
-                )
-                return resp.text.strip()
+                r = await asyncio.to_thread(client.models.generate_content, model=m, contents=prompt, config=genai_types.GenerateContentConfig(temperature=0.7, max_output_tokens=max_t))
+                return r.text.strip()
             except Exception as e:
-                if "429" in str(e) or "quota" in str(e).lower():
-                    _mark_exhausted(key)
-                    break
-    raise Exception("Google failed")
-
-async def _groq_generate(prompt: str, max_tokens: int = 8192) -> str:
-    if not _groq_keys: raise Exception("No Groq keys")
-    for key in _groq_keys:
-        for model in _GROQ_MODELS:
+                if "429" in str(e) or "quota" in str(e).lower(): _exh_g.add(k); break
+    # Groq
+    for k in _groq_keys:
+        for m in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
             try:
-                headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-                payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": min(max_tokens, 8192), "temperature": 0.7}
+                headers = {"Authorization": f"Bearer {k}", "Content-Type": "application/json"}
+                payload = {"model": m, "messages": [{"role": "user", "content": prompt}], "max_tokens": min(max_t, 8192), "temperature": 0.7}
                 async with aiohttp.ClientSession() as s:
-                    async with s.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=aiohttp.ClientTimeout(60)) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            return data["choices"][0]["message"]["content"].strip()
+                    async with s.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=60) as r:
+                        if r.status == 200: return (await r.json())["choices"][0]["message"]["content"].strip()
             except: continue
-    raise Exception("Groq failed")
-
-async def _ai_generate(prompt: str, max_tokens: int = 8192) -> str:
-    if _google_keys:
-        try: return await _google_generate(prompt, max_tokens)
-        except: pass
-    if _groq_keys:
-        try: return await _groq_generate(prompt, max_tokens)
-        except: pass
     raise Exception("All AI failed")
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# تحليل النص
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _extract_keywords(text: str, max_words: int = 30) -> list:
-    text = clean_text(text)
-    stop = {'و', 'في', 'من', 'على', 'إلى', 'أن', 'هو', 'هي', 'هذا', 'هذه', 'كان', 'كانت', 'مع', 'ما', 'لا', 'عن', 'إذا', 'لم', 'لن', 'قد', 'ثم', 'أو', 'أم', 'لكن', 'حتى', 'بل', 'كل', 'بعض', 'the', 'a', 'an', 'is', 'are', 'was', 'were', 'of', 'to', 'in', 'that', 'it', 'be', 'for', 'on', 'with', 'as', 'at', 'by', 'this', 'and', 'or', 'but'}
-    words = re.findall(r'[\u0600-\u06FF]{4,}|[a-zA-Z]{4,}', text)
+def _extract_keywords(t, max_w=30):
+    t = clean_text(t)
+    stop = {'و','في','من','على','إلى','أن','هو','هي','هذا','هذه','كان','كانت','مع','ما','لا','عن','إذا','لم','لن','قد','ثم','أو','أم','لكن','حتى','بل','كل','بعض','the','a','an','is','are','was','were','of','to','in','that','it','be','for','on','with','as','at','by','this','and','or','but'}
+    words = re.findall(r'[\u0600-\u06FF]{4,}|[a-zA-Z]{4,}', t)
     freq = {}
     for w in words:
         wl = w.lower()
         if wl not in stop: freq[w] = freq.get(w, 0) + 1
-    return [w[0] for w in sorted(freq.items(), key=lambda x: x[1], reverse=True)[:max_words]]
+    return [w[0] for w in sorted(freq.items(), key=lambda x: x[1], reverse=True)[:max_w]]
 
-def _detect_lecture_type(text: str) -> str:
-    text = clean_text(text).lower()
-    medical = ['مرض', 'علاج', 'طبيب', 'جراحة', 'دواء', 'تشخيص', 'مريض', 'قلب', 'دم', 'خلية', 'ورم', 'سرطان', 'endometriosis', 'cyst', 'inflammation', 'pain', 'bleeding', 'menstrual']
-    math = ['معادلة', 'دالة', 'تفاضل', 'تكامل', 'جبر', 'هندسة', 'رياضيات', 'equation', 'function', 'calculus', 'algebra']
-    physics = ['قوة', 'طاقة', 'حركة', 'سرعة', 'جاذبية', 'كهرباء', 'مغناطيس', 'فيزياء', 'force', 'energy', 'motion']
-    chemistry = ['تفاعل', 'عنصر', 'مركب', 'جزيء', 'ذرة', 'حمض', 'قاعدة', 'كيمياء', 'reaction', 'element', 'compound']
-    history = ['تاريخ', 'حرب', 'معركة', 'حضارة', 'إمبراطورية', 'ملك', 'ثورة', 'history', 'war', 'battle']
-    biology = ['نبات', 'حيوان', 'بيئة', 'وراثة', 'تطور', 'خلية', 'biology', 'plant', 'animal', 'cell']
-    scores = {'medicine': sum(1 for k in medical if k in text), 'math': sum(1 for k in math if k in text), 'physics': sum(1 for k in physics if k in text), 'chemistry': sum(1 for k in chemistry if k in text), 'history': sum(1 for k in history if k in text), 'biology': sum(1 for k in biology if k in text)}
+def _detect_type(t):
+    t = clean_text(t).lower()
+    med = ['مرض','علاج','طبيب','جراحة','دواء','تشخيص','مريض','قلب','دم','خلية','ورم','سرطان']
+    math = ['معادلة','دالة','تفاضل','تكامل','جبر','هندسة','رياضيات']
+    phys = ['قوة','طاقة','حركة','سرعة','جاذبية','كهرباء','مغناطيس','فيزياء']
+    chem = ['تفاعل','عنصر','مركب','جزيء','ذرة','حمض','قاعدة','كيمياء']
+    hist = ['تاريخ','حرب','معركة','حضارة','إمبراطورية','ملك','ثورة']
+    bio = ['نبات','حيوان','بيئة','وراثة','تطور','خلية']
+    scores = {'medicine': sum(1 for k in med if k in t), 'math': sum(1 for k in math if k in t), 'physics': sum(1 for k in phys if k in t), 'chemistry': sum(1 for k in chem if k in t), 'history': sum(1 for k in hist if k in t), 'biology': sum(1 for k in bio if k in t)}
     best = max(scores, key=scores.get)
     return best if scores[best] > 1 else 'other'
 
-def _split_text(text: str, num_parts: int) -> list:
-    words = text.split()
-    total = len(words)
-    if total == 0: return [""] * num_parts
-    chunk = max(1, total // num_parts)
-    parts = [' '.join(words[i:i+chunk]) for i in range(0, total, chunk)]
-    while len(parts) < num_parts: parts.append("")
-    if len(parts) > num_parts:
-        while len(parts) > num_parts:
-            parts[-2] = parts[-2] + " " + parts[-1]
-            parts.pop()
-    return parts
-
-def _fallback_narration(keywords: list, ltype: str) -> str:
-    kw = '، '.join(keywords[:3])
-    base = {
-        'medicine': f"نتحدث عن {kw}. تعريف {keywords[0]} وأعراضه وتشخيصه وعلاجه.",
-        'math': f"شرح {kw}. تعريف {keywords[0]} والمعادلات والتطبيقات.",
-        'physics': f"دراسة {kw}. القانون الفيزيائي وتطبيقاته.",
-        'chemistry': f"شرح {kw}. التفاعل الكيميائي وشروطه.",
-        'history': f"قصة {kw}. الأحداث والأسباب والنتائج.",
-        'biology': f"دراسة {kw}. التركيب والوظيفة والأهمية.",
-        'other': f"شرح {kw}. تعريف وأمثلة وتطبيقات."
-    }.get(ltype, f"شرح {kw}.")
-    return (base + " ") * 15
-
-async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
+async def analyze_lecture(text, dialect="msa"):
     text = clean_text(text)
-    if not text: raise ValueError("Empty text")
+    if not text: raise ValueError("Empty")
     keywords = _extract_keywords(text, 40)
-    ltype = _detect_lecture_type(text)
+    ltype = _detect_type(text)
     wc = len(text.split())
     ns = 3 if wc < 300 else 4 if wc < 600 else 5 if wc < 1000 else 6
-    preview = text[:4000]
-    teacher = {'medicine': 'طبيب', 'math': 'أستاذ رياضيات', 'physics': 'فيزيائي', 'chemistry': 'كيميائي', 'history': 'مؤرخ', 'biology': 'عالم أحياء', 'other': 'معلم'}.get(ltype, 'معلم')
-    dialect_inst = {"iraq": "بالعراقي", "egypt": "بالمصري", "syria": "بالشامي", "gulf": "بالخليجي", "msa": "بالفصحى"}.get(dialect, "بالفصحى")
-    prompt = f"""أنت {teacher}. اشرح {dialect_inst}. اكتب 15-20 جملة متنوعة لكل قسم. النص: {preview}. الكلمات: {', '.join(keywords[:15])}. أرجع JSON: {{"title": "عنوان", "sections": [{{"title": "", "keywords": ["","","",""], "narration": ""}}]}}"""
+    teacher = {'medicine':'طبيب','math':'أستاذ رياضيات','physics':'فيزيائي','chemistry':'كيميائي','history':'مؤرخ','biology':'عالم أحياء','other':'معلم'}.get(ltype,'معلم')
+    dial = {"iraq":"بالعراقي","egypt":"بالمصري","syria":"بالشامي","gulf":"بالخليجي","msa":"بالفصحى"}.get(dialect,"بالفصحى")
+    prompt = f"""أنت {teacher}. اشرح {dial}. اكتب 15-20 جملة متنوعة لكل قسم. النص: {text[:4000]}. الكلمات: {', '.join(keywords[:15])}. أرجع JSON: {{"title": "عنوان", "sections": [{{"title": "", "keywords": ["","","",""], "narration": ""}}]}}"""
     try:
-        content = await _ai_generate(prompt, 8192)
+        content = await _ai_gen(prompt, 8192)
         content = re.sub(r'^```json\s*', '', content.strip())
         content = re.sub(r'\s*```$', '', content)
         res = json.loads(content)
-        title = clean_text(res.get("title", keywords[0] if keywords else "محاضرة"))
+        title = clean_text(res.get("title", keywords[0]))
         ai_secs = res.get("sections", [])
     except:
         title = keywords[0] if keywords else "محاضرة"
         ai_secs = []
-    parts = _split_text(text, ns)
     sections = []
     for i in range(ns):
         if i < len(ai_secs) and ai_secs[i].get("narration"):
@@ -202,28 +98,25 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
             st = clean_text(s.get("title", f"قسم {i+1}"))
             nar = clean_text(s.get("narration", ""))
         else:
-            idx = (i * 4) % len(keywords)
-            kw = [keywords[(idx + j) % len(keywords)] for j in range(4)]
+            idx = (i*4) % len(keywords)
+            kw = [keywords[(idx+j)%len(keywords)] for j in range(4)]
             st = kw[0] if kw else f"قسم {i+1}"
-            nar = _fallback_narration(kw, ltype)
+            nar = f"نتعرف على {', '.join(kw[:3])}. " * 15
         while len(kw) < 4: kw.append("مفهوم")
         sections.append({"title": st, "keywords": kw[:4], "narration": nar, "duration_estimate": max(45, len(nar.split())//3), "_image_bytes": None})
     for s in sections:
-        q = clean_text(" ".join(s["keywords"][:3]))
-        if q: s["_image_bytes"] = await fetch_image_for_keyword(q, s["title"], ltype)
+        q = " ".join(s["keywords"][:3])
+        s["_image_bytes"] = await fetch_image_for_keyword(q, s["title"], ltype)
     return {"lecture_type": ltype, "title": title, "sections": sections, "summary": f"شرحنا: {', '.join(keywords[:8])}", "all_keywords": keywords}
 
-async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
+async def extract_full_text_from_pdf(pdf_bytes):
     import PyPDF2
     r = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
     pages = [p.extract_text() or "" for p in r.pages if p.extract_text()]
     return clean_text("\n\n".join(pages))
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# الصور
-# ═══════════════════════════════════════════════════════════════════════════════
-
-_TYPE_COLORS = {'medicine': (231,76,126), 'math': (52,152,219), 'physics': (52,152,219), 'chemistry': (46,204,113), 'history': (230,126,34), 'biology': (46,204,113), 'other': (155,89,182)}
+# Images
+_COLORS = {'medicine': (231,76,126), 'math': (52,152,219), 'physics': (52,152,219), 'chemistry': (46,204,113), 'history': (230,126,34), 'biology': (46,204,113), 'other': (155,89,182)}
 
 def _get_font(sz):
     for p in ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]:
@@ -232,10 +125,10 @@ def _get_font(sz):
             except: pass
     return ImageFont.load_default()
 
-def _make_image(kw: str, col: tuple) -> bytes:
+def _make_image(kw, col):
     kw = clean_text(kw) or "مفهوم"
     W, H = 500, 350
-    img = PILImage.new("RGB", (W, H), (255,255,255))
+    img = Image.new("RGB", (W, H), (255,255,255))
     d = ImageDraw.Draw(img)
     for y in range(H):
         t = y/H
@@ -245,20 +138,16 @@ def _make_image(kw: str, col: tuple) -> bytes:
     d.ellipse([(W//2-60, H//2-60), (W//2+60, H//2+60)], fill=(*col, 25))
     f = _get_font(32)
     try:
-        import arabic_reshaper
-        from bidi.algorithm import get_display
+        import arabic_reshaper; from bidi.algorithm import get_display
         kw = get_display(arabic_reshaper.reshape(kw[:30]))
     except: pass
-    lines = []
-    cur = []
+    lines, cur = [], []
     for w in kw.split():
         cur.append(w)
         line = ' '.join(cur)
         try:
             if f.getbbox(line)[2] - f.getbbox(line)[0] > W - 60:
-                cur.pop()
-                lines.append(' '.join(cur))
-                cur = [w]
+                cur.pop(); lines.append(' '.join(cur)); cur = [w]
         except: pass
     if cur: lines.append(' '.join(cur))
     y = H//2 - (len(lines)*40)//2
@@ -273,7 +162,7 @@ def _make_image(kw: str, col: tuple) -> bytes:
     img.save(buf, "JPEG", quality=90)
     return buf.getvalue()
 
-async def _pollinations(prompt: str) -> bytes | None:
+async def _pollinations(prompt):
     import urllib.parse
     try:
         async with aiohttp.ClientSession() as s:
@@ -283,7 +172,7 @@ async def _pollinations(prompt: str) -> bytes | None:
     except: pass
     return None
 
-async def _picsum() -> bytes | None:
+async def _picsum():
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(f"https://picsum.photos/500/350?random={random.randint(1,1000)}", timeout=10) as r:
@@ -291,9 +180,9 @@ async def _picsum() -> bytes | None:
     except: pass
     return None
 
-async def fetch_image_for_keyword(keyword: str, section_title: str = "", lecture_type: str = "other", image_search_en: str = "") -> bytes:
+async def fetch_image_for_keyword(keyword, section_title="", lecture_type="other", image_search_en=""):
     keyword = clean_text(keyword) or "مفهوم"
-    col = _TYPE_COLORS.get(lecture_type, _TYPE_COLORS['other'])
+    col = _COLORS.get(lecture_type, _COLORS['other'])
     img = await _pollinations(f"educational illustration of {keyword}")
     if img: return img
     img = await _picsum()
