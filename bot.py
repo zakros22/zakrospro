@@ -229,7 +229,7 @@ async def referral_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# استلام المحتوى - مع حل مشكلة PDF
+# استلام المحتوى
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -282,7 +282,6 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             if ext == "pdf":
                 try:
-                    # timeout 90 ثانية لاستخراج النص
                     lecture_text = await asyncio.wait_for(
                         extract_full_text_from_pdf(bytes(raw)),
                         timeout=90.0
@@ -399,7 +398,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = state["text"]
         user_states.pop(uid, None)
 
-        # بدء المعالجة في الخلفية
         task = asyncio.create_task(
             _process_lecture(uid, text, dialect, prog_msg, context)
         )
@@ -470,7 +468,8 @@ async def _process_lecture(uid, text, dialect, prog_msg, context):
         update_video_request(req_id, "done", video_path)
 
         title = lecture_data.get("title", "محاضرة")
-        vid_min, vid_sec = int(total_secs // 60), int(total_secs % 60)
+        vid_min = int(total_secs // 60)
+        vid_sec = int(total_secs % 60)
         remaining = get_user(uid)["attempts_left"]
         caption = f"🎬 *{title}*\n\n📚 أقسام: {len(sections)}\n⏱️ {vid_min}:{vid_sec:02d}\n💳 محاولات: {remaining}"
 
