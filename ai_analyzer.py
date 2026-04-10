@@ -1,13 +1,10 @@
 import json
 import re
-import io
 import asyncio
 import aiohttp
-import random
-import os
-from PIL import Image as PILImage, ImageDraw, ImageFont
 from google import genai
 from google.genai import types as genai_types
+import os
 
 # ─────────────────────────────────────────────────────────────────────────────
 # تحميل مفاتيح Google
@@ -80,16 +77,14 @@ async def _generate_with_google(prompt: str, max_tokens: int = 8192) -> str:
                     model=model,
                     contents=prompt,
                     config=genai_types.GenerateContentConfig(
-                        temperature=0.7,  # زيادة الإبداع لمنع التكرار
+                        temperature=0.3,
                         max_output_tokens=max_tokens,
                     ),
                 )
-                print(f"✅ Google success with {model}")
                 return response.text.strip()
             except Exception as e:
                 err = str(e)
                 if "429" in err or "RESOURCE_EXHAUSTED" in err or "quota" in err.lower():
-                    print(f"⚠️ Google key exhausted")
                     _mark_google_exhausted(key)
                     break
                 else:
@@ -113,7 +108,7 @@ async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": min(max_tokens, 8192),
-                    "temperature": 0.7,
+                    "temperature": 0.3,
                 }
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
@@ -124,9 +119,8 @@ async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
                     ) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            print(f"✅ Groq success with {model}")
                             return data["choices"][0]["message"]["content"].strip()
-            except Exception:
+            except:
                 continue
     
     raise Exception("Groq failed")
@@ -136,19 +130,20 @@ async def _generate_with_rotation(prompt: str, max_output_tokens: int = 8192) ->
     if _google_keys:
         try:
             return await _generate_with_google(prompt, max_output_tokens)
-        except Exception as e:
-            print(f"Google failed: {e}")
+        except:
+            pass
     
     if _groq_keys:
         try:
             return await _generate_with_groq(prompt, max_output_tokens)
-        except Exception as e:
-            print(f"Groq failed: {e}")
+        except:
+            pass
     
     raise Exception("All AI services failed")
 
 
-def _extract_keywords_from_text(text: str, max_words: int = 20) -> list:
+def _extract_keywords(text: str, max_words: int = 20) -> list:
+    """استخراج الكلمات المفتاحية من النص"""
     stop_words = {'و', 'في', 'من', 'على', 'إلى', 'أن', 'هو', 'هي', 'هذا', 'هذه', 'كان', 
                   'كانت', 'مع', 'ما', 'لا', 'عن', 'إذا', 'لم', 'لن', 'قد', 'ثم', 'أو', 
                   'أم', 'لكن', 'حتى', 'بل', 'كل', 'بعض', 'the', 'a', 'an', 'is', 'are',
@@ -166,37 +161,38 @@ def _extract_keywords_from_text(text: str, max_words: int = 20) -> list:
     return [w[0] for w in sorted_words[:max_words]]
 
 
-def _detect_lecture_type(text: str) -> str:
-    text_lower = text.lower()
+def _split_text_into_sections(text: str, num_sections: int) -> list:
+    """تقسيم النص الأصلي إلى أقسام متساوية"""
+    paragraphs = text.split('\n\n')
+    if len(paragraphs) < num_sections:
+        paragraphs = text.split('\n')
     
-    medical = ['مرض', 'علاج', 'طبيب', 'جراحة', 'دواء', 'تشخيص', 'مريض', 'قلب', 'دم', 'خلية', 'ورم', 'سرطان', 'endometriosis', 'cyst', 'inflammation', 'pain', 'bleeding', 'menstrual']
-    math = ['معادلة', 'دالة', 'تفاضل', 'تكامل', 'جبر', 'هندسة', 'رياضيات', 'equation', 'function', 'calculus', 'algebra']
-    physics = ['قوة', 'طاقة', 'حركة', 'سرعة', 'جاذبية', 'كهرباء', 'مغناطيس', 'فيزياء', 'force', 'energy', 'motion']
-    chemistry = ['تفاعل', 'عنصر', 'مركب', 'جزيء', 'ذرة', 'حمض', 'قاعدة', 'كيمياء', 'reaction', 'element', 'compound']
-    history = ['تاريخ', 'حرب', 'معركة', 'حضارة', 'إمبراطورية', 'ملك', 'ثورة', 'history', 'war', 'battle']
-    biology = ['نبات', 'حيوان', 'بيئة', 'وراثة', 'تطور', 'خلية', 'biology', 'plant', 'animal', 'cell']
+    if len(paragraphs) < num_sections:
+        # تقسيم بالجمل
+        sentences = re.split(r'(?<=[.!?؟])\s+', text)
+        chunk_size = max(1, len(sentences) // num_sections)
+        paragraphs = []
+        for i in range(0, len(sentences), chunk_size):
+            paragraphs.append(' '.join(sentences[i:i+chunk_size]))
     
-    scores = {
-        'medicine': sum(1 for kw in medical if kw in text_lower),
-        'math': sum(1 for kw in math if kw in text_lower),
-        'physics': sum(1 for kw in physics if kw in text_lower),
-        'chemistry': sum(1 for kw in chemistry if kw in text_lower),
-        'history': sum(1 for kw in history if kw in text_lower),
-        'biology': sum(1 for kw in biology if kw in text_lower),
-    }
+    # توزيع متساوي
+    sections = []
+    chunk_size = len(paragraphs) // num_sections
+    for i in range(num_sections):
+        start = i * chunk_size
+        end = start + chunk_size if i < num_sections - 1 else len(paragraphs)
+        sections.append('\n\n'.join(paragraphs[start:end]))
     
-    best_type = max(scores, key=scores.get)
-    if scores[best_type] > 1:
-        return best_type
-    return 'other'
+    return sections
 
 
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
-    """تحليل المحاضرة مع شرح متنوع غير مكرر"""
+    """تحليل المحاضرة واستخراج الأقسام والكلمات المفتاحية"""
     
-    extracted_keywords = _extract_keywords_from_text(text, 20)
-    lecture_type = _detect_lecture_type(text)
+    # استخراج الكلمات المفتاحية
+    all_keywords = _extract_keywords(text, 30)
     
+    # تحديد عدد الأقسام
     word_count = len(text.split())
     if word_count < 300:
         num_sections = 3
@@ -207,131 +203,91 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     else:
         num_sections = 6
     
-    text_limit = min(len(text), 5000)
+    # استخدام AI لاستخراج العنوان والكلمات المفتاحية لكل قسم
+    text_preview = text[:3000]
     
-    teacher_styles = {
-        'medicine': 'أنت طبيب استشاري تشرح لطلاب الطب. استخدم لغة طبية دقيقة. اشرح الأعراض، الأسباب، التشخيص، والعلاج. أعط أمثلة واقعية.',
-        'math': 'أنت أستاذ رياضيات. اشرح المعادلات خطوة بخطوة مع أمثلة عددية. فسر كل متغير.',
-        'physics': 'أنت فيزيائي. اشرح القوانين وطبقها على أمثلة من الحياة اليومية.',
-        'chemistry': 'أنت كيميائي. اشرح التفاعلات والمعادلات الكيميائية وظروفها.',
-        'history': 'أنت مؤرخ. اسرد الأحداث التاريخية بتسلسل زمني مع تحليل الأسباب والنتائج.',
-        'biology': 'أنت عالم أحياء. اشرح التركيب والوظيفة والعمليات الحيوية.',
-        'other': 'أنت معلم خبير. بسط المفاهيم المعقدة وأعط أمثلة من الحياة.'
-    }
-    
-    teacher_style = teacher_styles.get(lecture_type, teacher_styles['other'])
-    
-    dialect_instructions = {
-        "iraq": "باللهجة العراقية: استخدم (هواية، گلت، هسا، چي، شلون، أكو، ماكو).",
-        "egypt": "باللهجة المصرية: استخدم (أوي، معلش، كده، عايز، النهارده، يا جماعة).",
-        "syria": "باللهجة الشامية: استخدم (هلق، شو، كتير، منيح، هيك، عم، فيكن).",
-        "gulf": "باللهجة الخليجية: استخدم (زين، وايد، عاد، هاذي، أبشر، يالحبيب).",
-        "msa": "بالعربية الفصحى البسيطة والواضحة."
-    }
-    
-    dialect_inst = dialect_instructions.get(dialect, dialect_instructions["msa"])
+    prompt = f"""حلل النص التالي وأعطني:
 
-    prompt = f"""{teacher_style}
+1. عنوان مناسب للمحاضرة (عنوان واحد فقط)
+2. للأقسام الـ {num_sections}، أعطني لكل قسم:
+   - عنوان القسم
+   - 4 كلمات مفتاحية من النص
 
-**تعليمات صارمة للشرح:**
-- {dialect_inst}
-- اكتب شرحاً كاملاً ومتنوعاً. كل جملة يجب أن تضيف معلومة جديدة.
-- لا تكرر نفس الجملة أبداً. لا تستخدم "يعني يعني" أو "هو هو".
-- فسر المصطلحات العلمية. أعط أمثلة واقعية.
-- اربط بين المفاهيم بشكل منطقي.
-
-**المحاضرة:**
+النص:
 ---
-{text[:text_limit]}
+{text_preview}
 ---
 
-**الكلمات المفتاحية:** {', '.join(extracted_keywords[:12])}
-
-**المطلوب - {num_sections} أقسام:**
+الكلمات المفتاحية المستخرجة تلقائياً: {', '.join(all_keywords[:15])}
 
 أرجع JSON فقط:
-
 {{
   "title": "عنوان المحاضرة",
   "sections": [
-    {{
-      "title": "عنوان القسم",
-      "keywords": ["كلمة1", "كلمة2", "كلمة3", "كلمة4"],
-      "terms_en": ["term1", "term2", "term3", "term4"],
-      "narration": "نص الشرح الصوتي الكامل (15-20 جملة متنوعة). لا تكرر الجمل."
-    }}
-  ],
-  "summary": "ملخص شامل (5-7 جمل)"
+    {{"title": "عنوان القسم 1", "keywords": ["ك1", "ك2", "ك3", "ك4"]}},
+    {{"title": "عنوان القسم 2", "keywords": ["ك1", "ك2", "ك3", "ك4"]}}
+  ]
 }}
 
-- keywords: 4 كلمات مفتاحية عربية.
-- terms_en: المصطلحات الإنجليزية المقابلة (إن وجدت).
-- narration: شرح كامل ومتنوع.
-- أرجع JSON فقط.
-"""
+استخدم الكلمات من القائمة المستخرجة. أرجع JSON فقط."""
 
     try:
-        content = await _generate_with_rotation(prompt, max_output_tokens=8192)
+        content = await _generate_with_rotation(prompt, max_output_tokens=4096)
         content = content.strip()
         content = re.sub(r'^```json\s*', '', content)
         content = re.sub(r'\s*```$', '', content)
         
         result = json.loads(content)
-        
-        if "title" not in result:
-            result["title"] = extracted_keywords[0] if extracted_keywords else "المحاضرة التعليمية"
-        
-        if "summary" not in result:
-            result["summary"] = f"شرحنا: {', '.join(extracted_keywords[:5])}"
-        
-        for i, section in enumerate(result.get("sections", [])):
-            if "keywords" not in section or not section["keywords"]:
-                start_idx = (i * 4) % len(extracted_keywords)
-                section["keywords"] = []
-                for j in range(4):
-                    idx = (start_idx + j) % len(extracted_keywords)
-                    if extracted_keywords[idx] not in section["keywords"]:
-                        section["keywords"].append(extracted_keywords[idx])
-            
-            if "terms_en" not in section:
-                section["terms_en"] = []
-            
-            if "title" not in section:
-                section["title"] = section["keywords"][0] if section["keywords"] else f"القسم {i+1}"
-            
-            if "narration" not in section or len(section["narration"]) < 100:
-                kw_str = ', '.join(section.get('keywords', ['المفاهيم'])[:3])
-                section["narration"] = f"دعونا نتعرف على {kw_str}. " * 12
-        
-        return result
+        title = result.get("title", all_keywords[0] if all_keywords else "المحاضرة التعليمية")
+        ai_sections = result.get("sections", [])
         
     except Exception as e:
-        print(f"Analysis error: {e}")
+        print(f"AI analysis failed: {e}")
+        title = all_keywords[0] if all_keywords else "المحاضرة التعليمية"
+        ai_sections = []
+
+    # تقسيم النص الأصلي إلى أقسام
+    original_sections = _split_text_into_sections(text, num_sections)
+    
+    # بناء الأقسام النهائية
+    final_sections = []
+    for i in range(num_sections):
+        section_text = original_sections[i] if i < len(original_sections) else ""
         
-        sections = []
-        for i in range(num_sections):
-            start_idx = (i * 4) % len(extracted_keywords)
-            kw = []
+        # الكلمات المفتاحية
+        if i < len(ai_sections) and ai_sections[i].get("keywords"):
+            keywords = ai_sections[i]["keywords"][:4]
+        else:
+            start_idx = (i * 4) % len(all_keywords)
+            keywords = []
             for j in range(4):
-                idx = (start_idx + j) % len(extracted_keywords)
-                if extracted_keywords[idx] not in kw:
-                    kw.append(extracted_keywords[idx])
-            
-            sections.append({
-                "title": kw[0] if kw else f"القسم {i+1}",
-                "keywords": kw if kw else ["مفهوم", "تعريف", "شرح", "تحليل"],
-                "terms_en": [],
-                "narration": f"دعونا نتعرف على {kw[0] if kw else 'المفاهيم'}. " * 12
-            })
+                idx = (start_idx + j) % len(all_keywords)
+                if all_keywords[idx] not in keywords:
+                    keywords.append(all_keywords[idx])
         
-        return {
-            "title": extracted_keywords[0] if extracted_keywords else "المحاضرة التعليمية",
-            "sections": sections,
-            "summary": f"شرحنا: {', '.join(extracted_keywords[:5])}"
-        }
+        # العنوان
+        if i < len(ai_sections) and ai_sections[i].get("title"):
+            section_title = ai_sections[i]["title"]
+        else:
+            section_title = keywords[0] if keywords else f"القسم {i+1}"
+        
+        final_sections.append({
+            "title": section_title,
+            "keywords": keywords,
+            "original_text": section_text,
+            "duration_estimate": max(30, len(section_text.split()) // 3)
+        })
+    
+    return {
+        "title": title,
+        "sections": final_sections,
+        "summary": f"شرحنا في هذه المحاضرة: {', '.join(all_keywords[:8])}",
+        "all_keywords": all_keywords
+    }
 
 
 async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
+    import io
     import PyPDF2
     reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
     pages = []
@@ -340,115 +296,3 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
         if page_text.strip():
             pages.append(page_text)
     return "\n\n".join(pages)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# توليد الصور - صور ملونة مضمونة
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _make_keyword_image(keyword: str, color: tuple, term_en: str = "") -> bytes:
-    """إنشاء صورة تعليمية ملونة تحمل الكلمة المفتاحية"""
-    W, H = 400, 300
-    
-    img = PILImage.new("RGB", (W, H), (255, 255, 255))
-    draw = ImageDraw.Draw(img)
-    
-    # خلفية متدرجة
-    for y in range(H):
-        t = y / H
-        r = int(255 * (1 - t) + color[0] * t * 0.2)
-        g = int(255 * (1 - t) + color[1] * t * 0.2)
-        b = int(255 * (1 - t) + color[2] * t * 0.2)
-        draw.line([(0, y), (W, y)], fill=(r, g, b))
-    
-    # إطار
-    draw.rounded_rectangle([(8, 8), (W-8, H-8)], radius=12, outline=color, width=5)
-    
-    # دائرة
-    draw.ellipse([(W//2-55, H//2-55), (W//2+55, H//2+55)], fill=(*color, 30))
-    
-    try:
-        font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        if os.path.exists(font_path):
-            font = ImageFont.truetype(font_path, 32)
-        else:
-            font = ImageFont.load_default()
-    except:
-        font = ImageFont.load_default()
-    
-    # تحضير النص العربي
-    try:
-        import arabic_reshaper
-        from bidi.algorithm import get_display
-        keyword_disp = get_display(arabic_reshaper.reshape(keyword[:20]))
-    except:
-        keyword_disp = keyword[:20]
-    
-    # تقسيم النص
-    words = keyword_disp.split()
-    lines = []
-    current = []
-    for w in words:
-        current.append(w)
-        line = ' '.join(current)
-        try:
-            bbox = font.getbbox(line)
-            if bbox[2] - bbox[0] > W - 40:
-                current.pop()
-                lines.append(' '.join(current))
-                current = [w]
-        except:
-            pass
-    if current:
-        lines.append(' '.join(current))
-    
-    y = H//2 - (len(lines) * 35)//2 - 10
-    for line in lines:
-        try:
-            bbox = font.getbbox(line)
-            tw = bbox[2] - bbox[0]
-        except:
-            tw = len(line) * 18
-        x = (W - tw) // 2
-        draw.text((x+2, y+2), line, fill=(200, 200, 200), font=font)
-        draw.text((x, y), line, fill=color, font=font)
-        y += 40
-    
-    # المصطلح الإنجليزي
-    if term_en:
-        try:
-            font_en = ImageFont.truetype(font_path, 18) if os.path.exists(font_path) else ImageFont.load_default()
-        except:
-            font_en = font
-        term_disp = term_en[:30]
-        try:
-            bbox = font_en.getbbox(term_disp)
-            tw = bbox[2] - bbox[0]
-        except:
-            tw = len(term_disp) * 10
-        x = (W - tw) // 2
-        draw.text((x, y + 15), term_disp, fill=(100, 100, 100), font=font_en)
-    
-    buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=90)
-    return buf.getvalue()
-
-
-async def fetch_image_for_keyword(
-    keyword: str,
-    section_title: str,
-    lecture_type: str,
-    image_search_en: str = "",
-) -> bytes:
-    """إرجاع صورة ملونة تحمل الكلمة المفتاحية (مضمونة 100%)"""
-    colors = {
-        'medicine': (231, 76, 126),
-        'math': (52, 152, 219),
-        'physics': (52, 152, 219),
-        'chemistry': (46, 204, 113),
-        'history': (230, 126, 34),
-        'biology': (46, 204, 113),
-        'other': (155, 89, 182)
-    }
-    color = colors.get(lecture_type, (231, 76, 126))
-    return _make_keyword_image(keyword, color, image_search_en)
