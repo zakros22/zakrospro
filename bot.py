@@ -705,23 +705,200 @@ async def _process_lecture(uid, text, filename, dialect, lecture_meta, prog_msg,
             await context.bot.send_video(
                 chat_id=uid, video=vf, caption=caption,
                 parse_mode="Markdown", supports_streaming=True
+# ═══════════════════════════════════════════════════════════════════════════════
+# دالة المعالجة الرئيسية - مع عرض تفصيلي لجميع المراحل
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def _process_lecture(uid, text, filename, dialect, lecture_meta, prog_msg, context):
+    _active_jobs[uid] = "processing"
+    cancel_ev = asyncio.Event()
+    _cancel_flags[uid] = cancel_ev
+    
+    req_id = save_video_request(
+        uid, "text", dialect,
+        lecture_meta["main_type"],
+        lecture_meta["subtype"],
+        lecture_meta["level"],
+        lecture_meta["teacher_name"],
+        lecture_meta["teacher_outfit"]
+    )
+    
+    t_start = time.time()
+    video_path = None
+    pdf_path = None
+
+    async def upd(pct, label):
+        elapsed = time.time() - t_start
+        await _safe_edit(
+            prog_msg,
+            f"⏳ *جاري المعالجة...*\n\n{_pbar(pct)} *{pct}%*\n{label}\n\n⏱️ {_fmt_elapsed(elapsed)}",
+            reply_markup=CANCEL_KB
+        )
+
+    try:
+        # ───────────────────────────────────────────────────────────────────────────
+        # المرحلة 1: التحليل
+        # ───────────────────────────────────────────────────────────────────────────
+        await upd(5, "🔍 جاري قراءة النص وتنظيفه...")
+        await asyncio.sleep(0.5)
+        
+        await upd(8, "📊 تحليل نوع المحاضرة وتحديد التخصص...")
+        await asyncio.sleep(0.5)
+        
+        await upd(12, "🔑 استخراج الكلمات المفتاحية من النص...")
+        await asyncio.sleep(0.5)
+        
+        await upd(15, "🧠 جاري الاتصال بالذكاء الاصطناعي لتحليل المحاضرة...")
+        
+        lecture_data = await _run_or_cancel(uid, analyze_lecture(text, dialect))
+        
+        # إضافة معلومات المعلم إلى بيانات المحاضرة
+        lecture_data["teacher_name"] = lecture_meta["teacher_name"]
+        lecture_data["teacher_outfit"] = lecture_meta["teacher_outfit"]
+        lecture_data["main_type"] = lecture_meta["main_type"]
+        lecture_data["education_level"] = lecture_meta["level"]
+
+        sections = lecture_data.get("sections", [])
+        if not sections:
+            raise RuntimeError("لم يتم استخراج أقسام")
+        
+        n_sec = len(sections)
+        is_eng = lecture_data.get("is_english", False)
+        
+        await upd(25, f"✅ تم تحليل المحاضرة بنجاح!")
+        await asyncio.sleep(0.5)
+        await upd(28, f"📚 تم تقسيم المحاضرة إلى {n_sec} أقسام تعليمية")
+        await asyncio.sleep(0.5)
+        await upd(30, f"📝 العنوان: {lecture_data.get('title', 'المحاضرة')[:40]}...")
+
+        # ───────────────────────────────────────────────────────────────────────────
+        # المرحلة 2: جلب الصور
+        # ───────────────────────────────────────────────────────────────────────────
+        await upd(33, "🖼️ جاري تجهيز الصور التوضيحية...")
+        await asyncio.sleep(0.5)
+        
+        total_images = len(sections)
+        for i, s in enumerate(sections):
+            if not s.get("_image_bytes"):
+                kw = s.get("keywords", ["مفهوم"])[:4]
+                section_title = s.get("title", f"القسم {i+1}")
+                
+                # تحديث المستخدم بحالة جلب الصورة
+                pct = 35 + int((i / total_images) * 20)
+                await upd(pct, f"🖼️ جاري جلب الصورة للقسم {i+1}/{total_images}: {section_title[:30]}...")
+                
+                s["_image_bytes"] = await fetch_image_for_keyword(
+                    " ".join(kw), 
+                    section_title, 
+                    lecture_data.get("lecture_type", "other"),
+                    is_eng
+                )
+                
+                if s["_image_bytes"]:
+                    await upd(pct, f"✅ تم جلب الصورة للقسم {i+1}/{total_images}")
+                else:
+                    await upd(pct, f"⚠️ استخدام صورة احتياطية للقسم {i+1}/{total_images}")
+                
+                await asyncio.sleep(0.3)
+        
+        await upd(55, "✅ تم جلب جميع الصور التوضيحية بنجاح!")
+        await asyncio.sleep(0.5)
+
+        # ───────────────────────────────────────────────────────────────────────────
+        # المرحلة 3: توليد الصوت
+        # ───────────────────────────────────────────────────────────────────────────
+        await upd(58, "🎤 جاري الاتصال بخدمة تحويل النص إلى صوت...")
+        await asyncio.sleep(0.5)
+        
+        await upd(62, "🎙️ جاري توليد الصوت للقسم الأول...")
+        await asyncio.sleep(0.5)
+        
+        voice_res = await _run_or_cancel(uid, generate_sections_audio(sections, dialect))
+        audio_results = voice_res["results"]
+        
+        # حساب المدة الإجمالية
+        total_duration = sum(r.get("duration", 0) for r in audio_results if r.get("ok"))
+        total_min = int(total_duration // 60)
+        total_sec = int(total_duration % 60)
+        
+        await upd(72, f"✅ تم توليد الصوت لجميع الأقسام!")
+        await asyncio.sleep(0.5)
+        await upd(75, f"⏱️ المدة الإجمالية للصوت: {total_min}:{total_sec:02d}")
+
+        # ───────────────────────────────────────────────────────────────────────────
+        # المرحلة 4: إنتاج الفيديو
+        # ───────────────────────────────────────────────────────────────────────────
+        await upd(78, "🎬 جاري إنتاج الفيديو...")
+        await asyncio.sleep(0.5)
+        
+        await upd(82, "🎨 إنشاء شرائح المقدمة والعنوان...")
+        await asyncio.sleep(0.5)
+        
+        await upd(86, "📝 بناء شرائح الأقسام وإضافة الصور...")
+        await asyncio.sleep(0.5)
+        
+        await upd(90, "🎬 جاري تشفير الفيديو (قد يستغرق دقيقة)...")
+        
+        fd, video_path = tempfile.mkstemp(prefix=f"vid_{uid}_", suffix=".mp4", dir=TEMP_DIR)
+        os.close(fd)
+
+        total_secs = await create_video_from_sections(
+            sections=sections,
+            audio_results=audio_results,
+            lecture_data=lecture_data,
+            output_path=video_path,
+            dialect=dialect
+        )
+        
+        vid_min = int(total_secs // 60)
+        vid_sec = int(total_secs % 60)
+        
+        await upd(95, f"✅ اكتمل الفيديو! المدة: {vid_min}:{vid_sec:02d}")
+
+        # ───────────────────────────────────────────────────────────────────────────
+        # المرحلة 5: إرسال الفيديو
+        # ───────────────────────────────────────────────────────────────────────────
+        await upd(97, "📤 جاري إرسال الفيديو...")
+        
+        decrement_attempts(uid)
+        increment_total_videos(uid)
+        update_video_request(req_id, "done", video_path, pdf_path)
+
+        title = lecture_data.get("title", filename)
+        remaining = get_user(uid)["attempts_left"]
+
+        caption = f"🎬 *{title}*\n\n📚 الأقسام: {n_sec}\n⏱️ المدة: {vid_min}:{vid_sec:02d}\n💳 المحاولات: {remaining}"
+
+        with open(video_path, "rb") as vf:
+            await context.bot.send_video(
+                chat_id=uid, video=vf, caption=caption,
+                parse_mode="Markdown", supports_streaming=True
             )
 
+        await upd(100, "✅ تم الإرسال بنجاح!")
+        await asyncio.sleep(0.5)
+        
         await prog_msg.delete()
         await context.bot.send_message(
-            uid, "✅ *تم بنجاح!* 🎓",
-            parse_mode="Markdown", reply_markup=main_keyboard()
+            uid, 
+            f"✅ *تم بنجاح!* 🎓\n\n"
+            f"📹 الفيديو جاهز للمشاهدة\n"
+            f"📚 عدد الأقسام: {n_sec}\n"
+            f"⏱️ المدة: {vid_min}:{vid_sec:02d}\n"
+            f"💳 المحاولات المتبقية: {remaining}",
+            parse_mode="Markdown", 
+            reply_markup=main_keyboard()
         )
 
     except asyncio.CancelledError:
         update_video_request(req_id, "cancelled")
-        await context.bot.send_message(uid, "⛔ تم الإلغاء", reply_markup=main_keyboard())
+        await context.bot.send_message(uid, "⛔ تم إلغاء المعالجة", reply_markup=main_keyboard())
 
     except Exception as e:
         update_video_request(req_id, "failed")
         logger.error(f"Error: {e}")
         await _safe_edit(prog_msg, f"❌ خطأ: {str(e)[:200]}")
-        await context.bot.send_message(uid, "❌ حاول مرة أخرى", reply_markup=main_keyboard())
+        await context.bot.send_message(uid, "❌ حدث خطأ، حاول مرة أخرى", reply_markup=main_keyboard())
 
     finally:
         _active_jobs.pop(uid, None)
