@@ -1,3 +1,6 @@
+import sys
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+# ... باقي الاستيرادات
 # -*- coding: utf-8 -*-
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
