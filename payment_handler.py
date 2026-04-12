@@ -1,8 +1,8 @@
+# -*- coding: utf-8 -*-
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
 from telegram.ext import ContextTypes
 from database import (
-    create_payment, add_attempts,
-    mark_payment_approved_without_adding
+    create_payment, add_attempts, mark_payment_approved_without_adding
 )
 from config import (
     MASTERCARD_NUMBER, MASTERCARD_PRICE, TON_WALLET, TRC20_WALLET,
@@ -11,56 +11,19 @@ from config import (
 
 
 def get_payment_keyboard(user_id: int):
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                f"⭐ نجوم تيليجرام ({TELEGRAM_STARS_PRICE} نجمة)",
-                callback_data="pay_stars"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                f"💳 ماستر كارد ({MASTERCARD_PRICE}$)",
-                callback_data="pay_mastercard"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "💎 TON / USDT",
-                callback_data="pay_crypto"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "🔗 احصل على محاولة مجانية بالإحالة",
-                callback_data="show_referral"
-            )
-        ],
-    ]
-    return InlineKeyboardMarkup(keyboard)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"⭐ نجوم ({TELEGRAM_STARS_PRICE})", callback_data="pay_stars")],
+        [InlineKeyboardButton(f"💳 ماستر ({MASTERCARD_PRICE}$)", callback_data="pay_mastercard")],
+        [InlineKeyboardButton("💎 TON/USDT", callback_data="pay_crypto")],
+        [InlineKeyboardButton("🔗 إحالة مجانية", callback_data="show_referral")],
+    ])
 
 
 async def send_payment_required_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    msg = (
-        f"🔒 *انتهت محاولاتك المجانية*\n\n"
-        f"لديك طريقتان للحصول على محاولات إضافية:\n\n"
-        f"━━━━━━━━━━━━━━\n"
-        f"💰 *الشراء من المالك:*\n"
-        f"  ⭐ {TELEGRAM_STARS_PRICE} نجمة تيليجرام\n"
-        f"  💳 {MASTERCARD_PRICE}$ ماستر كارد\n"
-        f"  💎 ما يعادل 3$ USDT/TON\n\n"
-        f"━━━━━━━━━━━━━━\n"
-        f"🔗 *الإحالة المجانية:*\n"
-        f"  ادعُ أصدقاءك واحصل على محاولة مجانية\n"
-        f"  لكل 10 أصدقاء يسجلون عبر رابطك\n\n"
-        f"اختر ما يناسبك:"
-    )
-
+    msg = "🔒 *انتهت المحاولات*\n\nاختر طريقة الدفع:"
     await update.effective_message.reply_text(
-        msg,
-        parse_mode="Markdown",
-        reply_markup=get_payment_keyboard(user.id)
+        msg, parse_mode="Markdown",
+        reply_markup=get_payment_keyboard(update.effective_user.id)
     )
 
 
@@ -71,133 +34,101 @@ async def handle_pay_stars(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.send_invoice(
             chat_id=query.from_user.id,
-            title=f"احصل على {PAID_ATTEMPTS} محاولات",
-            description=f"شراء {PAID_ATTEMPTS} محاولات إضافية لتحويل محاضراتك إلى فيديو تعليمي",
+            title=f"{PAID_ATTEMPTS} محاولات",
+            description=f"{PAID_ATTEMPTS} محاولات إضافية",
             payload=f"stars_{query.from_user.id}",
             provider_token="",
             currency="XTR",
             prices=[LabeledPrice(f"{PAID_ATTEMPTS} محاولات", TELEGRAM_STARS_PRICE)],
         )
     except Exception as e:
-        await query.message.reply_text(f"❌ حدث خطأ: {e}")
+        await query.message.reply_text(f"❌ خطأ: {e}")
 
 
 async def handle_pay_mastercard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
-    user_id = query.from_user.id
+
+    uid = query.from_user.id
     msg = (
-        f"💳 *الدفع بالماستر كارد*\n\n"
-        f"📱 الرقم: `{MASTERCARD_NUMBER}`\n"
-        f"💰 المبلغ: *{MASTERCARD_PRICE} ماستر*\n\n"
-        f"بعد الدفع، أرسل لقطة شاشة لإثبات الدفع هنا في المحادثة، "
-        f"وسيتم مراجعتها وتفعيل حسابك خلال دقائق.\n"
-        f"أو تواصل مباشرة مع المالك: {OWNER_USERNAME}\n\n"
-        f"🆔 ID حسابك: `{user_id}`\n"
-        f"_(أرسل هذا الرقم مع لقطة الشاشة)_"
+        f"💳 *ماستر كارد*\n\n"
+        f"📱 `{MASTERCARD_NUMBER}`\n"
+        f"💰 *{MASTERCARD_PRICE}$*\n\n"
+        f"🆔 `{uid}`"
     )
-    
-    keyboard = [[InlineKeyboardButton("✅ أرسلت الدفع", callback_data=f"sent_mastercard_{user_id}")]]
-    
-    await query.edit_message_text(
-        msg,
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ أرسلت", callback_data=f"sent_mastercard_{uid}")]])
+    await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=kb)
 
 
 async def handle_pay_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
-    user_id = query.from_user.id
+
+    uid = query.from_user.id
     msg = (
-        f"💎 *الدفع بالعملات الرقمية*\n\n"
-        f"🔷 *TON Wallet*:\n`{TON_WALLET}`\n\n"
-        f"🔵 *USDT (TRC20)*:\n`{TRC20_WALLET}`\n\n"
-        f"💰 المبلغ: *3 USDT / TON*\n\n"
-        f"بعد الإرسال، أرسل hash العملية هنا مع:\n"
-        f"🆔 ID حسابك: `{user_id}`"
+        f"💎 *TON:* `{TON_WALLET}`\n"
+        f"💎 *USDT:* `{TRC20_WALLET}`\n"
+        f"💰 *3$*\n"
+        f"🆔 `{uid}`"
     )
-    
-    keyboard = [[InlineKeyboardButton("✅ أرسلت التحويل", callback_data=f"sent_crypto_{user_id}")]]
-    
-    await query.edit_message_text(
-        msg,
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ أرسلت", callback_data=f"sent_crypto_{uid}")]])
+    await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=kb)
 
 
 async def handle_payment_sent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
+
     data = query.data
-    user_id = query.from_user.id
-    
-    if "mastercard" in data:
-        method = "mastercard"
-        method_name = "ماستر كارد"
-        amount = MASTERCARD_PRICE
-    else:
-        method = "crypto"
-        method_name = "تشفير"
-        amount = 3.0
-    
-    payment_id = create_payment(user_id, method, amount)
-    
-    context.bot_data.setdefault('user_states', {})[user_id] = {
+    uid = query.from_user.id
+
+    method = "mastercard" if "mastercard" in data else "crypto"
+    amount = MASTERCARD_PRICE if method == "mastercard" else 3.0
+
+    pid = create_payment(uid, method, amount)
+
+    context.bot_data.setdefault('user_states', {})[uid] = {
         'state': 'awaiting_payment_proof',
-        'payment_id': payment_id
+        'payment_id': pid
     }
-    
+
     await query.edit_message_text(
-        f"✅ *تم تسجيل طلب الدفع #{payment_id}*\n\n"
-        f"الطريقة: {method_name}\n\n"
-        f"📸 *الآن أرسل لقطة شاشة* أو رسالة لإثبات الدفع.\n"
-        f"سيتم مراجعتها وتفعيل حسابك خلال دقائق.",
+        f"✅ *طلب #{pid}*\n📸 أرسل إثبات الدفع",
         parse_mode="Markdown"
     )
-    
+
     try:
-        user = query.from_user
         await context.bot.send_message(
-            chat_id=OWNER_ID,
-            text=(
-                f"🔔 *طلب دفع جديد*\n\n"
-                f"👤 المستخدم: {user.full_name} (@{user.username})\n"
-                f"🆔 ID: `{user_id}`\n"
-                f"💳 الطريقة: {method_name}\n"
-                f"💰 المبلغ: {amount}\n"
-                f"🔢 رقم الطلب: #{payment_id}\n\n"
-                f"للموافقة: /approve_{payment_id}"
-            ),
+            OWNER_ID,
+            f"🔔 *دفع جديد*\n"
+            f"👤 {query.from_user.full_name}\n"
+            f"🆔 `{uid}`\n"
+            f"💳 {method}\n"
+            f"💰 {amount}\n"
+            f"🔢 #{pid}\n"
+            f"/approve_{pid}",
             parse_mode="Markdown"
         )
-    except Exception:
+    except:
         pass
 
 
 async def handle_pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.pre_checkout_query
-    await query.answer(ok=True)
+    await update.pre_checkout_query.answer(ok=True)
 
 
 async def handle_successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     payment = update.message.successful_payment
-    user_id = update.effective_user.id
-    
-    payment_id = create_payment(user_id, "telegram_stars", TELEGRAM_STARS_PRICE, payment.telegram_payment_charge_id)
-    new_attempts = add_attempts(user_id, PAID_ATTEMPTS)
-    mark_payment_approved_without_adding(payment_id)
-    
+    uid = update.effective_user.id
+
+    pid = create_payment(uid, "telegram_stars", TELEGRAM_STARS_PRICE, payment.telegram_payment_charge_id)
+    new_attempts = add_attempts(uid, PAID_ATTEMPTS)
+    mark_payment_approved_without_adding(pid)
+
     await update.message.reply_text(
-        f"🎉 *تم الدفع بنجاح!*\n\n"
-        f"⭐ تم استلام {TELEGRAM_STARS_PRICE} نجمة\n"
-        f"🎯 تم إضافة {PAID_ATTEMPTS} محاولات لحسابك\n"
-        f"📊 رصيدك الحالي: {new_attempts} محاولة\n\n"
-        f"يمكنك الآن إرسال محاضراتك!",
+        f"🎉 *تم الدفع!*\n"
+        f"⭐ {TELEGRAM_STARS_PRICE} نجمة\n"
+        f"🎯 +{PAID_ATTEMPTS} محاولات\n"
+        f"📊 {new_attempts}",
         parse_mode="Markdown"
-  )
+    )
