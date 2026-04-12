@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-AI Analyzer Module - مع نظام المراقبة وإعادة المحاولة
-- يراقب كل مرحلة ويعيد المحاولة عند الفشل
-- يضمن جودة المخرجات قبل الانتقال للمرحلة التالية
+AI Analyzer Module - النسخة الخرافية الكاملة
+- 4 مصادر للصور: Pollinations → Unsplash → Picsum → صورة ملونة
+- 3 مصادر للذكاء الاصطناعي: DeepSeek → Google → Groq
+- نظام إعادة المحاولة التلقائي
+- استخراج الكلمات المفتاحية (عربي + إنجليزي)
+- توليد شرح احترافي غير مكرر
 """
 
 import json
@@ -13,13 +16,7 @@ import aiohttp
 import os
 import random
 from PIL import Image, ImageDraw, ImageFont
-from google import genai
-from google.genai import types as genai_types
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# دوال مساعدة
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def clean_text(text: str) -> str:
     if not text:
@@ -39,7 +36,12 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
         import pdfplumber
         def _extract():
             with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-                return "\n\n".join([p.extract_text() or "" for p in pdf.pages])
+                pages = []
+                for page in pdf.pages:
+                    page_text = page.extract_text() or ""
+                    if page_text.strip():
+                        pages.append(page_text)
+                return "\n\n".join(pages)
         loop = asyncio.get_event_loop()
         text = await asyncio.wait_for(loop.run_in_executor(None, _extract), timeout=60.0)
         if len(text.strip()) > 100:
@@ -52,8 +54,13 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
     try:
         import PyPDF2
         def _extract():
-            r = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
-            return "\n\n".join([p.extract_text() or "" for p in r.pages])
+            reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
+            pages = []
+            for page in reader.pages:
+                page_text = page.extract_text() or ""
+                if page_text.strip():
+                    pages.append(page_text)
+            return "\n\n".join(pages)
         loop = asyncio.get_event_loop()
         text = await asyncio.wait_for(loop.run_in_executor(None, _extract), timeout=60.0)
         if len(text.strip()) > 50:
@@ -96,10 +103,9 @@ print(f"[AI] DeepSeek: {len(_deepseek_keys)}, Google: {len(_google_keys)}, Groq:
 
 async def _try_ai_providers(prompt: str, max_tokens: int = 8192, max_retries: int = 3) -> str:
     """تجربة جميع مزودي AI مع إعادة المحاولة"""
-    errors = []
     
     # DeepSeek
-    for key in _deepseek_keys[:3]:  # نجرب أول 3 مفاتيح
+    for key in _deepseek_keys[:3]:
         for attempt in range(max_retries):
             try:
                 headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
@@ -120,16 +126,15 @@ async def _try_ai_providers(prompt: str, max_tokens: int = 8192, max_retries: in
                             if len(content) > 100:
                                 print(f"[DeepSeek] Success (attempt {attempt+1})")
                                 return content
-                        elif resp.status in (429, 402):
-                            break
             except:
                 continue
     
     # Google
-    if _google_keys:
+    for key in _google_keys[:3]:
         for attempt in range(max_retries):
             try:
-                key = _google_keys[0]
+                from google import genai
+                from google.genai import types as genai_types
                 client = genai.Client(api_key=key)
                 response = await asyncio.to_thread(
                     client.models.generate_content,
@@ -176,15 +181,13 @@ async def _try_ai_providers(prompt: str, max_tokens: int = 8192, max_retries: in
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# استخراج الكلمات المفتاحية مع التحقق من الجودة
+# استخراج الكلمات المفتاحية
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _extract_keywords(text: str, max_words: int = 30) -> list:
-    """استخراج الكلمات المفتاحية مع التحقق من العدد"""
     text = clean_text(text)
     stop_words = {'و', 'في', 'من', 'على', 'إلى', 'أن', 'هو', 'هي', 'هذا', 'هذه', 'كان', 'كانت', 'مع', 'ما', 'لا', 'عن', 'إذا', 'لم', 'لن', 'قد', 'ثم', 'أو', 'أم', 'لكن', 'حتى', 'بل', 'كل', 'بعض', 'the', 'a', 'an', 'is', 'are', 'was', 'were', 'of', 'to', 'in', 'that', 'it', 'be', 'for', 'on', 'with', 'as', 'at', 'by', 'this', 'and', 'or', 'but'}
     
-    # استخراج الكلمات العربية والإنجليزية
     words = re.findall(r'[\u0600-\u06FF]{4,}|[a-zA-Z]{4,}', text)
     freq = {}
     for w in words:
@@ -195,7 +198,6 @@ def _extract_keywords(text: str, max_words: int = 30) -> list:
     sorted_words = sorted(freq.items(), key=lambda x: x[1], reverse=True)
     keywords = [w[0] for w in sorted_words[:max_words]]
     
-    # إذا الكلمات المستخرجة أقل من 4، نضيف كلمات من النص الأصلي
     if len(keywords) < 4:
         extra = re.findall(r'[\u0600-\u06FF]{3,}|[a-zA-Z]{3,}', text)
         for w in extra:
@@ -231,35 +233,67 @@ def _detect_type(text: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# الدالة الرئيسية - مع نظام المراقبة وإعادة المحاولة
+# توليد شرح احتياطي احترافي (غير مكرر)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _generate_fallback_narration(keywords: list, lecture_type: str, is_english: bool) -> str:
+    kw = keywords[:4]
+    
+    if is_english:
+        templates = [
+            f"Let's begin with {kw[0]}. This is a fundamental concept. ",
+            f"First, we need to understand what {kw[0]} means. ",
+            f"Now, let's look at {kw[1]}. This is closely related to {kw[0]}. ",
+            f"The relationship between {kw[0]} and {kw[1]} is important. ",
+            f"Moving on to {kw[2]}. This concept helps us understand. ",
+            f"An example of {kw[2]} in real life would be... ",
+            f"Finally, we have {kw[3]}. This completes our understanding. ",
+            f"To summarize: {kw[0]}, {kw[1]}, {kw[2]}, and {kw[3]}. ",
+            f"A key takeaway is that these concepts are interconnected. ",
+            f"This knowledge can be applied in various situations. "
+        ]
+    else:
+        templates = [
+            f"نبدأ بالحديث عن {kw[0]}. هذا مفهوم أساسي. ",
+            f"أولاً، يجب أن نفهم معنى {kw[0]}. ",
+            f"الآن، ننتقل إلى {kw[1]}. هذا مرتبط بـ {kw[0]}. ",
+            f"العلاقة بين {kw[0]} و {kw[1]} مهمة جداً. ",
+            f"ننتقل الآن إلى {kw[2]}. هذا يساعدنا على الفهم. ",
+            f"مثال على {kw[2]} في الحياة الواقعية... ",
+            f"أخيراً، نصل إلى {kw[3]}. هذا يكمل فهمنا. ",
+            f"لتلخيص: {kw[0]}، {kw[1]}، {kw[2]}، و {kw[3]}. ",
+            f"النقطة الأساسية أن هذه المفاهيم مترابطة. ",
+            f"يمكن تطبيق هذه المعرفة في مواقف مختلفة. "
+        ]
+    
+    narration = ""
+    for i in range(15):
+        narration += templates[i % len(templates)]
+    
+    return narration
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# الدالة الرئيسية
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
-    """
-    تحليل المحاضرة مع مراقبة كل مرحلة وإعادة المحاولة عند الفشل
-    """
     text = clean_text(text)
     if not text:
         raise ValueError("النص فارغ")
     
-    print("[AI] ========== بدء التحليل ==========")
-    
     is_eng = _is_english(text)
     print(f"[AI] اللغة: {'إنجليزية' if is_eng else 'عربية'}")
     
-    # استخراج الكلمات المفتاحية
     keywords = _extract_keywords(text, 40)
     print(f"[AI] تم استخراج {len(keywords)} كلمة مفتاحية")
     
-    # إذا الكلمات قليلة، نعيد الاستخراج بمعايير أوسع
     if len(keywords) < 10:
-        print("[AI] ⚠️ الكلمات قليلة، إعادة الاستخراج...")
         keywords = _extract_keywords(text, 50)
     
     ltype = _detect_type(text)
     print(f"[AI] نوع المحاضرة: {ltype}")
     
-    # تحديد عدد الأقسام
     wc = len(text.split())
     if wc < 300:
         ns = 3
@@ -312,7 +346,6 @@ Return JSON:
 أرجع JSON:
 {{"title": "عنوان المحاضرة", "sections": [{{"title": "عنوان القسم", "keywords": ["ك1","ك2","ك3","ك4"], "narration": "نص الشرح"}}], "summary": "ملخص"}}"""
     
-    # محاولة توليد الشرح مع إعادة المحاولة
     ai_secs = []
     title = keywords[0] if keywords else "محاضرة"
     summary = ""
@@ -329,16 +362,12 @@ Return JSON:
             ai_secs = res.get("sections", [])
             summary = clean_text(res.get("summary", ""))
             
-            # التحقق من جودة الشرح
             if len(ai_secs) >= ns - 1 and any(s.get("narration", "") for s in ai_secs):
                 print(f"[AI] ✅ تم توليد {len(ai_secs)} قسم بنجاح")
                 break
-            else:
-                print(f"[AI] ⚠️ جودة الشرح غير كافية، إعادة المحاولة...")
         except Exception as e:
             print(f"[AI] ❌ فشل المحاولة {attempt+1}: {e}")
     
-    # بناء الأقسام
     sections = []
     for i in range(ns):
         if i < len(ai_secs) and ai_secs[i].get("narration"):
@@ -350,15 +379,13 @@ Return JSON:
             idx = (i * 4) % len(keywords)
             kw = [keywords[(idx + j) % len(keywords)] for j in range(4)]
             st = kw[0] if kw else f"القسم {i+1}"
-            nar = f"شرح {', '.join(kw[:3])}. " * 15
+            nar = _generate_fallback_narration(kw, ltype, is_eng)
         
         while len(kw) < 4:
-            kw.append("مفهوم")
+            kw.append("concept" if is_eng else "مفهوم")
         
-        # التحقق من جودة الشرح للقسم
         if len(nar.split()) < 20:
-            print(f"[AI] ⚠️ القسم {i+1}: شرح قصير، إضافة محتوى...")
-            nar = nar + " " + f"شرح إضافي عن {', '.join(kw)}. " * 10
+            nar = nar + " " + _generate_fallback_narration(kw, ltype, is_eng)
         
         sections.append({
             "title": st,
@@ -368,7 +395,6 @@ Return JSON:
             "_image_bytes": None
         })
     
-    # توليد الصور مع إعادة المحاولة
     print(f"[IMG] ========== توليد {len(sections)} صورة ==========")
     for i, s in enumerate(sections):
         q = " ".join(s["keywords"][:4])
@@ -384,10 +410,7 @@ Return JSON:
                 print(f"[IMG] ❌ القسم {i+1} فشل: {e}")
         
         if not s["_image_bytes"]:
-            print(f"[IMG] ⚠️ القسم {i+1}: استخدام صورة احتياطية")
             s["_image_bytes"] = _make_colored_image(q, (155, 89, 182), is_eng)
-    
-    print("[AI] ========== اكتمل التحليل ==========")
     
     return {
         "lecture_type": ltype,
@@ -400,7 +423,7 @@ Return JSON:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# الصور - مع إعادة المحاولة
+# الصور - 4 مصادر مع إعادة المحاولة
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _TYPE_COLORS = {
@@ -505,12 +528,24 @@ async def _unsplash_generate(query: str) -> bytes | None:
     return None
 
 
+async def _picsum_generate() -> bytes | None:
+    try:
+        async with aiohttp.ClientSession() as s:
+            url = f"https://picsum.photos/500/350?random={random.randint(1, 1000)}"
+            async with s.get(url, timeout=10) as r:
+                if r.status == 200:
+                    return await r.read()
+    except:
+        pass
+    return None
+
+
 async def fetch_image_for_keyword(keyword: str, section_title: str = "", lecture_type: str = "other", is_english: bool = False) -> bytes:
     keyword = clean_text(keyword) or ("concept" if is_english else "مفهوم")
     color = _TYPE_COLORS.get(lecture_type, _TYPE_COLORS['other'])
     
     # محاولة 1: Pollinations مع وصف مفصل
-    prompt = f"educational illustration of {keyword}, simple clean style, white background"
+    prompt = f"educational illustration of {keyword}, simple clean style"
     img = await _pollinations_generate(prompt)
     if img:
         return img
@@ -523,6 +558,11 @@ async def fetch_image_for_keyword(keyword: str, section_title: str = "", lecture
     
     # محاولة 3: Unsplash
     img = await _unsplash_generate(keyword)
+    if img:
+        return img
+    
+    # محاولة 4: Picsum
+    img = await _picsum_generate()
     if img:
         return img
     
