@@ -97,7 +97,7 @@ user_states: dict[int, dict] = {}
 # ═════════════════════════════════════════════════════════════════════════════
 # 🔄 Queue System - معالجة متوازية
 # ═════════════════════════════════════════════════════════════════════════════
-_Q_SEM = asyncio.Semaphore(3)  # 3 معالجات متوازية
+_Q_SEM = asyncio.Semaphore(3)
 _active_jobs: dict[int, str] = {}
 _active_tasks: dict[int, asyncio.Task] = {}
 _cancel_flags: dict[int, asyncio.Event] = {}
@@ -106,9 +106,7 @@ CANCEL_KB = InlineKeyboardMarkup([[
     InlineKeyboardButton("❌ إلغاء المعالجة", callback_data="cancel_job")
 ]])
 
-# ═════════════════════════════════════════════════════════════════════════════
-# 🎯 نظام الإلغاء
-# ═════════════════════════════════════════════════════════════════════════════
+
 async def _run_or_cancel(uid: int, coro) -> object:
     """تنفيذ مهمة مع إمكانية الإلغاء"""
     ev = _cancel_flags.get(uid)
@@ -248,8 +246,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• ملف PDF 📄 (حتى 50MB)\n"
         "• ملف نصي TXT 📃\n"
         "• نص المحاضرة مباشرة ✍️\n\n"
-        "🌍 اختر لهجة الشرح (عراقي، مصري، خليجي...)\n"
-        "🎬 استلم فيديو كامل مع صوت وصور + PDF ملخص\n\n"
+        "🌍 اختر لهجة الشرح\n"
+        "🎬 استلم فيديو كامل + PDF ملخص\n\n"
         f"🎁 لديك *{user['attempts_left']}* محاولة مجانية\n\n"
         "⬇️ ابدأ الآن — أرسل المحاضرة!",
         parse_mode="Markdown",
@@ -263,12 +261,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📖 *كيفية الاستخدام*\n\n"
-        "1️⃣ أرسل ملف PDF أو نص المحاضرة\n"
+        "1️⃣ أرسل ملف PDF أو TXT أو نص\n"
         "2️⃣ اختر لهجة الشرح\n"
-        "3️⃣ انتظر — البوت سيحلل ويصنع الفيديو\n"
+        "3️⃣ انتظر المعالجة\n"
         "4️⃣ استلم الفيديو + PDF الملخص\n\n"
-        "/cancel — إلغاء العملية\n"
-        "/referral — رابط الإحالة",
+        "/cancel — إلغاء العملية",
         parse_mode="Markdown",
         reply_markup=main_keyboard(),
     )
@@ -289,7 +286,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 💳 /balance
+# 💳 رصيدي
 # ═════════════════════════════════════════════════════════════════════════════
 async def my_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await ensure_user(update)
@@ -298,8 +295,7 @@ async def my_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"💳 *رصيدك*\n\n"
         f"🎬 المحاولات المتبقية: *{user['attempts_left']}*\n"
-        f"📊 إجمالي الفيديوهات: {user['total_videos']}\n\n"
-        "للحصول على محاولات إضافية:",
+        f"📊 إجمالي الفيديوهات: {user['total_videos']}",
         parse_mode="Markdown",
         reply_markup=get_payment_keyboard(user["user_id"]),
     )
@@ -319,18 +315,16 @@ async def referral_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ref_link = f"https://t.me/{bot_username}?start=ref_{uid}"
 
     await update.message.reply_text(
-        f"🔗 *رابط الإحالة الخاص بك*\n\n"
+        f"🔗 *رابط الإحالة*\n\n"
         f"`{ref_link}`\n\n"
-        f"👥 أصدقاء دعوتهم: *{stats['total_referrals']}*\n"
-        f"⭐ نقاطك: *{stats['current_points']}*\n\n"
-        "كل 10 أشخاص = محاولة مجانية!\n"
-        "شارك الرابط مع أصدقائك 🎉",
+        f"👥 المدعوين: *{stats['total_referrals']}*\n"
+        f"⭐ النقاط: *{stats['current_points']}*",
         parse_mode="Markdown",
     )
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 📥 استقبال المحتوى (خرافي - لا يتوقف أبداً)
+# 📥 استقبال المحتوى
 # ═════════════════════════════════════════════════════════════════════════════
 async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await ensure_user(update)
@@ -339,7 +333,6 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     uid = update.effective_user.id
     msg = update.message
-    state = user_states.get(uid, {})
 
     # Admin
     if is_owner(uid):
@@ -365,7 +358,7 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # هل يوجد معالجة جارية؟
     if uid in _active_jobs:
-        await msg.reply_text("⏳ محاضرتك قيد المعالجة، انتظر قليلاً...")
+        await msg.reply_text("⏳ محاضرتك قيد المعالجة...")
         return
 
     # التحقق من المحاولات
@@ -373,9 +366,15 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_payment_required_message(update, context)
         return
 
-    # ═════════════════════════════════════════════════════════════════════════
-    # 📄 معالجة الملفات (في الخلفية - لا تتوقف)
-    # ═════════════════════════════════════════════════════════════════════════
+    # نص مباشر
+    if msg.text and len(msg.text.strip()) >= 200:
+        lecture_text = msg.text.strip()
+        words = len(lecture_text.split())
+        user_states[uid] = {"state": "awaiting_dialect", "text": lecture_text, "filename": "lecture"}
+        await msg.reply_text(f"✅ *تم استلام النص!* ({words:,} كلمة)\n\nاختر اللهجة:", parse_mode="Markdown", reply_markup=DIALECT_KEYBOARD)
+        return
+
+    # ملف
     if msg.document:
         doc = msg.document
         fname = doc.file_name or "file"
@@ -383,36 +382,24 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ext = fname.lower().split(".")[-1] if "." in fname else ""
 
         if ext not in ("pdf", "txt"):
-            await msg.reply_text("⚠️ أرسل ملف PDF أو TXT فقط.")
+            await msg.reply_text("⚠️ أرسل PDF أو TXT فقط.")
             return
 
         if file_size > 50 * 1024 * 1024:
-            await msg.reply_text("⚠️ حجم الملف كبير جداً. الحد الأقصى 50MB")
+            await msg.reply_text("⚠️ حجم الملف كبير (حد أقصى 50MB)")
             return
 
         # رد فوري
-        status_msg = await msg.reply_text(
-            f"📥 *تم استلام الملف!*\n📄 `{fname}`\n📦 {file_size // 1024}KB\n\n⏳ جاري التحميل...",
-            parse_mode="Markdown"
-        )
-
-        # تشغيل في الخلفية
-        asyncio.create_task(_process_document(update, context, doc, fname, ext, uid, user, status_msg))
+        status = await msg.reply_text(f"📥 جاري تحميل `{fname}`...", parse_mode="Markdown")
+        
+        # معالجة في الخلفية
+        asyncio.create_task(_process_document(update, context, doc, fname, ext, uid, status))
         return
 
-    # 📝 نص مباشر
-    if msg.text and len(msg.text.strip()) >= 200:
-        lecture_text = msg.text.strip()
-        words = len(lecture_text.split())
-        user_states[uid] = {"state": "awaiting_dialect", "text": lecture_text, "filename": "lecture"}
-        await msg.reply_text(f"✅ *تم استلام النص!* ({words:,} كلمة)\n\nاختر لهجة الشرح:", parse_mode="Markdown", reply_markup=DIALECT_KEYBOARD)
-        return
-
-    # رسالة غير مدعومة
-    await msg.reply_text("⚠️ أرسل ملف PDF، TXT، أو نص مباشر (200 حرف على الأقل)")
+    await msg.reply_text("⚠️ أرسل PDF، TXT، أو نص (200 حرف على الأقل)")
 
 
-async def _process_document(update, context, doc, fname, ext, uid, user, status_msg):
+async def _process_document(update, context, doc, fname, ext, uid, status):
     """معالجة الملف في الخلفية"""
     try:
         file = await context.bot.get_file(doc.file_id)
@@ -421,7 +408,7 @@ async def _process_document(update, context, doc, fname, ext, uid, user, status_
             tmp_path = tmp.name
         
         await file.download_to_drive(tmp_path)
-        await status_msg.edit_text(f"📥 *تم التحميل!*\n📄 `{fname}`\n🔍 جاري استخراج النص...", parse_mode="Markdown")
+        await status.edit_text(f"📥 تم التحميل\n🔍 استخراج النص...")
         
         if ext == "pdf":
             lecture_text = await extract_full_text_from_pdf_path(tmp_path)
@@ -431,28 +418,25 @@ async def _process_document(update, context, doc, fname, ext, uid, user, status_
                 lecture_text = f.read()
             filename = fname.replace(".txt", "")
         
-        try:
-            os.unlink(tmp_path)
-        except:
-            pass
+        os.unlink(tmp_path)
         
         if not lecture_text or len(lecture_text.strip()) < 50:
-            await status_msg.edit_text("❌ لم أتمكن من استخراج نص كافٍ من الملف.")
+            await status.edit_text("❌ لم يتم استخراج نص كافٍ")
             return
         
         user_states[uid] = {"state": "awaiting_dialect", "text": lecture_text, "filename": filename}
         words = len(lecture_text.split())
         
-        est_time = "2-3 دقائق" if words < 500 else "3-5 دقائق" if words < 1500 else "5-7 دقائق"
+        est = "2-3 دقائق" if words < 500 else "3-5 دقائق" if words < 1500 else "5-7 دقائق"
         
-        await status_msg.edit_text(
-            f"✅ *تم استخراج النص!*\n\n📝 عدد الكلمات: *{words:,}*\n⏱️ الوقت المتوقع: *{est_time}*\n\n🌍 *اختر لهجة الشرح:*",
+        await status.edit_text(
+            f"✅ تم استخراج *{words:,}* كلمة\n⏱️ الوقت المتوقع: *{est}*\n\nاختر اللهجة:",
             parse_mode="Markdown",
             reply_markup=DIALECT_KEYBOARD,
         )
         
     except Exception as e:
-        await status_msg.edit_text(f"❌ خطأ في معالجة الملف: {str(e)[:100]}")
+        await status.edit_text(f"❌ خطأ: {str(e)[:100]}")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -469,7 +453,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await q.answer()
 
-    # المدفوعات
     if data == "pay_stars":
         await handle_pay_stars(update, context)
         return
@@ -479,27 +462,21 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "pay_crypto":
         await handle_pay_crypto(update, context)
         return
-    if data == "pay_sent":
-        await handle_payment_sent(update, context)
-        return
 
-    # إلغاء
     if data == "cancel_job":
         ev = _cancel_flags.get(uid)
         if ev and not ev.is_set():
             ev.set()
-            await q.edit_message_text("⛔ تم إلغاء المعالجة.")
+            await q.edit_message_text("⛔ تم الإلغاء.")
         return
 
-    # إحالة
     if data == "show_referral":
         stats = get_referral_stats(uid)
         bot_info = await context.bot.get_me()
         ref_link = f"https://t.me/{bot_info.username}?start=ref_{uid}"
-        await q.message.reply_text(f"🔗 *رابط الإحالة*\n\n`{ref_link}`\n\n👥 {stats['total_referrals']} | ⭐ {stats['current_points']}", parse_mode="Markdown")
+        await q.message.reply_text(f"🔗 *رابطك*\n`{ref_link}`\n👥 {stats['total_referrals']} | ⭐ {stats['current_points']}", parse_mode="Markdown")
         return
 
-    # اختيار اللهجة
     if data.startswith("dial_"):
         dialect = data[5:]
         state = user_states.get(uid, {})
@@ -510,7 +487,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         user = get_user(uid)
         if not user or user["attempts_left"] <= 0:
-            await q.edit_message_text("❌ لا تملك محاولات كافية.")
+            await q.edit_message_text("❌ لا تملك محاولات.")
             return
 
         dial_name = DIALECT_NAMES.get(dialect, dialect)
@@ -531,7 +508,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 🎬 معالجة المحاضرة الرئيسية (خرافية)
+# 🎬 معالجة المحاضرة الرئيسية
 # ═════════════════════════════════════════════════════════════════════════════
 async def _process_lecture(
     uid: int,
@@ -563,22 +540,9 @@ async def _process_lecture(
 
     async with _Q_SEM:
         try:
-            # ═════════════════════════════════════════════════════════════════
             # 1. تحليل المحاضرة
-            # ═════════════════════════════════════════════════════════════════
             _check()
-            
-            analysis_steps = [
-                (5, "🔍 قراءة المحاضرة..."),
-                (10, "📝 تحليل المحتوى..."),
-                (15, "📚 تحديد الأقسام..."),
-                (20, "🎯 استخراج النقاط الرئيسية..."),
-                (25, "✅ اكتمل التحليل"),
-            ]
-            
-            for pct, label in analysis_steps:
-                await upd(pct, label)
-                await asyncio.sleep(1)
+            await upd(5, "🔍 تحليل المحاضرة...")
             
             lecture_data = await _run_or_cancel(uid, analyze_lecture(text, dialect))
             sections = lecture_data.get("sections", [])
@@ -589,11 +553,9 @@ async def _process_lecture(
             n_sections = len(sections)
             await upd(25, f"✅ تم التحليل — {n_sections} أقسام")
 
-            # ═════════════════════════════════════════════════════════════════
             # 2. جلب الصور
-            # ═════════════════════════════════════════════════════════════════
             _check()
-            await upd(30, "🎨 جلب الصور التعليمية...")
+            await upd(30, "🎨 جلب الصور...")
 
             async def fetch_images(section):
                 keywords = section.get("keywords", [])[:4]
@@ -615,9 +577,7 @@ async def _process_lecture(
             sections = await asyncio.gather(*[fetch_images(s) for s in sections])
             await upd(50, "✅ تم جلب الصور")
 
-            # ═════════════════════════════════════════════════════════════════
             # 3. توليد الصوت
-            # ═════════════════════════════════════════════════════════════════
             _check()
             await upd(55, "🎤 توليد الصوت...")
             
@@ -625,9 +585,7 @@ async def _process_lecture(
             audio_results = voice_res["results"]
             await upd(70, "✅ تم توليد الصوت")
 
-            # ═════════════════════════════════════════════════════════════════
             # 4. إنشاء الفيديو
-            # ═════════════════════════════════════════════════════════════════
             _check()
             await upd(75, "🎬 إنتاج الفيديو...")
 
@@ -647,19 +605,15 @@ async def _process_lecture(
                 progress_cb=v_progress,
             )
 
-            await upd(95, "📄 إنشاء ملف PDF الملخص...")
+            await upd(95, "📄 إنشاء PDF...")
 
-            # ═════════════════════════════════════════════════════════════════
             # 5. إنشاء PDF
-            # ═════════════════════════════════════════════════════════════════
             pdf_path = os.path.join(TEMP_DIR, f"summary_{uid}_{int(time.time())}.pdf")
             await create_pdf_summary(lecture_data, sections, pdf_path, dialect)
 
             await upd(99, "✅ اكتمل! جاري الإرسال...")
 
-            # ═════════════════════════════════════════════════════════════════
             # 6. خصم محاولة وإرسال
-            # ═════════════════════════════════════════════════════════════════
             decrement_attempts(uid)
             increment_total_videos(uid)
             update_video_request(req_id, "done", video_path, pdf_path)
@@ -694,14 +648,14 @@ async def _process_lecture(
                     chat_id=uid,
                     document=pf,
                     filename=f"{filename}_summary.pdf",
-                    caption="📄 *ملخص المحاضرة*\n\nيحتوي على:\n• ملخص كامل\n• النقاط الرئيسية\n• جميع الأقسام مع الصور والكلمات المفتاحية",
+                    caption="📄 *ملخص المحاضرة*\n\nيحتوي على:\n• ملخص كامل\n• النقاط الرئيسية\n• جميع الأقسام مع الصور",
                     parse_mode="Markdown",
                 )
 
             await status_msg.delete()
             await context.bot.send_message(
                 uid,
-                "✅ *تم بنجاح!*\n\n🎬 الفيديو + 📄 PDF الملخص\n\nشارك المعرفة مع أصدقائك 🎓",
+                "✅ *تم بنجاح!*\n\n🎬 الفيديو + 📄 PDF\n\nشارك المعرفة مع أصدقائك 🎓",
                 parse_mode="Markdown",
                 reply_markup=main_keyboard(),
             )
@@ -749,11 +703,10 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═════════════════════════════════════════════════════════════════════════════
 async def main():
     init_db()
-    logger.info("🤖 Lecture video bot starting...")
+    logger.info("🤖 Bot starting...")
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("cancel", cancel))
@@ -773,7 +726,6 @@ async def main():
 
     logger.info("✅ Bot ready")
 
-    # Webhook
     app_url = os.getenv("HEROKU_APP_NAME", "")
     webhook_url = f"https://{app_url}.herokuapp.com/telegram" if app_url else os.getenv("WEBHOOK_URL", "").rstrip("/")
 
