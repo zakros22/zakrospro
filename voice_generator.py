@@ -1,447 +1,282 @@
-# -*- coding: utf-8 -*-
-"""
-Voice Generator Module - النسخة الكاملة والمفصلة
-=================================================
-الميزات:
-- توليد صوت باستخدام gTTS (مجاني 100%)
-- دعم اللهجات: عراقي، مصري، شامي، خليجي، فصحى، إنجليزي، بريطاني
-- تنظيف النص من الأحرف غير المرغوبة
-- تحويل الأرقام إلى كلمات (123 → مئة وثلاثة وعشرون)
-- تحويل النسب المئوية إلى كلمات (87.5% → سبعة وثمانون فاصل خمسة بالمئة)
-- منع تكرار الجمل (إزالة الجمل المكررة)
-- توليد متوازي للأقسام (Semaphore للتحكم بعدد الطلبات)
-- حساب مدة الصوت بدقة باستخدام pydub
-- خطة احتياطية كاملة عند فشل توليد الصوت
-"""
-
 import asyncio
 import io
-import re
+import tempfile
+import os
+from typing import List, Dict, Any
 from gtts import gTTS
+from pydub import AudioSegment
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 1. تنظيف النص
-# ═══════════════════════════════════════════════════════════════════════════════
+# ============================================================
+# إعدادات اللهجات
+# ============================================================
 
-def clean_text(text: str) -> str:
-    """
-    تنظيف النص من جميع الأحرف غير المرغوبة:
-    - null bytes (\x00, \0)
-    - أحرف التحكم (control characters)
-    - المسافات الزائدة
-    """
-    if not text:
-        return ""
-    
-    # إزالة null bytes
-    text = str(text).replace('\x00', '').replace('\0', '')
-    
-    # إزالة أحرف التحكم (ما عدا الأسطر الجديدة وعلامات الترقيم)
-    text = re.sub(r'[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
-    
-    # استبدال المسافات المتعددة بمسافة واحدة
-    text = re.sub(r'\s+', ' ', text)
-    
-    # إزالة المسافات في البداية والنهاية
-    return text.strip()
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 2. تحويل الأرقام إلى كلمات
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _convert_numbers_to_words(text: str, lang: str) -> str:
-    """
-    تحويل الأرقام في النص إلى كلمات مكتوبة.
-    مثال: "عندي 3 تفاحات" → "عندي ثلاثة تفاحات"
-    """
-    try:
-        from num2words import num2words
-        
-        def replace_number(match):
-            num_str = match.group(0).replace(',', '')
-            try:
-                if '.' in num_str:
-                    num = float(num_str)
-                else:
-                    num = int(num_str)
-                return num2words(num, lang=lang)
-            except:
-                return match.group(0)
-        
-        # البحث عن الأرقام (صحيحة وعشرية)
-        text = re.sub(r'\d[\d,]*\.?\d*', replace_number, text)
-    except ImportError:
-        print("[WARN] num2words not installed, skipping number conversion")
-    except Exception as e:
-        print(f"[WARN] Number conversion failed: {e}")
-    
-    return text
-
-
-def _convert_percentages_to_words(text: str, lang: str) -> str:
-    """
-    تحويل النسب المئوية إلى كلمات مكتوبة.
-    مثال: "87.5%" → "سبعة وثمانون فاصل خمسة بالمئة"
-    """
-    try:
-        from num2words import num2words
-        
-        def replace_percentage(match):
-            num_str = match.group(1).replace(',', '')
-            try:
-                if '.' in num_str:
-                    num = float(num_str)
-                else:
-                    num = int(num_str)
-                words = num2words(num, lang=lang)
-                suffix = " بالمئة" if lang == "ar" else " percent"
-                return words + suffix
-            except:
-                return match.group(0)
-        
-        # البحث عن النسب المئوية
-        text = re.sub(r'([\d,]+\.?\d*)\s*%', replace_percentage, text)
-    except Exception as e:
-        print(f"[WARN] Percentage conversion failed: {e}")
-    
-    return text
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 3. منع تكرار الجمل
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _remove_duplicate_sentences(text: str) -> str:
-    """
-    إزالة الجمل المكررة من النص.
-    هذا يمنع الصوت من تكرار نفس الجملة مراراً.
-    """
-    if not text:
-        return text
-    
-    # تقسيم النص إلى جمل
-    sentences = re.split(r'(?<=[.!?؟])\s+', text)
-    
-    unique_sentences = []
-    seen = set()
-    
-    for s in sentences:
-        s_clean = s.strip()
-        if s_clean and s_clean not in seen:
-            seen.add(s_clean)
-            unique_sentences.append(s_clean)
-    
-    return ' '.join(unique_sentences)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 4. إعدادات اللغات واللهجات
-# ═══════════════════════════════════════════════════════════════════════════════
-
-GTTS_LANG_MAP = {
-    # اللهجات العربية
-    "iraq": "ar",      # عراقي
-    "egypt": "ar",     # مصري
-    "syria": "ar",     # شامي
-    "gulf": "ar",      # خليجي
-    "msa": "ar",       # فصحى
-    
-    # اللغات الأخرى
-    "english": "en",   # إنجليزي
-    "british": "en",   # بريطاني (نفس اللغة مع اختلاف النطق)
+# نطاقات TLD للحصول على نطق أقرب للهجة
+DIALECT_TLD_MAP = {
+    "iraq": "com",
+    "egypt": "com.eg",
+    "syria": "com",
+    "gulf": "com.sa",
+    "msa": "com",
+    "english": "com",
+    "british": "co.uk",
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 5. دالة توليد الصوت الرئيسية
-# ═══════════════════════════════════════════════════════════════════════════════
+# إضافات نصية لتحسين النطق باللهجة المطلوبة
+DIALECT_STYLE_HINTS = {
+    "iraq": "بلهجة عراقية: ",
+    "egypt": "بلهجة مصرية: ",
+    "syria": "بلهجة شامية: ",
+    "gulf": "بلهجة خليجية: ",
+    "msa": "بالعربية الفصحى: ",
+    "english": "",
+    "british": "",
+}
 
-async def generate_voice(text: str, dialect: str = "msa") -> tuple[bytes, bool]:
+# كلمات تحويل للهجات (لتحسين النطق)
+DIALECT_WORD_MAP = {
+    "iraq": {
+        "كثير": "هواية",
+        "ماذا": "شنو",
+        "أين": "وين",
+        "الآن": "هسة",
+        "قال": "كال",
+        "يوجد": "أكو",
+        "لا يوجد": "ماكو",
+    },
+    "egypt": {
+        "كثير": "أوي",
+        "ماذا": "إيه",
+        "الآن": "دلوقتي",
+        "هذا": "ده",
+        "هذه": "دي",
+        "ليس": "مش",
+        "فقط": "بس",
+    },
+    "syria": {
+        "كثير": "كتير",
+        "ماذا": "شو",
+        "الآن": "هلق",
+        "جيد": "منيح",
+        "هكذا": "هيك",
+        "شيء": "شي",
+    },
+    "gulf": {
+        "كثير": "وايد",
+        "جيد": "زين",
+        "الآن": "الحين",
+        "ماذا": "وش",
+        "هذا": "هاذا",
+        "نعم": "إيه",
+    },
+    "msa": {},
+    "english": {},
+    "british": {},
+}
+
+
+def _apply_dialect_conversion(text: str, dialect: str) -> str:
     """
-    توليد الصوت باستخدام gTTS.
+    تحويل بعض الكلمات إلى اللهجة المطلوبة لتحسين النطق.
+    """
+    if dialect not in DIALECT_WORD_MAP:
+        return text
     
-    Args:
-        text: النص المراد تحويله إلى صوت
-        dialect: اللهجة المطلوبة (iraq, egypt, syria, gulf, msa, english, british)
+    word_map = DIALECT_WORD_MAP[dialect]
+    result = text
+    for standard, dialect_word in word_map.items():
+        result = result.replace(standard, dialect_word)
+    
+    return result
+
+
+def _add_dialect_flavor(text: str, dialect: str) -> str:
+    """
+    إضافة مقدمة نصية لتحفيز النطق باللهجة المطلوبة.
+    """
+    if dialect in DIALECT_STYLE_HINTS and DIALECT_STYLE_HINTS[dialect]:
+        return DIALECT_STYLE_HINTS[dialect] + text
+    return text
+
+
+def _generate_single_audio(text: str, dialect: str, lang: str = "ar") -> tuple[bytes, float]:
+    """
+    توليد ملف صوتي واحد باستخدام gTTS.
     
     Returns:
-        tuple: (audio_bytes, used_elevenlabs)
-            - audio_bytes: الصوت بصيغة MP3
-            - used_elevenlabs: دائماً False لأننا نستخدم gTTS المجاني
+        tuple: (audio_bytes, duration_in_seconds)
     """
-    # 1. تنظيف النص
-    text = clean_text(text)
-    
-    # 2. إذا كان النص فارغاً، نستخدم نصاً افتراضياً
-    if not text:
-        text = "المحاضرة التعليمية" if dialect in ["iraq", "egypt", "syria", "gulf", "msa"] else "Educational lecture"
-    
-    # 3. تحديد اللغة
-    lang = GTTS_LANG_MAP.get(dialect, "ar")
-    
-    # 4. تحويل النسب المئوية إلى كلمات
-    text = _convert_percentages_to_words(text, lang)
-    
-    # 5. تحويل الأرقام إلى كلمات
-    text = _convert_numbers_to_words(text, lang)
-    
-    # 6. إزالة الجمل المكررة (لمنع التكرار الممل)
-    text = _remove_duplicate_sentences(text)
-    
-    print(f"[TTS] Generating voice for text: {text[:100]}...")
-    
-    # 7. توليد الصوت في thread منفصل (لأن gTTS مكتبة متزامنة)
-    def _synth():
-        buf = io.BytesIO()
+    try:
+        tld = DIALECT_TLD_MAP.get(dialect, "com")
+        
+        # تطبيق تحويلات اللهجة
+        converted_text = _apply_dialect_conversion(text, dialect)
+        flavored_text = _add_dialect_flavor(converted_text, dialect)
+
+        # إنشاء ملف مؤقت
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        # توليد الصوت
+        tts = gTTS(text=flavored_text, lang=lang, tld=tld, slow=False)
+        tts.save(tmp_path)
+
+        # قراءة الملف
+        with open(tmp_path, "rb") as f:
+            audio_bytes = f.read()
+
+        # حذف الملف المؤقت
         try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+        # حساب المدة
+        audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+        duration = len(audio) / 1000.0
+
+        return audio_bytes, duration
+
+    except Exception as e:
+        print(f"❌ gTTS error for dialect {dialect}: {e}")
+        
+        # محاولة مرة أخرى بدون تحويلات
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+                tmp_path = tmp.name
+
             tts = gTTS(text=text, lang=lang, slow=False)
-            tts.write_to_fp(buf)
-            buf.seek(0)
-            return buf.read()
-        except Exception as e:
-            print(f"[TTS] gTTS failed: {e}")
-            # محاولة أخيرة مع نص أقصر
+            tts.save(tmp_path)
+
+            with open(tmp_path, "rb") as f:
+                audio_bytes = f.read()
+
             try:
-                short_text = " ".join(text.split()[:100])  # أول 100 كلمة فقط
-                buf2 = io.BytesIO()
-                tts2 = gTTS(text=short_text, lang=lang, slow=False)
-                tts2.write_to_fp(buf2)
-                buf2.seek(0)
-                return buf2.read()
-            except Exception as e2:
-                print(f"[TTS] Short text also failed: {e2}")
-                raise
-    
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+            audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+            duration = len(audio) / 1000.0
+
+            return audio_bytes, duration
+
+        except Exception as e2:
+            print(f"❌ gTTS fallback also failed: {e2}")
+            # إرجاع صوت صامت كحل أخير
+            silent = AudioSegment.silent(duration=5000)
+            buf = io.BytesIO()
+            silent.export(buf, format="mp3")
+            return buf.getvalue(), 5.0
+
+
+async def _generate_single_audio_async(text: str, dialect: str) -> Dict[str, Any]:
+    """
+    نسخة غير متزامنة من توليد الصوت.
+    """
     loop = asyncio.get_event_loop()
-    
+
+    # تحديد اللغة
+    if dialect in ("english", "british"):
+        lang = "en"
+    else:
+        lang = "ar"
+
     try:
-        audio_bytes = await loop.run_in_executor(None, _synth)
-        return audio_bytes, False
+        audio_bytes, duration = await loop.run_in_executor(
+            None, _generate_single_audio, text, dialect, lang
+        )
+        return {
+            "audio": audio_bytes,
+            "duration": duration,
+            "dialect": dialect,
+            "used_fallback": False,
+            "provider": "gTTS",
+        }
     except Exception as e:
-        print(f"[TTS] Voice generation failed: {e}")
-        # إرجاع صوت فارغ كخطة احتياطية
-        return b"", False
+        print(f"❌ Audio generation failed for dialect {dialect}: {e}")
+        # صوت صامت كحل أخير
+        silent = AudioSegment.silent(duration=5000)
+        buf = io.BytesIO()
+        silent.export(buf, format="mp3")
+        return {
+            "audio": buf.getvalue(),
+            "duration": 5.0,
+            "dialect": dialect,
+            "used_fallback": True,
+            "provider": "silent_fallback",
+        }
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 6. حساب مدة الصوت
-# ═══════════════════════════════════════════════════════════════════════════════
-
-async def get_audio_duration(audio_bytes: bytes) -> float:
+async def generate_sections_audio(
+    sections: List[Dict[str, Any]],
+    dialect: str = "msa"
+) -> Dict[str, Any]:
     """
-    حساب مدة الصوت بالثواني.
+    توليد الصوت لجميع أقسام المحاضرة.
     
     Args:
-        audio_bytes: الصوت بصيغة MP3
-    
-    Returns:
-        float: المدة بالثواني
-    """
-    if not audio_bytes:
-        return 30.0  # مدة افتراضية
-    
-    try:
-        from pydub import AudioSegment
-        
-        # تحميل الصوت من bytes
-        audio = AudioSegment.from_mp3(io.BytesIO(audio_bytes))
-        duration = len(audio) / 1000.0  # pydub يعطي المدة بالميلي ثانية
-        
-        print(f"[TTS] Audio duration: {duration:.1f}s")
-        return duration
-        
-    except ImportError:
-        print("[WARN] pydub not installed, estimating duration")
-        # تقدير تقريبي: 1 ثانية ≈ 16000 بايت
-        estimated = max(5.0, len(audio_bytes) / 16000)
-        return estimated
-    except Exception as e:
-        print(f"[WARN] Failed to get audio duration: {e}")
-        return max(5.0, len(audio_bytes) / 16000)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 7. توليد الصوت لجميع الأقسام (بالتوازي)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-async def generate_sections_audio(sections: list, dialect: str) -> dict:
-    """
-    توليد الصوت لجميع الأقسام بالتوازي.
-    
-    Args:
-        sections: قائمة الأقسام، كل قسم يحتوي على "narration"
+        sections: قائمة الأقسام (كل قسم يحتوي على 'narration')
         dialect: اللهجة المطلوبة
     
     Returns:
-        dict: يحتوي على:
-            - results: قائمة بنتائج كل قسم (audio, duration, ok)
-            - used_fallback: دائماً True (نستخدم gTTS)
-            - all_failed: هل فشلت جميع الأقسام؟
+        Dict: يحتوي على 'results' (قائمة الأصوات) و 'total_duration'
     """
-    
-    # Semaphore للتحكم بعدد الطلبات المتزامنة (3 طلبات كحد أقصى)
-    sem = asyncio.Semaphore(3)
-    
-    async def _generate_one_section(index: int, section: dict) -> dict:
-        """
-        توليد الصوت لقسم واحد.
-        """
-        async with sem:
-            # استخراج النص من القسم
-            text = section.get("narration", "")
-            
-            # إذا لم يكن هناك نص، نستخدم الكلمات المفتاحية
-            if not text:
-                keywords = section.get("keywords", ["مفهوم"])
-                text = " ".join(keywords) * 3  # تكرار الكلمات 3 مرات
-            
-            print(f"[TTS] Section {index+1}: generating audio ({len(text.split())} words)...")
-            
-            try:
-                # توليد الصوت
-                audio_bytes, _ = await generate_voice(text, dialect)
-                
-                # حساب المدة
-                duration = await get_audio_duration(audio_bytes)
-                
-                return {
-                    "index": index,
-                    "audio": audio_bytes,
-                    "duration": duration,
-                    "narration": text,
-                    "ok": True,
-                    "error": None
-                }
-                
-            except Exception as e:
-                print(f"[TTS] Section {index+1} failed: {e}")
-                return {
-                    "index": index,
-                    "audio": None,
-                    "duration": 30.0,  # مدة افتراضية
-                    "narration": text,
-                    "ok": False,
-                    "error": str(e)
-                }
-    
-    # توليد الصوت لجميع الأقسام بالتوازي
-    print(f"[TTS] Generating audio for {len(sections)} sections...")
-    results = await asyncio.gather(*[
-        _generate_one_section(i, s) for i, s in enumerate(sections)
-    ])
-    
-    # ترتيب النتائج حسب الفهرس
-    results = sorted(results, key=lambda x: x["index"])
-    
-    # التحقق من فشل جميع الأقسام
-    all_failed = all(not r["ok"] for r in results)
-    
-    if all_failed:
-        print("[TTS] ⚠️ All sections failed to generate audio!")
-    else:
-        success_count = sum(1 for r in results if r["ok"])
-        print(f"[TTS] ✅ Generated audio for {success_count}/{len(sections)} sections")
-    
+    results = []
+    total_duration = 0.0
+
+    print(f"🎤 Generating audio for {len(sections)} sections using gTTS (FREE)...")
+
+    for idx, section in enumerate(sections):
+        narration = section.get("narration", "")
+        if not narration:
+            narration = section.get("content", f"القسم {idx + 1}")
+
+        print(f"  🔊 Generating section {idx + 1}/{len(sections)}...")
+
+        try:
+            result = await _generate_single_audio_async(narration, dialect)
+            results.append(result)
+            total_duration += result["duration"]
+            print(f"  ✅ Section {idx + 1} audio ready ({result['duration']:.1f}s)")
+        except Exception as e:
+            print(f"  ⚠️ Section {idx + 1} failed: {e}")
+            # صوت صامت
+            silent = AudioSegment.silent(duration=5000)
+            buf = io.BytesIO()
+            silent.export(buf, format="mp3")
+            results.append({
+                "audio": buf.getvalue(),
+                "duration": 5.0,
+                "dialect": dialect,
+                "used_fallback": True,
+                "provider": "silent_fallback",
+            })
+            total_duration += 5.0
+
     return {
         "results": results,
-        "used_fallback": True,  # gTTS دائماً
-        "all_failed": all_failed
+        "total_duration": total_duration,
+        "used_fallback": False,
+        "provider": "gTTS (مجاني)",
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 8. دالة مساعدة: تقسيم النص إلى جمل
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def split_into_sentences(text: str) -> list:
+async def generate_audio_for_section(text: str, dialect: str) -> Dict[str, Any]:
     """
-    تقسيم النص إلى جمل منفصلة.
-    تستخدم لتقدير توقيت الجمل في الفيديو.
+    توليد صوت لقسم واحد (دالة مساعدة).
     """
-    if not text:
-        return []
-    
-    # تقسيم النص عند علامات الترقيم
-    sentence_pattern = re.compile(r'(?<=[.!?؟])\s+|(?<=\n)')
-    sentences = [s.strip() for s in sentence_pattern.split(text) if s.strip()]
-    
-    if not sentences:
-        sentences = [text.strip()]
-    
-    return sentences
+    return await _generate_single_audio_async(text, dialect)
 
 
-def estimate_sentence_timings(sentences: list, total_duration: float) -> list:
+def keys_status() -> Dict[str, Any]:
     """
-    تقدير توقيت كل جملة بناءً على طولها.
-    
-    Args:
-        sentences: قائمة الجمل
-        total_duration: المدة الكلية للصوت
-    
-    Returns:
-        list: قائمة بالتوقيتات (text, start, end, keywords)
+    حالة المفاتيح - gTTS مجاني دائماً ولا يحتاج مفاتيح.
     """
-    if not sentences:
-        return []
-    
-    total_chars = sum(len(s) for s in sentences)
-    if total_chars == 0:
-        # إذا كانت جميع الجمل فارغة، نقسم المدة بالتساوي
-        even_dur = total_duration / len(sentences)
-        t = 0.0
-        timings = []
-        for s in sentences:
-            timings.append({
-                "text": s,
-                "start": t,
-                "end": t + even_dur,
-                "keywords": []
-            })
-            t += even_dur
-        return timings
-    
-    timings = []
-    t = 0.0
-    
-    for sentence in sentences:
-        proportion = len(sentence) / total_chars
-        duration = total_duration * proportion
-        
-        # استخراج الكلمات المفتاحية من الجملة
-        keywords = _extract_sentence_keywords(sentence)
-        
-        timings.append({
-            "text": sentence,
-            "start": round(t, 3),
-            "end": round(t + duration, 3),
-            "keywords": keywords
-        })
-        t += duration
-    
-    return timings
-
-
-def _extract_sentence_keywords(sentence: str) -> list:
-    """
-    استخراج الكلمات المفتاحية من جملة واحدة.
-    """
-    # قائمة الكلمات المستبعدة (stop words)
-    stop_words = {
-        'و', 'في', 'من', 'على', 'إلى', 'أن', 'هو', 'هي', 'هذا', 'هذه',
-        'the', 'a', 'an', 'is', 'are', 'was', 'were', 'of', 'to', 'in',
-        'that', 'it', 'be', 'for', 'on', 'with', 'as', 'at', 'by', 'this'
+    return {
+        "total": 1,
+        "active": 1,
+        "exhausted": 0,
+        "all_gone": False,
+        "provider": "gTTS (مجاني بالكامل)",
     }
-    
-    # استخراج الكلمات (4 أحرف فأكثر)
-    words = re.findall(r'\b[\w\u0600-\u06FF]{4,}\b', sentence)
-    
-    keywords = []
-    for w in words:
-        if w.lower() not in stop_words:
-            keywords.append(w)
-        if len(keywords) >= 3:
-            break
-    
-    return keywords
