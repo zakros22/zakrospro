@@ -139,6 +139,7 @@ def _compute_lecture_scale(text: str) -> tuple:
 
 
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
+    """تحليل المحاضرة واستخراج الأقسام"""
     dialect_instructions = {
         "iraq": "استخدم اللهجة العراقية في الشرح، مع كلمات عراقية أصيلة مثل (هواية، گلت، يعني، بس، هسا، چان، عگب)",
         "egypt": "استخدم اللهجة المصرية في الشرح، مع كلمات مصرية مثل (أوي، معلش، يعني، بس، كده، إيه، مش)",
@@ -161,7 +162,7 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         section_title_hint = "Section title"
         content_hint = f"Simplified section content ({narration_sentences} sentences)"
         keywords_hint = '["keyword1", "keyword2", "keyword3", "keyword4"]'
-        narration_hint = f"Full narration ({narration_sentences} sentences)"
+        narration_hint = f"Full narration in English ({narration_sentences} sentences)"
         lang_note = "Write ALL text in English."
     else:
         summary_hint = "ملخص المحاضرة بأسلوب مبسط (4-5 جمل)"
@@ -193,10 +194,10 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
       "content": "{content_hint}",
       "keywords": {keywords_hint},
       "keyword_images": [
-        "cartoon illustration description for keyword1 - 3-5 English words",
-        "cartoon illustration description for keyword2 - 3-5 English words",
-        "cartoon illustration description for keyword3 - 3-5 English words",
-        "cartoon illustration description for keyword4 - 3-5 English words"
+        "وصف إنجليزي للكلمة الأولى - 3-5 كلمات",
+        "وصف إنجليزي للكلمة الثانية - 3-5 كلمات",
+        "وصف إنجليزي للكلمة الثالثة - 3-5 كلمات",
+        "وصف إنجليزي للكلمة الرابعة - 3-5 كلمات"
       ],
       "narration": "{narration_hint}",
       "duration_estimate": 45
@@ -210,8 +211,8 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
 - {lang_note}
 - {num_sections} أقسام بالضبط
 - keywords: 4 مصطلحات
-- keyword_images: وصف إنجليزي لصورة كرتونية (3-5 كلمات)
-- أرجع JSON فقط بدون أي نص إضافي أو ```json
+- keyword_images: وصف إنجليزي لصورة (3-5 كلمات)
+- أرجع JSON فقط بدون أي نص إضافي
 """
 
     content = await _generate_with_rotation(prompt, max_output_tokens=max_tokens)
@@ -235,16 +236,16 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 🖼️ نظام الصور الخرافي - 5 بدائل مجانية
+# 🖼️ نظام الصور - 5 مصادر
 # ═════════════════════════════════════════════════════════════════════════════
 
 async def _fetch_pexels(query: str) -> bytes | None:
-    """Pexels API - صور حقيقية عالية الجودة"""
     if not PEXELS_API_KEY:
         return None
     try:
         headers = {"Authorization": PEXELS_API_KEY}
-        url = f"https://api.pexels.com/v1/search?query={urllib.parse.quote(query)}&per_page=3&orientation=landscape"
+        search_query = f"{query} education learning"
+        url = f"https://api.pexels.com/v1/search?query={urllib.parse.quote(search_query)}&per_page=5&orientation=landscape"
         async with aiohttp.ClientSession() as s:
             async with s.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as r:
                 if r.status == 200:
@@ -254,19 +255,21 @@ async def _fetch_pexels(query: str) -> bytes | None:
                         if img_url:
                             async with s.get(img_url, timeout=15) as ir:
                                 if ir.status == 200:
-                                    print(f"✅ Pexels: {query[:30]}")
-                                    return await ir.read()
+                                    img_data = await ir.read()
+                                    if len(img_data) > 10000:
+                                        print(f"✅ Pexels: {query[:30]}")
+                                        return img_data
     except Exception as e:
         print(f"Pexels error: {e}")
     return None
 
 
 async def _fetch_pixabay(query: str) -> bytes | None:
-    """Pixabay API - صور تعليمية"""
     if not PIXABAY_API_KEY:
         return None
     try:
-        url = f"https://pixabay.com/api/?key={PIXABAY_API_KEY}&q={urllib.parse.quote(query)}&per_page=3&orientation=horizontal"
+        search_query = f"{query} education"
+        url = f"https://pixabay.com/api/?key={PIXABAY_API_KEY}&q={urllib.parse.quote(search_query)}&per_page=5&orientation=horizontal&image_type=photo"
         async with aiohttp.ClientSession() as s:
             async with s.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
                 if r.status == 200:
@@ -276,20 +279,21 @@ async def _fetch_pixabay(query: str) -> bytes | None:
                         if img_url:
                             async with s.get(img_url, timeout=15) as ir:
                                 if ir.status == 200:
-                                    print(f"✅ Pixabay: {query[:30]}")
-                                    return await ir.read()
+                                    img_data = await ir.read()
+                                    if len(img_data) > 10000:
+                                        print(f"✅ Pixabay: {query[:30]}")
+                                        return img_data
     except Exception as e:
         print(f"Pixabay error: {e}")
     return None
 
 
 async def _fetch_unsplash(query: str) -> bytes | None:
-    """Unsplash API - صور احترافية"""
     if not UNSPLASH_ACCESS_KEY:
         return None
     try:
         headers = {"Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}"}
-        url = f"https://api.unsplash.com/search/photos?query={urllib.parse.quote(query)}&per_page=3&orientation=landscape"
+        url = f"https://api.unsplash.com/search/photos?query={urllib.parse.quote(query)}&per_page=5&orientation=landscape"
         async with aiohttp.ClientSession() as s:
             async with s.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as r:
                 if r.status == 200:
@@ -299,24 +303,25 @@ async def _fetch_unsplash(query: str) -> bytes | None:
                         if img_url:
                             async with s.get(img_url, timeout=15) as ir:
                                 if ir.status == 200:
-                                    print(f"✅ Unsplash: {query[:30]}")
-                                    return await ir.read()
+                                    img_data = await ir.read()
+                                    if len(img_data) > 10000:
+                                        print(f"✅ Unsplash: {query[:30]}")
+                                        return img_data
     except Exception as e:
         print(f"Unsplash error: {e}")
     return None
 
 
 async def _fetch_pollinations(query: str) -> bytes | None:
-    """Pollinations.ai - ذكاء اصطناعي مجاني"""
     try:
-        prompt = f"educational cartoon illustration, {query}, simple colorful style, clear background"
+        prompt = f"educational diagram illustration, {query}, simple clean style, white background, professional"
         encoded = urllib.parse.quote(prompt[:200])
-        url = f"https://image.pollinations.ai/prompt/{encoded}?width=1280&height=720&seed={random.randint(1,99999)}&model=flux"
+        url = f"https://image.pollinations.ai/prompt/{encoded}?width=1280&height=720&seed={random.randint(1,99999)}&model=flux&nologo=true"
         async with aiohttp.ClientSession() as s:
-            async with s.get(url, timeout=aiohttp.ClientTimeout(total=12)) as r:
+            async with s.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
                 if r.status == 200:
                     data = await r.read()
-                    if len(data) > 5000:
+                    if len(data) > 10000:
                         print(f"✅ Pollinations: {query[:30]}")
                         return data
     except Exception as e:
@@ -325,13 +330,12 @@ async def _fetch_pollinations(query: str) -> bytes | None:
 
 
 async def _fetch_dalle(query: str) -> bytes | None:
-    """DALL-E 3 - OpenAI"""
     if not OPENAI_API_KEY:
         return None
     try:
         payload = {
             "model": "dall-e-3",
-            "prompt": f"cartoon educational illustration, {query}, simple style, white background",
+            "prompt": f"educational illustration, {query}, simple clean style, white background, no text",
             "size": "1024x1024",
             "n": 1,
             "response_format": "b64_json"
@@ -351,37 +355,34 @@ async def _fetch_dalle(query: str) -> bytes | None:
 
 
 def _create_cartoon_placeholder(keyword: str, section_title: str, lecture_type: str) -> bytes:
-    """إنشاء صورة كرتونية بديلة احترافية"""
+    """إنشاء صورة كرتونية بديلة"""
     W, H = 1280, 720
+    
     colors = {
         "medicine": (41, 128, 185), "science": (39, 174, 96), "math": (230, 126, 34),
         "physics": (155, 89, 182), "chemistry": (231, 76, 60), "biology": (52, 152, 219),
         "history": (241, 196, 15), "computer": (142, 68, 173), "business": (26, 188, 156),
-        "literature": (192, 57, 43), "other": (149, 165, 166),
+        "literature": (192, 57, 43), "other": (52, 73, 94),
     }
     color = colors.get(lecture_type, colors["other"])
     
-    img = PILImage.new("RGB", (W, H), (245, 248, 250))
+    img = PILImage.new("RGB", (W, H), (248, 249, 250))
     draw = ImageDraw.Draw(img)
     
-    # خلفية متدرجة
     for y in range(H):
         t = y / H
-        r = int(255 * (1 - t) + color[0] * 0.2 * t)
-        g = int(255 * (1 - t) + color[1] * 0.2 * t)
-        b = int(255 * (1 - t) + color[2] * 0.2 * t)
+        r = int(248 * (1 - t) + color[0] * 0.15 * t)
+        g = int(249 * (1 - t) + color[1] * 0.15 * t)
+        b = int(250 * (1 - t) + color[2] * 0.15 * t)
         draw.line([(0, y), (W, y)], fill=(r, g, b))
     
-    # إطار
-    draw.rounded_rectangle([(20, 20), (W-20, H-20)], radius=30, outline=color, width=6)
+    draw.rounded_rectangle([(20, 20), (W-20, H-20)], radius=25, outline=color, width=5)
     
-    # أيقونة
     icons = {"medicine": "🩺", "science": "🔬", "math": "📐", "physics": "⚡",
              "chemistry": "🧪", "biology": "🧬", "history": "🏛️", "computer": "💻",
              "business": "💼", "literature": "📖", "other": "📚"}
     icon = icons.get(lecture_type, "📚")
     
-    # تحميل الخط
     try:
         font = ImageFont.truetype("/app/fonts/Amiri-Bold.ttf", 80)
     except:
@@ -394,13 +395,12 @@ def _create_cartoon_placeholder(keyword: str, section_title: str, lecture_type: 
     iw = bbox[2] - bbox[0]
     draw.text(((W - iw)//2, 150), icon, fill=color, font=font)
     
-    # الكلمة المفتاحية
     try:
         import arabic_reshaper
         from bidi.algorithm import get_display
-        kw = get_display(arabic_reshaper.reshape(keyword[:30]))
+        kw = get_display(arabic_reshaper.reshape(keyword[:35]))
     except:
-        kw = keyword[:30]
+        kw = keyword[:35]
     
     try:
         font_kw = ImageFont.truetype("/app/fonts/Amiri-Bold.ttf", 48)
@@ -412,10 +412,30 @@ def _create_cartoon_placeholder(keyword: str, section_title: str, lecture_type: 
     
     bbox = draw.textbbox((0, 0), kw, font=font_kw)
     kw_w = bbox[2] - bbox[0]
-    draw.text(((W - kw_w)//2 + 3, 300), kw, fill=(0, 0, 0, 100), font=font_kw)
-    draw.text(((W - kw_w)//2, 297), kw, fill=(40, 45, 60), font=font_kw)
+    draw.text(((W - kw_w)//2 + 3, 290), kw, fill=(0, 0, 0, 100), font=font_kw)
+    draw.text(((W - kw_w)//2, 287), kw, fill=(40, 45, 60), font=font_kw)
     
-    # نص توضيحي
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        st = get_display(arabic_reshaper.reshape(section_title[:40]))
+    except:
+        st = section_title[:40]
+    
+    try:
+        font_st = ImageFont.truetype("/app/fonts/Amiri-Regular.ttf", 24)
+    except:
+        try:
+            font_st = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 24)
+        except:
+            font_st = ImageFont.load_default()
+    
+    bbox = draw.textbbox((0, 0), st, font=font_st)
+    st_w = bbox[2] - bbox[0]
+    draw.text(((W - st_w)//2, 400), st, fill=(100, 100, 120), font=font_st)
+    
+    draw.rectangle([(W//4, 450), (W*3//4, 454)], fill=color)
+    
     hint = "🎨 صورة تعليمية"
     try:
         import arabic_reshaper
@@ -424,17 +444,9 @@ def _create_cartoon_placeholder(keyword: str, section_title: str, lecture_type: 
     except:
         pass
     
-    try:
-        font_hint = ImageFont.truetype("/app/fonts/Amiri-Regular.ttf", 24)
-    except:
-        try:
-            font_hint = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 24)
-        except:
-            font_hint = ImageFont.load_default()
-    
-    bbox = draw.textbbox((0, 0), hint, font=font_hint)
+    bbox = draw.textbbox((0, 0), hint, font=font_st)
     hw = bbox[2] - bbox[0]
-    draw.text(((W - hw)//2, 450), hint, fill=(120, 120, 140), font=font_hint)
+    draw.text(((W - hw)//2, 520), hint, fill=(150, 150, 170), font=font_st)
     
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=90)
@@ -447,36 +459,48 @@ async def fetch_image_for_keyword(
     lecture_type: str,
     image_search_en: str = "",
 ) -> bytes:
-    """جلب صورة للكلمة المفتاحية - 5 بدائل مجانية"""
+    """جلب صورة للكلمة المفتاحية - 5 مصادر"""
     subject = (image_search_en or keyword).strip()
     
-    # 1. Pollinations.ai (ذكاء اصطناعي مجاني)
-    img = await _fetch_pollinations(subject)
+    type_keywords = {
+        "medicine": "medical diagram", "science": "scientific illustration",
+        "math": "mathematics concept", "physics": "physics diagram",
+        "chemistry": "chemistry molecule", "biology": "biology cell",
+        "history": "historical illustration", "computer": "computer science",
+        "business": "business concept", "literature": "literature illustration",
+        "other": "educational diagram"
+    }
+    
+    enhanced_query = f"{subject} {type_keywords.get(lecture_type, 'educational')}"
+    print(f"🔍 Searching image: {enhanced_query[:50]}")
+    
+    # 1. Pollinations
+    img = await _fetch_pollinations(enhanced_query)
     if img:
         return img
     
-    # 2. Pexels (صور حقيقية)
-    img = await _fetch_pexels(f"{subject} education")
+    # 2. Pexels
+    img = await _fetch_pexels(enhanced_query)
     if img:
         return img
     
-    # 3. Pixabay (صور تعليمية)
-    img = await _fetch_pixabay(subject)
+    # 3. Pixabay
+    img = await _fetch_pixabay(enhanced_query)
     if img:
         return img
     
-    # 4. Unsplash (صور احترافية)
-    img = await _fetch_unsplash(subject)
+    # 4. Unsplash
+    img = await _fetch_unsplash(enhanced_query)
     if img:
         return img
     
-    # 5. DALL-E (إذا وجد مفتاح)
+    # 5. DALL-E
     img = await _fetch_dalle(subject)
     if img:
         return img
     
-    # 6. صورة كرتونية بديلة
-    print(f"🎨 Creating cartoon placeholder for: {subject[:30]}")
+    # 6. صورة بديلة
+    print(f"🎨 Creating placeholder for: {subject[:30]}")
     return _create_cartoon_placeholder(keyword, section_title, lecture_type)
 
 
