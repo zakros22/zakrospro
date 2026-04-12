@@ -1,4 +1,14 @@
 # -*- coding: utf-8 -*-
+"""
+AI Analyzer Module - مع DeepSeek كمصدر أساسي
+=============================================
+ترتيب الأولوية:
+1. DeepSeek (9 مفاتيح مع تدوير)
+2. Google Gemini (9 مفاتيح مع تدوير)
+3. Groq (9 مفاتيح مع تدوير)
+4. OpenRouter (9 مفاتيح مع تدوير)
+"""
+
 import json
 import re
 import io
@@ -21,39 +31,124 @@ def clean_text(text: str) -> str:
 
 
 async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
-    import PyPDF2
+    try:
+        import pdfplumber
+        
+        def _extract():
+            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                pages = []
+                for page in pdf.pages:
+                    page_text = page.extract_text() or ""
+                    if page_text.strip():
+                        pages.append(page_text)
+                return "\n\n".join(pages)
+        
+        loop = asyncio.get_event_loop()
+        text = await asyncio.wait_for(loop.run_in_executor(None, _extract), timeout=60.0)
+        if len(text.strip()) > 100:
+            print(f"[PDF] pdfplumber success: {len(text)} chars")
+            return clean_text(text)
+    except Exception as e:
+        print(f"[PDF] pdfplumber failed: {e}")
     
-    def _extract():
-        reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
-        pages = []
-        for page in reader.pages:
-            page_text = page.extract_text() or ""
-            if page_text.strip():
-                pages.append(page_text)
-        return "\n\n".join(pages)
-    
-    loop = asyncio.get_event_loop()
-    text = await asyncio.wait_for(loop.run_in_executor(None, _extract), timeout=90.0)
-    return clean_text(text)
+    try:
+        import PyPDF2
+        
+        def _extract():
+            reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
+            pages = []
+            for page in reader.pages:
+                page_text = page.extract_text() or ""
+                if page_text.strip():
+                    pages.append(page_text)
+            return "\n\n".join(pages)
+        
+        loop = asyncio.get_event_loop()
+        text = await asyncio.wait_for(loop.run_in_executor(None, _extract), timeout=60.0)
+        print(f"[PDF] PyPDF2 success: {len(text)} chars")
+        return clean_text(text)
+    except Exception as e:
+        print(f"[PDF] PyPDF2 failed: {e}")
+        raise RuntimeError(f"فشل استخراج النص من PDF: {str(e)}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# API Keys
+# تحميل مفاتيح API
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_google_keys = [k.strip() for k in os.getenv("GOOGLE_API_KEYS", "").split(",") if k.strip()]
+def _load_keys(env_name):
+    """تحميل المفاتيح من متغيرات البيئة (تدعم مفاتيح متعددة بفواصل)"""
+    keys = []
+    raw = os.getenv(env_name, "")
+    if raw:
+        for k in raw.split(","):
+            k = k.strip()
+            if k and k not in keys:
+                keys.append(k)
+    return keys
+
+
+# DeepSeek Keys (الأولوية الأولى)
+_deepseek_keys = _load_keys("DEEPSEEK_API_KEYS")
+if not _deepseek_keys:
+    single = os.getenv("DEEPSEEK_API_KEY", "").strip()
+    if single:
+        _deepseek_keys = [single]
+_current_deepseek_idx = 0
+_exhausted_deepseek = set()
+
+# Google Keys (الأولوية الثانية)
+_google_keys = _load_keys("GOOGLE_API_KEYS")
+if not _google_keys:
+    single = os.getenv("GOOGLE_API_KEY", "").strip()
+    if single:
+        _google_keys = [single]
 _current_google_idx = 0
 _exhausted_google = set()
 
-_groq_keys = [k.strip() for k in os.getenv("GROQ_API_KEYS", "").split(",") if k.strip()]
+# Groq Keys (الأولوية الثالثة)
+_groq_keys = _load_keys("GROQ_API_KEYS")
+if not _groq_keys:
+    single = os.getenv("GROQ_API_KEY", "").strip()
+    if single:
+        _groq_keys = [single]
 _current_groq_idx = 0
 _exhausted_groq = set()
 
-_openrouter_keys = [k.strip() for k in os.getenv("OPENROUTER_API_KEYS", "").split(",") if k.strip()]
+# OpenRouter Keys (الأولوية الرابعة)
+_openrouter_keys = _load_keys("OPENROUTER_API_KEYS")
+if not _openrouter_keys:
+    single = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if single:
+        _openrouter_keys = [single]
 _current_or_idx = 0
 _exhausted_or = set()
 
-print(f"[AI] Google: {len(_google_keys)}, Groq: {len(_groq_keys)}, OpenRouter: {len(_openrouter_keys)}")
+print(f"[AI] Keys - DeepSeek: {len(_deepseek_keys)}, Google: {len(_google_keys)}, Groq: {len(_groq_keys)}, OpenRouter: {len(_openrouter_keys)}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# دوال التدوير لكل مزود
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _next_deepseek_key():
+    global _current_deepseek_idx
+    if not _deepseek_keys:
+        return None
+    for _ in range(len(_deepseek_keys)):
+        k = _deepseek_keys[_current_deepseek_idx % len(_deepseek_keys)]
+        if k not in _exhausted_deepseek:
+            return k
+        _current_deepseek_idx += 1
+    return None
+
+
+def _mark_deepseek_exhausted(k):
+    global _current_deepseek_idx
+    _exhausted_deepseek.add(k)
+    _current_deepseek_idx += 1
+    remaining = len(_deepseek_keys) - len(_exhausted_deepseek)
+    print(f"[DeepSeek] Key exhausted. {remaining} remaining.")
 
 
 def _next_google_key():
@@ -72,6 +167,8 @@ def _mark_google_exhausted(k):
     global _current_google_idx
     _exhausted_google.add(k)
     _current_google_idx += 1
+    remaining = len(_google_keys) - len(_exhausted_google)
+    print(f"[Google] Key exhausted. {remaining} remaining.")
 
 
 def _next_groq_key():
@@ -90,6 +187,8 @@ def _mark_groq_exhausted(k):
     global _current_groq_idx
     _exhausted_groq.add(k)
     _current_groq_idx += 1
+    remaining = len(_groq_keys) - len(_exhausted_groq)
+    print(f"[Groq] Key exhausted. {remaining} remaining.")
 
 
 def _next_or_key():
@@ -108,13 +207,63 @@ def _mark_or_exhausted(k):
     global _current_or_idx
     _exhausted_or.add(k)
     _current_or_idx += 1
+    remaining = len(_openrouter_keys) - len(_exhausted_or)
+    print(f"[OpenRouter] Key exhausted. {remaining} remaining.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# دوال AI
+# دوال التوليد لكل مزود
 # ═══════════════════════════════════════════════════════════════════════════════
+
+async def _deepseek_generate(prompt: str, max_tokens: int = 8192) -> str:
+    """توليد النص باستخدام DeepSeek - الأولوية الأولى"""
+    if not _deepseek_keys:
+        raise Exception("No DeepSeek keys configured")
+    
+    for _ in range(len(_deepseek_keys) + 1):
+        key = _next_deepseek_key()
+        if not key:
+            break
+        
+        try:
+            headers = {
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": "deepseek-chat",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": min(max_tokens, 8192),
+                "temperature": 0.9
+            }
+            async with aiohttp.ClientSession() as s:
+                async with s.post(
+                    "https://api.deepseek.com/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(90)
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        print(f"[DeepSeek] Success")
+                        return data["choices"][0]["message"]["content"].strip()
+                    elif resp.status == 429 or resp.status == 402:
+                        _mark_deepseek_exhausted(key)
+                        print(f"[DeepSeek] Key exhausted (rate limit/quota)")
+                        continue
+                    else:
+                        body = await resp.text()
+                        print(f"[DeepSeek] Error {resp.status}: {body[:100]}")
+                        continue
+        except Exception as e:
+            print(f"[DeepSeek] Exception: {str(e)[:100]}")
+            continue
+    
+    raise Exception("All DeepSeek keys exhausted")
+
 
 async def _google_generate(prompt: str, max_tokens: int = 8192) -> str:
+    """توليد النص باستخدام Google Gemini - الأولوية الثانية"""
     models = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
     
     for _ in range(len(_google_keys) + 1):
@@ -132,13 +281,13 @@ async def _google_generate(prompt: str, max_tokens: int = 8192) -> str:
                     contents=prompt,
                     config=genai_types.GenerateContentConfig(temperature=0.9, max_output_tokens=max_tokens)
                 )
-                print(f"[AI] Google success: {model}")
+                print(f"[Google] Success: {model}")
                 return response.text.strip()
             except Exception as e:
                 err = str(e)
                 if "429" in err or "RESOURCE_EXHAUSTED" in err or "quota" in err.lower():
                     _mark_google_exhausted(key)
-                    print("[AI] Google key exhausted")
+                    print(f"[Google] Key exhausted")
                     break
                 else:
                     continue
@@ -147,6 +296,7 @@ async def _google_generate(prompt: str, max_tokens: int = 8192) -> str:
 
 
 async def _groq_generate(prompt: str, max_tokens: int = 8192) -> str:
+    """توليد النص باستخدام Groq - الأولوية الثالثة"""
     models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it"]
     
     for _ in range(len(_groq_keys) + 1):
@@ -170,11 +320,11 @@ async def _groq_generate(prompt: str, max_tokens: int = 8192) -> str:
                     ) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            print(f"[AI] Groq success: {model}")
+                            print(f"[Groq] Success: {model}")
                             return data["choices"][0]["message"]["content"].strip()
                         elif resp.status == 429:
                             _mark_groq_exhausted(key)
-                            print("[AI] Groq key exhausted")
+                            print(f"[Groq] Key exhausted")
                             break
             except:
                 continue
@@ -183,7 +333,9 @@ async def _groq_generate(prompt: str, max_tokens: int = 8192) -> str:
 
 
 async def _openrouter_generate(prompt: str, max_tokens: int = 8192) -> str:
+    """توليد النص باستخدام OpenRouter - الأولوية الرابعة"""
     models = [
+        "deepseek/deepseek-chat",
         "google/gemini-2.0-flash-exp:free",
         "google/gemini-2.0-flash-lite-preview-02-05:free",
         "nvidia/llama-3.1-nemotron-70b-instruct:free",
@@ -218,11 +370,11 @@ async def _openrouter_generate(prompt: str, max_tokens: int = 8192) -> str:
                             data = await resp.json()
                             content = data["choices"][0]["message"]["content"]
                             if content and content.strip():
-                                print(f"[AI] OpenRouter success: {model}")
+                                print(f"[OpenRouter] Success: {model}")
                                 return content.strip()
                         elif resp.status == 429:
                             _mark_or_exhausted(key)
-                            print("[AI] OpenRouter key exhausted")
+                            print(f"[OpenRouter] Key exhausted")
                             break
             except:
                 continue
@@ -230,19 +382,41 @@ async def _openrouter_generate(prompt: str, max_tokens: int = 8192) -> str:
     raise Exception("All OpenRouter keys exhausted")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# نظام التوليد الرئيسي - بالأولوية المطلوبة
+# ═══════════════════════════════════════════════════════════════════════════════
+
 async def _ai_generate(prompt: str, max_tokens: int = 8192) -> str:
+    """
+    نظام التوليد حسب الأولوية:
+    1. DeepSeek (المصدر الأساسي)
+    2. Google Gemini
+    3. Groq
+    4. OpenRouter
+    """
+    
+    # 1. DeepSeek (الأولوية الأولى)
+    if _deepseek_keys:
+        try:
+            return await _deepseek_generate(prompt, max_tokens)
+        except Exception as e:
+            print(f"[AI] DeepSeek failed: {e}")
+    
+    # 2. Google Gemini (الأولوية الثانية)
     if _google_keys:
         try:
             return await _google_generate(prompt, max_tokens)
         except Exception as e:
             print(f"[AI] Google failed: {e}")
     
+    # 3. Groq (الأولوية الثالثة)
     if _groq_keys:
         try:
             return await _groq_generate(prompt, max_tokens)
         except Exception as e:
             print(f"[AI] Groq failed: {e}")
     
+    # 4. OpenRouter (الأولوية الرابعة)
     if _openrouter_keys:
         try:
             return await _openrouter_generate(prompt, max_tokens)
@@ -253,7 +427,7 @@ async def _ai_generate(prompt: str, max_tokens: int = 8192) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# استخراج الكلمات وتحديد النوع
+# استخراج الكلمات المفتاحية
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _extract_keywords(text: str, max_words: int = 30) -> list:
@@ -263,7 +437,7 @@ def _extract_keywords(text: str, max_words: int = 30) -> list:
         'مع', 'ما', 'لا', 'عن', 'إذا', 'لم', 'لن', 'قد', 'ثم', 'أو', 'أم', 'لكن',
         'حتى', 'بل', 'كل', 'بعض', 'the', 'a', 'an', 'is', 'are', 'was', 'were',
         'of', 'to', 'in', 'that', 'it', 'be', 'for', 'on', 'with', 'as', 'at',
-        'by', 'this', 'and', 'or', 'but'
+        'by', 'this', 'and', 'or', 'but', 'from', 'they', 'we', 'you', 'i'
     }
     words = re.findall(r'[\u0600-\u06FF]{4,}|[a-zA-Z]{4,}', text)
     freq = {}
@@ -275,80 +449,184 @@ def _extract_keywords(text: str, max_words: int = 30) -> list:
     return [w[0] for w in sorted_words[:max_words]]
 
 
-def _detect_type(text: str) -> str:
-    text = clean_text(text).lower()
-    medical = ['مرض', 'علاج', 'طبيب', 'جراحة', 'دواء', 'تشخيص', 'مريض', 'قلب', 'دم', 'خلية', 'ورم', 'سرطان', 'endometriosis', 'cyst', 'inflammation']
-    math = ['معادلة', 'دالة', 'تفاضل', 'تكامل', 'جبر', 'هندسة', 'رياضيات', 'equation', 'function', 'calculus', 'derivative', 'integral', 'matrix']
-    physics = ['قوة', 'طاقة', 'حركة', 'سرعة', 'جاذبية', 'كهرباء', 'مغناطيس', 'فيزياء', 'force', 'energy', 'motion', 'velocity']
-    chemistry = ['تفاعل', 'عنصر', 'مركب', 'جزيء', 'ذرة', 'حمض', 'قاعدة', 'كيمياء', 'reaction', 'element', 'compound', 'molecule']
-    history = ['تاريخ', 'حرب', 'معركة', 'حضارة', 'إمبراطورية', 'ملك', 'ثورة', 'history', 'war', 'battle']
-    biology = ['نبات', 'حيوان', 'بيئة', 'وراثة', 'تطور', 'خلية', 'biology', 'plant', 'animal', 'cell']
+def _is_english(text: str) -> bool:
+    arabic_chars = len(re.findall(r'[\u0600-\u06FF]', text))
+    english_chars = len(re.findall(r'[a-zA-Z]', text))
+    return english_chars > arabic_chars
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# التحليل الذكي - تحديد النوع والعنوان
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def _smart_detect_type_and_title(text: str) -> tuple:
+    preview = text[:3000]
+    keywords = _extract_keywords(text, 20)
+    is_eng = _is_english(text)
     
-    scores = {
-        'medicine': sum(1 for k in medical if k in text),
-        'math': sum(1 for k in math if k in text),
-        'physics': sum(1 for k in physics if k in text),
-        'chemistry': sum(1 for k in chemistry if k in text),
-        'history': sum(1 for k in history if k in text),
-        'biology': sum(1 for k in biology if k in text)
-    }
-    best = max(scores, key=scores.get)
-    return best if scores[best] > 1 else 'other'
+    if is_eng:
+        type_prompt = """Analyze the following text and return:
+1. Lecture type (choose: medicine, math, physics, chemistry, biology, history, literature, philosophy, law, economics, engineering, computer_science, psychology, sociology, other)
+2. Suitable title
+3. Main sections (3-6 sections)
 
+Return JSON only: {"type": "...", "title": "...", "main_sections": ["...", "..."]}"""
+    else:
+        type_prompt = """حلل النص التالي وأعطني:
+1. نوع المحاضرة (اختر: medicine, math, physics, chemistry, biology, history, literature, philosophy, law, economics, engineering, computer_science, psychology, sociology, other)
+2. عنوان مناسب
+3. الأقسام الرئيسية (3-6 أقسام)
 
-def _detect_has_equations(text: str) -> bool:
-    """الكشف عن وجود معادلات رياضية"""
-    patterns = [r'[=+\-*/^()]', r'\d+', r'[xyzXYZ]', r'\[.*\]', r'\(.*\)']
-    for p in patterns:
-        if re.search(p, text):
-            return True
-    return False
+أرجع JSON فقط: {"type": "...", "title": "...", "main_sections": ["...", "..."]}"""
+    
+    prompt = f"""{type_prompt}
+
+Text:
+---
+{preview}
+---
+
+Keywords: {', '.join(keywords[:15])}"""
+    
+    try:
+        content = await _ai_generate(prompt, 4096)
+        content = re.sub(r'^```json\s*', '', content.strip())
+        content = re.sub(r'\s*```$', '', content)
+        res = json.loads(content)
+        return (
+            res.get("type", "other"),
+            res.get("title", keywords[0] if keywords else ("Lecture" if is_eng else "محاضرة")),
+            res.get("main_sections", [])
+        )
+    except Exception as e:
+        print(f"[AI] Smart detect failed: {e}")
+        text_lower = text.lower()
+        if any(k in text_lower for k in ['مرض', 'علاج', 'طبيب', 'disease', 'treatment']):
+            ltype = 'medicine'
+        elif any(k in text_lower for k in ['معادلة', 'دالة', 'تفاضل', 'equation', 'calculus']):
+            ltype = 'math'
+        elif any(k in text_lower for k in ['قوة', 'طاقة', 'حركة', 'force', 'energy']):
+            ltype = 'physics'
+        elif any(k in text_lower for k in ['تفاعل', 'عنصر', 'مركب', 'reaction', 'element']):
+            ltype = 'chemistry'
+        elif any(k in text_lower for k in ['تاريخ', 'حرب', 'معركة', 'history', 'war']):
+            ltype = 'history'
+        elif any(k in text_lower for k in ['نبات', 'حيوان', 'خلية', 'biology', 'cell']):
+            ltype = 'biology'
+        else:
+            ltype = 'other'
+        
+        title = keywords[0] if keywords else ("Lecture" if is_eng else "محاضرة")
+        return ltype, title, []
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # توليد الأسئلة التفاعلية
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _generate_question(keywords: list, lecture_type: str, section_title: str) -> tuple:
-    """توليد سؤال وجواب لكل قسم"""
-    kw = keywords[0] if keywords else "المفهوم"
+def _generate_questions_by_type(keywords: list, lecture_type: str, is_english: bool) -> tuple:
+    kw = keywords[0] if keywords else ("concept" if is_english else "المفهوم")
+    kw2 = keywords[1] if len(keywords) > 1 else kw
     
-    questions = {
-        'medicine': (
-            f"❓ سؤال: ما هو تعريف {kw}؟ وما هي أبرز أعراضه؟",
-            f"✅ الإجابة: {kw} هو ... (يتم شرحه في القسم). من أبرز أعراضه: ..."
-        ),
-        'math': (
-            f"❓ سؤال: كيف يمكننا حل معادلة {kw}؟",
-            f"✅ الإجابة: لحل معادلة {kw}، نتبع الخطوات التالية: ..."
-        ),
-        'physics': (
-            f"❓ سؤال: ما هو القانون الفيزيائي المرتبط بـ {kw}؟",
-            f"✅ الإجابة: القانون هو ... وينص على أن ..."
-        ),
-        'chemistry': (
-            f"❓ سؤال: ما هي معادلة تفاعل {kw}؟ وما شروطه؟",
-            f"✅ الإجابة: معادلة التفاعل هي ... وتحتاج إلى درجة حرارة ..."
-        ),
-        'history': (
-            f"❓ سؤال: متى وقعت أحداث {kw}؟ ومن هي الشخصيات الرئيسية؟",
-            f"✅ الإجابة: وقعت في عام ... وأهم شخصياتها: ..."
-        ),
-        'biology': (
-            f"❓ سؤال: ما هو تركيب {kw}؟ وما وظيفته؟",
-            f"✅ الإجابة: يتكون {kw} من ... ووظيفته الأساسية هي ..."
-        ),
-        'other': (
-            f"❓ سؤال: ما هو {kw}؟ وما أهميته؟",
-            f"✅ الإجابة: {kw} هو ... وتكمن أهميته في ..."
-        )
-    }
+    if is_english:
+        questions_map = {
+            'medicine': (
+                f"❓ Question: What is {kw}? What are its main symptoms and diagnosis methods?",
+                f"✅ Answer: {kw} is a medical condition characterized by... Diagnosis involves..."
+            ),
+            'math': (
+                f"❓ Question: How do we solve an equation involving {kw}? Explain the steps.",
+                f"✅ Answer: To solve an equation with {kw}: 1) Identify variables, 2) Write equation, 3) Simplify, 4) Isolate variable, 5) Verify."
+            ),
+            'physics': (
+                f"❓ Question: What physical law relates to {kw}? Write its mathematical formula.",
+                f"✅ Answer: The law states that... Formula: ..."
+            ),
+            'chemistry': (
+                f"❓ Question: Write the reaction equation for {kw} with {kw2}. What are the conditions?",
+                f"✅ Answer: Reaction: ... Conditions: temperature..., pressure..., catalyst..."
+            ),
+            'biology': (
+                f"❓ Question: What is the structure of {kw}? What is its main function?",
+                f"✅ Answer: {kw} consists of... Its primary function is..."
+            ),
+            'history': (
+                f"❓ Question: When and where did the events of {kw} take place? Who were the key figures?",
+                f"✅ Answer: It occurred in... at... Key figures include..."
+            ),
+            'other': (
+                f"❓ Question: What is {kw}? Why is it important?",
+                f"✅ Answer: {kw} is... Its importance lies in..."
+            )
+        }
+    else:
+        questions_map = {
+            'medicine': (
+                f"❓ سؤال: ما هو تعريف {kw}؟ وما هي أبرز أعراضه وطرق تشخيصه؟",
+                f"✅ الإجابة: {kw} هو حالة طبية تتميز بـ ... يتم تشخيصه عبر ..."
+            ),
+            'math': (
+                f"❓ سؤال: كيف نحل معادلة تتضمن {kw}؟ اشرح الخطوات.",
+                f"✅ الإجابة: لحل معادلة {kw}، نتبع: 1) تحديد المتغيرات، 2) كتابة المعادلة، 3) تبسيط الطرفين، 4) عزل المتغير، 5) التحقق من الحل."
+            ),
+            'physics': (
+                f"❓ سؤال: ما القانون الفيزيائي المرتبط بـ {kw}؟ اكتب صيغته الرياضية.",
+                f"✅ الإجابة: القانون هو ... وصيغته: ..."
+            ),
+            'chemistry': (
+                f"❓ سؤال: اكتب معادلة تفاعل {kw} مع {kw2}. وما شروط التفاعل؟",
+                f"✅ الإجابة: معادلة التفاعل: ... الشروط: درجة حرارة ...، ضغط ...، عامل حفاز ..."
+            ),
+            'biology': (
+                f"❓ سؤال: ما هو تركيب {kw}؟ وما وظيفته الرئيسية؟",
+                f"✅ الإجابة: {kw} يتكون من ... ووظيفته الأساسية هي ..."
+            ),
+            'history': (
+                f"❓ سؤال: متى وأين وقعت أحداث {kw}؟ ومن الشخصيات الرئيسية فيها؟",
+                f"✅ الإجابة: وقعت في عام ... في ... وأهم شخصياتها: ..."
+            ),
+            'other': (
+                f"❓ سؤال: ما هو {kw}؟ وما أهميته؟",
+                f"✅ الإجابة: {kw} هو ... وتكمن أهميته في ..."
+            )
+        }
     
-    return questions.get(lecture_type, questions['other'])
+    return questions_map.get(lecture_type, questions_map['other'])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# الدالة الرئيسية - تحليل ذكي مع أسئلة تفاعلية
+# شرح احتياطي
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _generate_fallback_narration(keywords: list, lecture_type: str, is_english: bool) -> str:
+    kw_str = ', '.join(keywords[:3])
+    
+    if is_english:
+        narrations = {
+            'medicine': f"We discuss {kw_str}. Definition, symptoms, diagnosis, treatment... " * 8,
+            'math': f"To solve {kw_str}: 1) Identify variables, 2) Write equation, 3) Simplify, 4) Isolate, 5) Verify. " * 6,
+            'physics': f"The law of {kw_str} states that... Formula and applications... " * 7,
+            'chemistry': f"Reaction of {kw_str}: equation, conditions, applications... " * 7,
+            'biology': f"In biology, {kw_str} refers to structure and function... " * 7,
+            'history': f"Events of {kw_str}: date, location, key figures, causes, consequences... " * 8,
+            'other': f"Learning about {kw_str}: definition, examples, applications... " * 10
+        }
+    else:
+        narrations = {
+            'medicine': f"نتحدث عن {kw_str}. تعريف، أعراض، تشخيص، علاج... " * 8,
+            'math': f"لحل {kw_str}: 1) تحديد المتغيرات، 2) كتابة المعادلة، 3) تبسيط، 4) عزل المتغير، 5) التحقق. " * 6,
+            'physics': f"قانون {kw_str} ينص على... الصيغة والتطبيقات... " * 7,
+            'chemistry': f"تفاعل {kw_str}: المعادلة، الشروط، التطبيقات... " * 7,
+            'biology': f"في الأحياء، {kw_str}: التركيب والوظيفة... " * 7,
+            'history': f"أحداث {kw_str}: التاريخ، المكان، الشخصيات، الأسباب، النتائج... " * 8,
+            'other': f"نتعرف على {kw_str}: تعريف، أمثلة، تطبيقات... " * 10
+        }
+    
+    return narrations.get(lecture_type, narrations['other'])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# الدالة الرئيسية
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
@@ -356,69 +634,75 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     if not text:
         raise ValueError("النص فارغ")
     
+    is_eng = _is_english(text)
+    print(f"[AI] Language: {'English' if is_eng else 'Arabic'}")
+    
+    print("[AI] Phase 1: Smart detection...")
+    ltype, title, main_sections = await _smart_detect_type_and_title(text)
+    print(f"[AI] Type: {ltype}, Title: {title}")
+    
     keywords = _extract_keywords(text, 40)
-    ltype = _detect_type(text)
-    has_equations = _detect_has_equations(text)
     
-    print(f"[AI] Type: {ltype}, Has equations: {has_equations}")
-    
-    wc = len(text.split())
-    if wc < 300:
-        ns = 3
-    elif wc < 600:
-        ns = 4
-    elif wc < 1000:
-        ns = 5
+    if main_sections:
+        ns = len(main_sections)
     else:
-        ns = 6
+        wc = len(text.split())
+        if wc < 300:
+            ns = 3
+        elif wc < 600:
+            ns = 4
+        elif wc < 1000:
+            ns = 5
+        else:
+            ns = 6
     
     preview = text[:4000]
     
     teacher_map = {
-        'medicine': 'طبيب استشاري', 'math': 'أستاذ رياضيات', 'physics': 'فيزيائي',
-        'chemistry': 'كيميائي', 'history': 'مؤرخ', 'biology': 'عالم أحياء', 'other': 'معلم خبير'
+        'medicine': 'Doctor' if is_eng else 'طبيب استشاري',
+        'math': 'Math Professor' if is_eng else 'أستاذ رياضيات',
+        'physics': 'Physicist' if is_eng else 'فيزيائي',
+        'chemistry': 'Chemist' if is_eng else 'كيميائي',
+        'biology': 'Biologist' if is_eng else 'عالم أحياء',
+        'history': 'Historian' if is_eng else 'مؤرخ',
+        'other': 'Expert Teacher' if is_eng else 'معلم خبير'
     }
-    teacher = teacher_map.get(ltype, 'معلم خبير')
+    teacher = teacher_map.get(ltype, teacher_map['other'])
     
-    dial_map = {"iraq": "بالعراقي", "egypt": "بالمصري", "syria": "بالشامي", "gulf": "بالخليجي", "msa": "بالفصحى"}
-    dial = dial_map.get(dialect, "بالفصحى")
-    
-    # تخصيص prompt حسب نوع المحاضرة
-    if ltype == 'math' or has_equations:
-        style_instruction = """
-- اشرح المعادلات خطوة بخطوة.
-- اكتب المعادلة كاملة ثم حللها.
-- اشرح كل متغير وماذا يمثل.
-- أعط مثالاً عددياً محلولاً.
-"""
-    elif ltype == 'medicine':
-        style_instruction = """
-- اشرح pathophysiology (الآلية المرضية).
-- اذكر الأعراض والعلامات.
-- اشرح طرق التشخيص.
-- اذكر خيارات العلاج.
-"""
-    elif ltype == 'physics' or ltype == 'chemistry':
-        style_instruction = """
-- اذكر القانون أو المعادلة أولاً.
-- اشرح كل رمز في المعادلة.
-- أعط مثالاً تطبيقياً.
-- اشرح الوحدات المستخدمة.
-"""
-    else:
-        style_instruction = """
-- اشرح المفاهيم بلغة واضحة.
-- أعط أمثلة واقعية.
-- اربط بين الأفكار.
-"""
-    
-    prompt = f"""أنت {teacher} تشرح لطلابك. اشرح {dial}.
+    if is_eng:
+        dial = "in clear, simple English"
+        prompt = f"""You are a {teacher} explaining to students. Explain {dial}.
 
-**تعليمات الشرح:**
-{style_instruction}
-- اكتب شرحاً كاملاً (20-25 جملة).
+**Instructions:**
+- Write 20-25 complete, varied sentences.
+- Do NOT repeat sentences.
+- Explain concepts, give examples, connect ideas.
+
+**Title:** {title}
+**Type:** {ltype}
+
+**Text:**
+---
+{preview}
+---
+
+**Keywords:** {', '.join(keywords[:15])}
+
+**Required - {ns} sections:**
+Return JSON:
+{{"sections": [{{"title": "Section title", "keywords": ["word1", "word2", "word3", "word4"], "narration": "Full explanation (20-25 sentences)"}}], "summary": "Summary (6-8 sentences)"}}"""
+    else:
+        dial_map = {"iraq": "بالعراقي", "egypt": "بالمصري", "syria": "بالشامي", "gulf": "بالخليجي", "msa": "بالفصحى"}
+        dial = dial_map.get(dialect, "بالفصحى")
+        prompt = f"""أنت {teacher} تشرح لطلابك. اشرح {dial}.
+
+**تعليمات:**
+- اكتب 20-25 جملة كاملة ومتنوعة.
 - لا تكرر الجمل.
-- استخدم أسلوب المعلم: "دعونا نفهم..."، "لاحظوا معي...".
+- اشرح المفاهيم، أعط أمثلة، اربط الأفكار.
+
+**العنوان:** {title}
+**النوع:** {ltype}
 
 **النص:**
 ---
@@ -429,54 +713,38 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
 
 **المطلوب - {ns} أقسام:**
 أرجع JSON:
-{{
-  "title": "عنوان المحاضرة",
-  "sections": [
-    {{
-      "title": "عنوان القسم",
-      "keywords": ["كلمة1", "كلمة2", "كلمة3", "كلمة4"],
-      "narration": "نص الشرح (20-25 جملة)"
-    }}
-  ],
-  "summary": "ملخص (6-8 جمل)"
-}}"""
-    
-    ai_success = False
-    title = keywords[0] if keywords else "محاضرة"
-    ai_secs = []
-    summary = f"شرحنا: {', '.join(keywords[:8])}"
+{{"sections": [{{"title": "عنوان القسم", "keywords": ["كلمة1", "كلمة2", "كلمة3", "كلمة4"], "narration": "نص الشرح (20-25 جملة)"}}], "summary": "ملخص (6-8 جمل)"}}"""
     
     try:
         content = await _ai_generate(prompt, 8192)
         content = re.sub(r'^```json\s*', '', content.strip())
         content = re.sub(r'\s*```$', '', content)
         res = json.loads(content)
-        title = clean_text(res.get("title", title))
         ai_secs = res.get("sections", [])
-        summary = clean_text(res.get("summary", summary))
-        ai_success = True
-        print(f"[AI] AI generation successful")
+        summary = clean_text(res.get("summary", ""))
+        print(f"[AI] AI generation successful: {len(ai_secs)} sections")
     except Exception as e:
         print(f"[AI] AI failed, using fallback: {e}")
+        ai_secs = []
+        summary = f"Summary: {', '.join(keywords[:8])}" if is_eng else f"ملخص: {', '.join(keywords[:8])}"
     
     sections = []
     for i in range(ns):
-        if ai_success and i < len(ai_secs) and ai_secs[i].get("narration"):
+        if i < len(ai_secs) and ai_secs[i].get("narration"):
             s = ai_secs[i]
             kw = [clean_text(k) for k in s.get("keywords", [])[:4]]
-            st = clean_text(s.get("title", f"قسم {i+1}"))
+            st = clean_text(s.get("title", f"Section {i+1}" if is_eng else f"القسم {i+1}"))
             nar = clean_text(s.get("narration", ""))
         else:
             idx = (i * 4) % len(keywords)
             kw = [keywords[(idx + j) % len(keywords)] for j in range(4)]
-            st = kw[0] if kw else f"قسم {i+1}"
-            nar = _generate_fallback_narration(kw, ltype, text, i, ns)
+            st = kw[0] if kw else (f"Section {i+1}" if is_eng else f"القسم {i+1}")
+            nar = _generate_fallback_narration(kw, ltype, is_eng)
         
         while len(kw) < 4:
-            kw.append("مفهوم")
+            kw.append("concept" if is_eng else "مفهوم")
         
-        # توليد سؤال تفاعلي للقسم
-        question, answer = _generate_question(kw, ltype, st)
+        question, answer = _generate_questions_by_type(kw, ltype, is_eng)
         
         sections.append({
             "title": st,
@@ -485,13 +753,12 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
             "question": question,
             "answer": answer,
             "duration_estimate": max(45, len(nar.split()) // 3),
-            "_image_bytes": None,
-            "_has_equations": has_equations
+            "_image_bytes": None
         })
     
     for s in sections:
         q = " ".join(s["keywords"][:4])
-        s["_image_bytes"] = await fetch_image_for_keyword(q, s["title"], ltype)
+        s["_image_bytes"] = await fetch_image_for_keyword(q, s["title"], ltype, is_eng)
     
     return {
         "lecture_type": ltype,
@@ -499,35 +766,8 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         "sections": sections,
         "summary": summary,
         "all_keywords": keywords,
-        "has_equations": has_equations
+        "is_english": is_eng
     }
-
-
-def _generate_fallback_narration(keywords: list, lecture_type: str, original_text: str, section_idx: int, total_sections: int) -> str:
-    """خطة احتياطية ذكية حسب نوع المحاضرة"""
-    kw_str = '، '.join(keywords[:3])
-    
-    if lecture_type == 'medicine':
-        return f"نتحدث عن {kw_str}. تعريف {keywords[0]} هو الأساس. الأعراض تشمل {keywords[1]}. التشخيص يتم عبر {keywords[2]}. العلاج يشمل أدوية وجراحة. المضاعفات قد تكون خطيرة. الوقاية مهمة جداً. " * 8
-    elif lecture_type == 'math':
-        return f"لحل معادلة {kw_str}، نتبع خطوات محددة. أولاً، نحدد المتغيرات. ثانياً، نكتب المعادلة. ثالثاً، نبسط الطرفين. رابعاً، نعزل المتغير. خامساً، نتحقق من الحل. مثال: إذا كانت x + 2 = 5، فإن x = 3. " * 6
-    elif lecture_type == 'physics':
-        return f"قانون {kw_str} ينص على أن القوة تساوي الكتلة مضروبة في التسارع (F = ma). هذا يعني أنه كلما زادت الكتلة، زادت القوة المطلوبة. تطبيقات هذا القانون كثيرة في حياتنا اليومية. " * 7
-    elif lecture_type == 'chemistry':
-        return f"تفاعل {kw_str} يتم وفق معادلة كيميائية موزونة. المواد المتفاعلة هي {keywords[0]}، والنواتج هي {keywords[1]}. شروط التفاعل تشمل درجة حرارة وضغط محددين. " * 7
-    elif lecture_type == 'history':
-        return f"أحداث {kw_str} وقعت في فترة مهمة من التاريخ. الأسباب كانت متعددة. النتائج غيرت مجرى التاريخ. الشخصيات الرئيسية لعبت أدواراً حاسمة. " * 8
-    else:
-        sentences = re.split(r'(?<=[.!?؟])\s+', original_text)
-        selected = []
-        for s in sentences:
-            if any(kw in s for kw in keywords[:3]):
-                selected.append(s)
-            if len(selected) >= 15:
-                break
-        if len(selected) < 5:
-            selected = sentences[:20]
-        return " ".join(selected) if selected else f"شرح مفصل عن {kw_str}. " * 15
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -536,7 +776,7 @@ def _generate_fallback_narration(keywords: list, lecture_type: str, original_tex
 
 _TYPE_COLORS = {
     'medicine': (231, 76, 126), 'math': (52, 152, 219), 'physics': (52, 152, 219),
-    'chemistry': (46, 204, 113), 'history': (230, 126, 34), 'biology': (46, 204, 113),
+    'chemistry': (46, 204, 113), 'biology': (46, 204, 113), 'history': (230, 126, 34),
     'other': (155, 89, 182)
 }
 
@@ -552,8 +792,8 @@ def _get_font(size: int):
     return ImageFont.load_default()
 
 
-def _make_colored_image(keywords: str, color: tuple) -> bytes:
-    keywords = clean_text(keywords) or "مفهوم"
+def _make_colored_image(keywords: str, color: tuple, is_english: bool = False) -> bytes:
+    keywords = clean_text(keywords) or ("Concept" if is_english else "مفهوم")
     W, H = 500, 350
     img = Image.new("RGB", (W, H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
@@ -568,15 +808,15 @@ def _make_colored_image(keywords: str, color: tuple) -> bytes:
     draw.rounded_rectangle([(8, 8), (W-8, H-8)], radius=20, outline=color, width=6)
     draw.rounded_rectangle([(15, 15), (W-15, H-15)], radius=15, outline=(*color, 100), width=2)
     draw.ellipse([(W//2-70, H//2-70), (W//2+70, H//2+70)], fill=(*color, 30))
-    draw.ellipse([(W//2-50, H//2-50), (W//2+50, H//2+50)], outline=color, width=3)
     
-    font = _get_font(32)
-    try:
-        import arabic_reshaper
-        from bidi.algorithm import get_display
-        keywords = get_display(arabic_reshaper.reshape(keywords[:50]))
-    except:
-        pass
+    font = _get_font(32 if not is_english else 28)
+    if not is_english:
+        try:
+            import arabic_reshaper
+            from bidi.algorithm import get_display
+            keywords = get_display(arabic_reshaper.reshape(keywords[:50]))
+        except:
+            pass
     
     words = keywords.split()
     lines = []
@@ -637,31 +877,22 @@ async def _unsplash_generate(query: str) -> bytes | None:
     return None
 
 
-async def _picsum_generate() -> bytes | None:
-    try:
-        async with aiohttp.ClientSession() as s:
-            url = f"https://picsum.photos/500/350?random={random.randint(1, 1000)}"
-            async with s.get(url, timeout=10) as r:
-                if r.status == 200:
-                    return await r.read()
-    except:
-        pass
-    return None
-
-
-async def fetch_image_for_keyword(keyword: str, section_title: str = "", lecture_type: str = "other", image_search_en: str = "") -> bytes:
-    keyword = clean_text(keyword) or "مفهوم"
+async def fetch_image_for_keyword(keyword: str, section_title: str = "", lecture_type: str = "other", is_english: bool = False) -> bytes:
+    keyword = clean_text(keyword) or ("concept" if is_english else "مفهوم")
     color = _TYPE_COLORS.get(lecture_type, _TYPE_COLORS['other'])
     
-    # تخصيص وصف الصورة حسب نوع المحاضرة
     if lecture_type == 'medicine':
-        prompt = f"medical illustration of {keyword}, anatomy style, clean"
+        prompt = f"medical illustration of {keyword}, anatomy style"
     elif lecture_type == 'math':
         prompt = f"math equation illustration of {keyword}, whiteboard style"
     elif lecture_type == 'physics':
-        prompt = f"physics diagram of {keyword}, scientific illustration"
+        prompt = f"physics diagram of {keyword}, scientific"
     elif lecture_type == 'chemistry':
         prompt = f"chemistry molecular structure of {keyword}"
+    elif lecture_type == 'biology':
+        prompt = f"biology diagram of {keyword}, scientific"
+    elif lecture_type == 'history':
+        prompt = f"historical illustration of {keyword}, educational"
     else:
         prompt = f"educational illustration of {keyword}, cartoon style"
     
@@ -671,7 +902,4 @@ async def fetch_image_for_keyword(keyword: str, section_title: str = "", lecture
     img = await _unsplash_generate(keyword)
     if img:
         return img
-    img = await _picsum_generate()
-    if img:
-        return img
-    return _make_colored_image(keyword, color)
+    return _make_colored_image(keyword, color, is_english)
