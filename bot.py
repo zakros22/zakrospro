@@ -816,6 +816,7 @@ async def _process_lecture(uid, text, filename, dialect, lecture_meta, prog_msg,
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 # أوامر البوت الأساسية
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -851,12 +852,11 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📖 *كيفية الاستخدام*\n\n"
         "1️⃣ أرسل ملف PDF أو نص المحاضرة\n"
-        "2️⃣ اختر نوع المحاضرة (طب، هندسة، رياضيات...)\n"
+        "2️⃣ اختر نوع المحاضرة\n"
         "3️⃣ اختر التخصص الفرعي\n"
         "4️⃣ اختر المرحلة الدراسية\n"
         "5️⃣ اختر لهجة الشرح\n"
         "6️⃣ انتظر الفيديو!\n\n"
-        "/referral - رابط الإحالة\n"
         "/cancel - إلغاء المعالجة",
         parse_mode="Markdown"
     )
@@ -869,7 +869,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ev.set()
         await update.message.reply_text("⛔ تم إلغاء المعالجة.", reply_markup=main_keyboard())
     else:
-        await update.message.reply_text("✅ لا توجد عملية جارية.")
+        await update.message.reply_text("✅ لا توجد عملية جارية.", reply_markup=main_keyboard())
 
 
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -892,39 +892,32 @@ async def main():
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CommandHandler("admin", admin_cmd))
-    app.add_handler(CommandHandler("add", handle_add_attempts))
-    app.add_handler(CommandHandler("set", handle_set_attempts))
-    app.add_handler(CommandHandler("ban", handle_ban))
-    app.add_handler(CommandHandler("unban", handle_unban))
-    app.add_handler(CommandHandler("broadcast", handle_broadcast))
-    app.add_handler(CommandHandler("approve", handle_approve_payment_command))
 
     app.add_handler(PreCheckoutQueryHandler(handle_pre_checkout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, handle_successful_payment))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(
-        (filters.TEXT | filters.Document.ALL) & ~filters.COMMAND, receive_content
+        (filters.TEXT | filters.Document.ALL) & ~filters.COMMAND, 
+        receive_content
     ))
 
     logger.info("✅ Ready")
 
-    webhook_url = os.getenv("WEBHOOK_URL", "").rstrip("/")
-
-    async with app:
-        await app.start()
-
-        if webhook_url:
-            await app.bot.set_webhook(url=f"{webhook_url}/telegram", drop_pending_updates=True)
-            logger.info(f"✅ Webhook: {webhook_url}")
-            await asyncio.Event().wait()
-        else:
-            logger.info("🔄 Polling...")
-            await app.updater.start_polling(drop_pending_updates=True)
-            await asyncio.Event().wait()
-            await app.updater.stop()
-
-        await app.stop()
+    webhook_url = os.getenv("WEBHOOK_URL", "")
+    
+    if webhook_url and webhook_url.strip():
+        webhook_url = webhook_url.rstrip("/")
+        await app.bot.set_webhook(url=f"{webhook_url}/telegram", drop_pending_updates=True)
+        logger.info(f"✅ Webhook mode: {webhook_url}")
+        
+        # استمرار التشغيل بدون polling
+        await asyncio.Event().wait()
+    else:
+        logger.info("🔄 Polling mode...")
+        await app.updater.start_polling(drop_pending_updates=True)
+        await asyncio.Event().wait()
+        await app.updater.stop()
 
 
 if __name__ == "__main__":
-    asyncio.run(main()). 
+    asyncio.run(main())
