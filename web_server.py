@@ -1,21 +1,31 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+ZAKROS PRO - خادم الويب
+يدعم Webhook لتلقي تحديثات تيليجرام على Heroku
+"""
+
 import os
 import asyncio
 import json
+from datetime import datetime
 from aiohttp import web
 from config import OWNER_ID
 
 # ============================================================
 # متغيرات عامة
 # ============================================================
-_bot_application = None  # يتم تعيينه من bot.py
+_bot_application = None  # سيتم تعيينه من bot.py
+PORT = int(os.environ.get("PORT", 5000))
+ADMIN_SECRET = str(os.environ.get("ADMIN_SECRET", str(OWNER_ID)))
+
 
 def set_bot_app(app):
     """تسجيل تطبيق البوت لاستخدامه في webhook"""
     global _bot_application
     _bot_application = app
+    print("✅ Bot application registered with web server")
 
-PORT = int(os.environ.get("PORT", 5000))
-ADMIN_SECRET = str(os.environ.get("ADMIN_SECRET", str(OWNER_ID)))
 
 # ============================================================
 # الصفحة الرئيسية
@@ -25,7 +35,7 @@ HOME_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>بوت المحاضرات الذكي | ZAKROS PRO</title>
+  <title>ZAKROS PRO - بوت المحاضرات الذكي</title>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
     body {
@@ -35,7 +45,7 @@ HOME_HTML = """<!DOCTYPE html>
       display: flex; align-items: center; justify-content: center;
       color: #fff;
     }
-    .container { text-align:center; padding:40px 20px; max-width:700px; }
+    .container { text-align:center; padding:40px 20px; max-width:800px; }
     .logo { font-size:80px; margin-bottom:20px; animation:pulse 2s infinite; }
     @keyframes pulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.08)} }
     h1 {
@@ -73,6 +83,10 @@ HOME_HTML = """<!DOCTYPE html>
          border-radius:50%;margin-left:6px;animation:blink 1.4s infinite}
     @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
     .footer {margin-top:40px; color:#64748b; font-size:.8rem;}
+    .stats {display:flex; justify-content:center; gap:30px; margin-top:20px;}
+    .stat {text-align:center;}
+    .stat-value {font-size:1.5rem; font-weight:bold; color:#a78bfa;}
+    .stat-label {font-size:.8rem; color:#94a3b8;}
   </style>
 </head>
 <body>
@@ -89,7 +103,21 @@ HOME_HTML = """<!DOCTYPE html>
       <div class="feature"><div class="icon">🌍</div><h3>دعم كامل</h3><p>عربي وإنجليزي</p></div>
     </div>
     <a class="btn" href="https://t.me/zakros_Quizebot" target="_blank">🚀 ابدأ الآن مجاناً</a>
-    <p class="status"><span class="dot"></span>البوت يعمل 24/7 على Heroku</p>
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-value">24/7</div>
+        <div class="stat-label">يعمل باستمرار</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value">7+</div>
+        <div class="stat-label">لهجات مدعومة</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value">20+</div>
+        <div class="stat-label">تخصص علمي</div>
+      </div>
+    </div>
+    <p class="status"><span class="dot"></span>البوت يعمل الآن على Heroku</p>
     <div class="footer">© 2026 ZAKROS PRO - جميع الحقوق محفوظة</div>
   </div>
 </body>
@@ -102,21 +130,18 @@ async def handle_index(request):
 
 
 async def handle_health(request):
-    """نقطة فحص الصحة لـ Heroku"""
+    """نقطة فحص الصحة"""
     mode = "webhook" if _bot_application is not None else "polling"
     return web.json_response({
-        "status": "ok",
-        "bot": "lecture_bot",
+        "status": "healthy",
+        "bot": "zakros_pro",
         "mode": mode,
-        "host": "heroku",
-        "timestamp": str(asyncio.get_event_loop().time())
+        "timestamp": datetime.now().isoformat(),
     })
 
 
 async def handle_telegram_webhook(request):
-    """
-    استقبال تحديثات تيليجرام عبر Webhook.
-    """
+    """استقبال تحديثات تيليجرام"""
     if _bot_application is None:
         return web.Response(status=503, text="Bot not ready")
     
@@ -126,27 +151,114 @@ async def handle_telegram_webhook(request):
         update = Update.de_json(data, _bot_application.bot)
         await _bot_application.process_update(update)
     except Exception as e:
-        print(f"[webhook] Error processing update: {e}", flush=True)
+        print(f"[webhook] Error processing update: {e}")
     
     return web.Response(status=200)
 
 
-async def start_web_server():
-    """
-    بدء تشغيل خادم الويب.
-    """
-    port = int(os.environ.get("PORT", 5000))
+async def handle_admin(request):
+    """لوحة تحكم بسيطة للإدارة"""
+    key = request.query.get("key", "")
+    if key != ADMIN_SECRET:
+        return web.Response(
+            text="<h2 style='font-family:sans-serif;text-align:center;margin-top:60px;color:#ef4444'>⛔ غير مصرح</h2>",
+            content_type="text/html",
+            status=403,
+        )
     
+    try:
+        from database import get_stats, get_all_users
+        stats = get_stats()
+        users = get_all_users(limit=10)
+        
+        rows = ""
+        for u in users:
+            banned = "⛔" if u.get("is_banned") else "✅"
+            username = f"@{u['username']}" if u.get("username") else "—"
+            rows += f"""
+            <tr>
+                <td>{u['user_id']}</td>
+                <td>{u.get('full_name', '—')}</td>
+                <td>{username}</td>
+                <td>{u.get('total_videos', 0)}</td>
+                <td>{u.get('attempts_left', 0)}</td>
+                <td>{banned}</td>
+            </tr>"""
+        
+        html = f"""
+        <!DOCTYPE html>
+        <html lang="ar" dir="rtl">
+        <head>
+            <meta charset="UTF-8"/>
+            <title>لوحة التحكم - ZAKROS PRO</title>
+            <style>
+                body {{ font-family: sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }}
+                h1 {{ color: #a78bfa; }}
+                .stats {{ display: flex; gap: 20px; margin-bottom: 30px; }}
+                .stat {{ background: #16213e; padding: 20px; border-radius: 10px; text-align: center; }}
+                .stat-value {{ font-size: 2rem; font-weight: bold; color: #60a5fa; }}
+                table {{ width: 100%; border-collapse: collapse; }}
+                th, td {{ padding: 10px; text-align: right; border-bottom: 1px solid #333; }}
+                th {{ background: #0f3460; }}
+            </style>
+        </head>
+        <body>
+            <h1>🎓 ZAKROS PRO - لوحة التحكم</h1>
+            <div class="stats">
+                <div class="stat">
+                    <div class="stat-value">{stats['total_users']}</div>
+                    <div>مستخدم</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">{stats['new_today']}</div>
+                    <div>جديد اليوم</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">{stats['total_videos']}</div>
+                    <div>فيديو</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">{stats['pending_payments']}</div>
+                    <div>مدفوعات معلقة</div>
+                </div>
+            </div>
+            <h2>آخر المستخدمين</h2>
+            <table>
+                <thead>
+                    <tr><th>ID</th><th>الاسم</th><th>المعرف</th><th>فيديوهات</th><th>محاولات</th><th>الحالة</th></tr>
+                </thead>
+                <tbody>{rows}</tbody>
+            </table>
+        </body>
+        </html>
+        """
+        return web.Response(text=html, content_type="text/html")
+    except Exception as e:
+        return web.Response(text=f"<pre>خطأ: {e}</pre>", content_type="text/html", status=500)
+
+
+async def start_web_server():
+    """بدء تشغيل خادم الويب"""
     app = web.Application()
     app.router.add_get("/", handle_index)
     app.router.add_get("/health", handle_health)
+    app.router.add_get("/admin", handle_admin)
     app.router.add_post("/telegram", handle_telegram_webhook)
     
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
     
-    print(f"🌐 Web server running on port {port}")
-    print(f"📍 Health check: http://localhost:{port}/health")
-    print(f"📍 Webhook endpoint: http://localhost:{port}/telegram")
+    print(f"🌐 Web server running on port {PORT}")
+    print(f"📍 Health check: http://localhost:{PORT}/health")
+    print(f"📍 Webhook endpoint: http://localhost:{PORT}/telegram")
+    print(f"📍 Admin panel: http://localhost:{PORT}/admin?key=ADMIN_SECRET")
+    
+    # الانتظار حتى يتم إيقاف التطبيق
+    try:
+        await asyncio.Event().wait()
+    except asyncio.CancelledError:
+        pass
+    
+    await runner.cleanup()
