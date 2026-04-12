@@ -74,6 +74,9 @@ from payment_handler import (
     handle_successful_payment,
 )
 
+# ============================================================
+# إعدادات التسجيل
+# ============================================================
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -84,7 +87,7 @@ logger = logging.getLogger(__name__)
 # حالة المستخدمين والمهام النشطة
 # ============================================================
 user_states: dict[int, dict] = {}
-_Q_SEM = asyncio.Semaphore(3)
+_Q_SEM = asyncio.Semaphore(3)  # حد أقصى 3 معالجات متوازية
 _active_jobs: dict[int, str] = {}
 _active_tasks: dict[int, asyncio.Task] = {}
 _cancel_flags: dict[int, asyncio.Event] = {}
@@ -94,8 +97,18 @@ CANCEL_KB = InlineKeyboardMarkup([[
 ]])
 
 # ============================================================
-# لوحة مفاتيح اختيار اللهجة
+# لوحات المفاتيح
 # ============================================================
+
+def main_keyboard():
+    """لوحة المفاتيح الرئيسية"""
+    return ReplyKeyboardMarkup(
+        [["📤 رفع محاضرة", "📊 رصيدي"], ["🔗 رابط الإحالة", "❓ مساعدة"]],
+        resize_keyboard=True,
+    )
+
+
+# لوحة مفاتيح اختيار اللهجة
 DIALECT_KEYBOARD = InlineKeyboardMarkup([
     [
         InlineKeyboardButton("🇮🇶 عراقي", callback_data="dial_iraq"),
@@ -124,9 +137,7 @@ DIALECT_NAMES = {
     "british": "🇬🇧 British",
 }
 
-# ============================================================
-# لوحة مفاتيح اختيار نوع المحاضرة
-# ============================================================
+
 def get_subject_keyboard() -> InlineKeyboardMarkup:
     """لوحة مفاتيح اختيار نوع المحاضرة"""
     return InlineKeyboardMarkup([
@@ -157,53 +168,109 @@ SUBJECT_NAMES = {
     "pediatrics": "👶 أطفال",
     "dentistry": "🦷 أسنان",
     "pharmacy": "💊 صيدلة",
+    "cardiology": "❤️ قلب",
+    "neurology": "🧠 أعصاب",
     "engineering": "⚙️ هندسة",
     "civil": "🏗️ مدنية",
     "electrical": "⚡ كهربائية",
     "mechanical": "🔧 ميكانيكية",
     "aerospace": "🚀 فضاء",
     "software": "💻 برمجيات",
+    "chemical": "🧪 كيميائية",
     "science": "🔬 علوم",
     "physics": "⚛️ فيزياء",
     "chemistry": "🧪 كيمياء",
     "biology": "🧬 أحياء",
+    "astronomy": "🌌 فلك",
     "math": "📐 رياضيات",
     "literature": "📖 أدب",
     "history": "🏛️ تاريخ",
     "geography": "🌍 جغرافيا",
+    "philosophy": "🤔 فلسفة",
+    "psychology": "🧠 علم نفس",
+    "economics": "📊 اقتصاد",
+    "law": "⚖️ قانون",
     "islamic": "🕌 إسلامي",
     "quran": "📖 قرآن",
     "hadith": "📜 حديث",
     "fiqh": "📚 فقه",
+    "aqeedah": "🕋 عقيدة",
+    "tafseer": "📝 تفسير",
+    "seerah": "🌟 سيرة",
     "primary": "🎒 ابتدائي",
     "middle": "📚 متوسط",
     "high": "🎓 إعدادي",
+    "university": "🏛️ جامعي",
     "other": "📚 عام",
 }
+
+
+def get_detailed_subject_keyboard(main_subject: str) -> InlineKeyboardMarkup:
+    """لوحة مفاتيح التخصصات التفصيلية"""
+    keyboards = {
+        "medicine": [
+            [InlineKeyboardButton("🩺 طب عام", callback_data="subject_medicine")],
+            [InlineKeyboardButton("🔪 جراحة", callback_data="subject_surgery")],
+            [InlineKeyboardButton("👶 طب أطفال", callback_data="subject_pediatrics")],
+            [InlineKeyboardButton("🦷 طب أسنان", callback_data="subject_dentistry")],
+            [InlineKeyboardButton("💊 صيدلة", callback_data="subject_pharmacy")],
+            [InlineKeyboardButton("❤️ قلب", callback_data="subject_cardiology")],
+            [InlineKeyboardButton("🧠 أعصاب", callback_data="subject_neurology")],
+            [InlineKeyboardButton("◀️ رجوع", callback_data="back_to_main")],
+        ],
+        "engineering": [
+            [InlineKeyboardButton("⚙️ هندسة عامة", callback_data="subject_engineering")],
+            [InlineKeyboardButton("🏗️ مدنية", callback_data="subject_civil")],
+            [InlineKeyboardButton("⚡ كهربائية", callback_data="subject_electrical")],
+            [InlineKeyboardButton("🔧 ميكانيكية", callback_data="subject_mechanical")],
+            [InlineKeyboardButton("🚀 فضاء", callback_data="subject_aerospace")],
+            [InlineKeyboardButton("💻 برمجيات", callback_data="subject_software")],
+            [InlineKeyboardButton("🧪 كيميائية", callback_data="subject_chemical")],
+            [InlineKeyboardButton("◀️ رجوع", callback_data="back_to_main")],
+        ],
+        "science": [
+            [InlineKeyboardButton("🔬 علوم عامة", callback_data="subject_science")],
+            [InlineKeyboardButton("⚛️ فيزياء", callback_data="subject_physics")],
+            [InlineKeyboardButton("🧪 كيمياء", callback_data="subject_chemistry")],
+            [InlineKeyboardButton("🧬 أحياء", callback_data="subject_biology")],
+            [InlineKeyboardButton("🌌 فلك", callback_data="subject_astronomy")],
+            [InlineKeyboardButton("◀️ رجوع", callback_data="back_to_main")],
+        ],
+        "islamic": [
+            [InlineKeyboardButton("🕌 إسلامي عام", callback_data="subject_islamic")],
+            [InlineKeyboardButton("📖 قرآن كريم", callback_data="subject_quran")],
+            [InlineKeyboardButton("📜 حديث شريف", callback_data="subject_hadith")],
+            [InlineKeyboardButton("📚 فقه", callback_data="subject_fiqh")],
+            [InlineKeyboardButton("🕋 عقيدة", callback_data="subject_aqeedah")],
+            [InlineKeyboardButton("📝 تفسير", callback_data="subject_tafseer")],
+            [InlineKeyboardButton("🌟 سيرة", callback_data="subject_seerah")],
+            [InlineKeyboardButton("◀️ رجوع", callback_data="back_to_main")],
+        ],
+    }
+    
+    if main_subject in keyboards:
+        return InlineKeyboardMarkup(keyboards[main_subject])
+    return get_subject_keyboard()
 
 
 # ============================================================
 # دوال مساعدة
 # ============================================================
-def main_keyboard():
-    return ReplyKeyboardMarkup(
-        [["📤 رفع محاضرة", "📊 رصيدي"], ["🔗 رابط الإحالة", "❓ مساعدة"]],
-        resize_keyboard=True,
-    )
-
-
 def _pbar(pct: int, width: int = 12) -> str:
+    """شريط تقدم نصي"""
     filled = int(width * pct / 100)
     return "▓" * filled + "░" * (width - filled)
 
 
 def _fmt_elapsed(sec: float) -> str:
+    """تنسيق الوقت المنقضي"""
     if sec < 60:
         return f"{int(sec)} ثانية"
     return f"{int(sec // 60)} دقيقة {int(sec % 60)} ثانية"
 
 
 async def _safe_edit(msg, text: str, parse_mode: str = "Markdown", reply_markup=None):
+    """تعديل رسالة بأمان"""
     try:
         await msg.edit_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
     except Exception:
@@ -211,6 +278,7 @@ async def _safe_edit(msg, text: str, parse_mode: str = "Markdown", reply_markup=
 
 
 async def _run_or_cancel(uid: int, coro) -> object:
+    """تنفيذ مهمة مع إمكانية الإلغاء"""
     ev = _cancel_flags.get(uid)
     if ev is None or ev.is_set():
         raise asyncio.CancelledError("Already cancelled")
@@ -238,6 +306,7 @@ async def _run_or_cancel(uid: int, coro) -> object:
 
 
 async def ensure_user(update: Update) -> dict | None:
+    """التأكد من وجود المستخدم في قاعدة البيانات"""
     tg = update.effective_user
     user = get_user(tg.id)
     if not user:
@@ -262,9 +331,11 @@ async def ensure_user(update: Update) -> dict | None:
 # أوامر البوت الأساسية
 # ============================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر /start"""
     args = context.args
     uid = update.effective_user.id
 
+    # معالجة رابط الإحالة
     if args and args[0].startswith("ref_"):
         try:
             ref_id = int(args[0][4:])
@@ -287,8 +358,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• ملف PDF 📄 (حتى 50MB)\n"
         "• ملف TXT 📃\n"
         "• نص المحاضرة مباشرة ✍️\n\n"
-        "🌍 اختر لهجة الشرح ونوع المحاضرة\n"
-        "🎬 استلم فيديو كامل مع شخصية كرتونية مخصصة وصور وصوت\n\n"
+        "📚 *اختر نوع المحاضرة* (طب، هندسة، علوم...)\n"
+        "🌍 *اختر لهجة الشرح* (عراقي، مصري، خليجي...)\n"
+        "🎬 *استلم فيديو* مع شخصية كرتونية مخصصة وصور وصوت\n\n"
         f"🎁 لديك *{user['attempts_left']}* محاولة مجانية\n\n"
         "⬇️ ابدأ الآن — أرسل المحاضرة!",
         parse_mode="Markdown",
@@ -297,13 +369,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر /help"""
     await update.message.reply_text(
         "📖 *كيفية الاستخدام*\n\n"
-        "1️⃣ أرسل ملف PDF أو نص المحاضرة\n"
+        "1️⃣ أرسل ملف PDF أو TXT أو نص مباشر\n"
         "2️⃣ اختر نوع المحاضرة (طب، هندسة، علوم...)\n"
-        "3️⃣ اختر لهجة الشرح\n"
-        "4️⃣ انتظر — البوت سيحلل ويصنع الفيديو\n"
-        "5️⃣ استلم الفيديو التعليمي الكامل\n\n"
+        "3️⃣ اختر التخصص الدقيق (اختياري)\n"
+        "4️⃣ اختر لهجة الشرح\n"
+        "5️⃣ انتظر — البوت سيحلل ويصنع الفيديو\n"
+        "6️⃣ استلم الفيديو التعليمي الكامل\n\n"
+        "📊 *محتوى الفيديو:*\n"
+        "• مقدمة مع شخصية كرتونية مخصصة\n"
+        "• بطاقة لكل قسم\n"
+        "• صور تعليمية كبيرة\n"
+        "• كلمات مفتاحية واضحة\n"
+        "• صوت بشري طبيعي\n"
+        "• ملخص نهائي\n\n"
+        "🔗 */referral* — رابط إحالة لكسب محاولات مجانية\n"
         "/cancel — إلغاء العملية",
         parse_mode="Markdown",
         reply_markup=main_keyboard(),
@@ -311,6 +393,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر /cancel - إلغاء المعالجة"""
     uid = update.effective_user.id
     user_states.pop(uid, None)
     ev = _cancel_flags.get(uid)
@@ -322,6 +405,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def my_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عرض رصيد المستخدم"""
     user = await ensure_user(update)
     if not user:
         return
@@ -336,6 +420,7 @@ async def my_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def referral_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر /referral - عرض رابط الإحالة"""
     user = await ensure_user(update)
     if not user:
         return
@@ -350,15 +435,17 @@ async def referral_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"`{ref_link}`\n\n"
         f"👥 أصدقاء دعوتهم: *{stats['total_referrals']}*\n"
         f"⭐ نقاطك: *{stats['current_points']}*\n\n"
-        "كل 10 أشخاص = محاولة مجانية!",
+        "كل 10 أشخاص = محاولة مجانية!\n"
+        "شارك الرابط مع أصدقائك 🎉",
         parse_mode="Markdown",
     )
 
 
 # ============================================================
-# استقبال المحتوى
+# استقبال المحتوى (نصوص وملفات)
 # ============================================================
 async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """استقبال المحتوى من المستخدم (PDF, TXT, نص)"""
     user = await ensure_user(update)
     if not user:
         return
@@ -366,15 +453,24 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     msg = update.message
 
+    # معالجة أوامر الأدمن
     if is_owner(uid):
         consumed = await handle_admin_text_search(update, context)
         if consumed:
             return
 
+    # أزرار القائمة الرئيسية
     if msg.text:
         text = msg.text.strip()
         if text == "📤 رفع محاضرة":
-            await msg.reply_text("📤 أرسل ملف PDF أو TXT أو نص مباشر:", reply_markup=ReplyKeyboardRemove())
+            await msg.reply_text(
+                "📤 *أرسل المحاضرة*\n\n"
+                "• ملف PDF 📄 (حتى 50MB)\n"
+                "• ملف TXT 📃\n"
+                "• أو اكتب النص مباشرة (200 حرف على الأقل)",
+                parse_mode="Markdown",
+                reply_markup=ReplyKeyboardRemove(),
+            )
             return
         if text == "📊 رصيدي":
             await my_balance(update, context)
@@ -386,10 +482,12 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await help_cmd(update, context)
             return
 
+    # هل يوجد معالجة جارية؟
     if uid in _active_jobs:
         await msg.reply_text("⏳ محاضرتك قيد المعالجة...")
         return
 
+    # التحقق من المحاولات
     if user["attempts_left"] <= 0:
         await send_payment_required_message(update, context)
         return
@@ -397,21 +495,40 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lecture_text = None
     filename = "lecture"
 
+    # ============================================================
+    # معالجة الملفات (PDF, TXT)
+    # ============================================================
     if msg.document:
-        fname = msg.document.file_name or ""
+        doc = msg.document
+        fname = doc.file_name or "file"
+        file_size = doc.file_size or 0
         ext = fname.lower().split(".")[-1] if "." in fname else ""
+
         if ext not in ("pdf", "txt"):
-            await msg.reply_text("⚠️ أرسل PDF أو TXT فقط.")
+            await msg.reply_text("⚠️ الملف غير مدعوم. أرسل PDF أو TXT فقط.")
             return
 
-        wait = await msg.reply_text(f"📥 جاري تحميل {fname}...")
+        if file_size > 50 * 1024 * 1024:  # 50MB
+            await msg.reply_text(f"⚠️ حجم الملف كبير جداً. الحد الأقصى 50MB")
+            return
+
+        # رد فوري
+        wait = await msg.reply_text(
+            f"📥 *جاري تحميل الملف...*\n📄 `{fname}`\n📦 {file_size // 1024}KB",
+            parse_mode="Markdown",
+        )
+
         try:
-            file = await msg.document.get_file()
+            # تحميل الملف
+            file = await context.bot.get_file(doc.file_id)
+            
             with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
                 tmp_path = tmp.name
+            
             await file.download_to_drive(tmp_path)
+            await wait.edit_text(f"📥 *تم التحميل!*\n🔍 جاري استخراج النص...", parse_mode="Markdown")
 
-            await wait.edit_text("🔍 جاري استخراج النص...")
+            # استخراج النص
             if ext == "pdf":
                 lecture_text = await extract_full_text_from_pdf_path(tmp_path)
                 filename = fname.replace(".pdf", "")
@@ -420,28 +537,48 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     lecture_text = f.read()
                 filename = fname.replace(".txt", "")
 
+            # حذف الملف المؤقت
             try:
                 os.unlink(tmp_path)
             except:
                 pass
+
             await wait.delete()
+
         except Exception as e:
-            await wait.edit_text(f"❌ خطأ: {e}")
+            await wait.edit_text(f"❌ خطأ في قراءة الملف: {str(e)[:100]}")
             return
 
-    elif msg.text and len(msg.text.strip()) >= 200:
-        lecture_text = msg.text.strip()
-    elif msg.text and len(msg.text.strip()) < 200:
-        await msg.reply_text("⚠️ النص قصير جداً. أرسل 200 حرف على الأقل.")
-        return
+    # ============================================================
+    # معالجة النص المباشر
+    # ============================================================
+    elif msg.text:
+        text = msg.text.strip()
+        if len(text) >= 200:
+            lecture_text = text
+            words = len(text.split())
+            await msg.reply_text(f"✅ *تم استلام النص!* ({words:,} كلمة)", parse_mode="Markdown")
+        else:
+            await msg.reply_text(
+                "⚠️ النص قصير جداً.\n\n"
+                "• أرسل 200 حرف على الأقل\n"
+                "• أو أرسل ملف PDF/TXT"
+            )
+            return
     else:
-        await msg.reply_text("⚠️ أرسل ملف PDF أو TXT أو نص.")
+        await msg.reply_text("⚠️ أرسل ملف PDF، TXT، أو نص مباشر.")
         return
 
+    # ============================================================
+    # التحقق من النص المستخرج
+    # ============================================================
     if not lecture_text or len(lecture_text.strip()) < 50:
-        await msg.reply_text("❌ لم أتمكن من استخراج نص كافٍ.")
+        await msg.reply_text("❌ لم أتمكن من استخراج نص كافٍ. تأكد من محتوى الملف.")
         return
 
+    # ============================================================
+    # حفظ الحالة وعرض خيارات نوع المحاضرة
+    # ============================================================
     user_states[uid] = {
         "state": "awaiting_subject",
         "text": lecture_text,
@@ -449,8 +586,19 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     words = len(lecture_text.split())
+    if words < 500:
+        est_time = "2-3 دقائق"
+    elif words < 1500:
+        est_time = "3-5 دقائق"
+    elif words < 3000:
+        est_time = "5-7 دقائق"
+    else:
+        est_time = "7-10 دقائق"
+
     await msg.reply_text(
-        f"✅ *تم استلام المحاضرة!*\n\n📝 عدد الكلمات: *{words:,}*\n\n"
+        f"✅ *تم استلام المحاضرة!*\n\n"
+        f"📝 عدد الكلمات: *{words:,}*\n"
+        f"⏱️ الوقت المتوقع: *{est_time}*\n\n"
         f"📚 *اختر نوع المحاضرة:*",
         parse_mode="Markdown",
         reply_markup=get_subject_keyboard(),
@@ -458,20 +606,24 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
-# معالجة الكول باك
+# معالجة الكول باك (أزرار القوائم)
 # ============================================================
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة جميع أزرار القوائم"""
     q = update.callback_query
     data = q.data
     uid = q.from_user.id
 
+    # أزرار الأدمن
     if data.startswith("admin_"):
         await handle_admin_callback(update, context)
         return
 
     await q.answer()
 
-    # مدفوعات
+    # ============================================================
+    # أزرار الدفع
+    # ============================================================
     if data == "pay_stars":
         await handle_pay_stars(update, context)
         return
@@ -481,31 +633,72 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "pay_crypto":
         await handle_pay_crypto(update, context)
         return
+    if data == "pay_sent":
+        await handle_payment_sent(update, context)
+        return
 
-    # إلغاء
+    # ============================================================
+    # زر الإلغاء
+    # ============================================================
     if data == "cancel_job":
         ev = _cancel_flags.get(uid)
         if ev and not ev.is_set():
             ev.set()
-            await q.edit_message_text("⛔ تم الإلغاء.")
+            try:
+                await q.edit_message_text("⛔ تم إلغاء المعالجة.")
+            except:
+                pass
+            await context.bot.send_message(uid, "⛔ تم الإلغاء.", reply_markup=main_keyboard())
         return
 
-    # إحالة
+    # ============================================================
+    # زر الإحالة
+    # ============================================================
     if data == "show_referral":
         stats = get_referral_stats(uid)
         bot_info = await context.bot.get_me()
         ref_link = f"https://t.me/{bot_info.username}?start=ref_{uid}"
-        await q.message.reply_text(f"🔗 `{ref_link}`\n👥 {stats['total_referrals']} | ⭐ {stats['current_points']}", parse_mode="Markdown")
+        await q.message.reply_text(
+            f"🔗 *رابط الإحالة*\n\n`{ref_link}`\n\n"
+            f"👥 المدعوين: *{stats['total_referrals']}*\n"
+            f"⭐ النقاط: *{stats['current_points']}*",
+            parse_mode="Markdown",
+        )
         return
 
-    # اختيار نوع المحاضرة
+    # ============================================================
+    # الرجوع للقائمة الرئيسية للتخصصات
+    # ============================================================
+    if data == "back_to_main":
+        await q.edit_message_text(
+            "📚 *اختر نوع المحاضرة:*",
+            parse_mode="Markdown",
+            reply_markup=get_subject_keyboard(),
+        )
+        return
+
+    # ============================================================
+    # اختيار نوع المحاضرة (رئيسي أو تفصيلي)
+    # ============================================================
     if data.startswith("subject_"):
         subject = data[8:]
         state = user_states.get(uid, {})
+
         if state.get("state") != "awaiting_subject":
             await q.edit_message_text("⚠️ أرسل المحاضرة أولاً.")
             return
 
+        # إذا كان النوع من القائمة الرئيسية، نعرض التخصصات التفصيلية
+        if subject in ["medicine", "engineering", "science", "islamic"]:
+            user_states[uid]["temp_subject"] = subject
+            await q.edit_message_text(
+                f"📚 *اختر التخصص الدقيق:*",
+                parse_mode="Markdown",
+                reply_markup=get_detailed_subject_keyboard(subject),
+            )
+            return
+
+        # حفظ النوع النهائي
         user_states[uid]["subject"] = subject
         user_states[uid]["state"] = "awaiting_dialect"
 
@@ -518,10 +711,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ============================================================
     # اختيار اللهجة
+    # ============================================================
     if data.startswith("dial_"):
         dialect = data[5:]
         state = user_states.get(uid, {})
+
         if state.get("state") != "awaiting_dialect":
             await q.edit_message_text("⚠️ اختر نوع المحاضرة أولاً.")
             return
@@ -557,7 +753,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
-# معالجة المحاضرة الرئيسية
+# معالجة المحاضرة الرئيسية (إنشاء الفيديو)
 # ============================================================
 async def _process_lecture(
     uid: int,
@@ -568,6 +764,7 @@ async def _process_lecture(
     status_msg,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+    """المعالجة الكاملة للمحاضرة وإنشاء الفيديو"""
     _active_jobs[uid] = "processing"
     cancel_ev = asyncio.Event()
     _cancel_flags[uid] = cancel_ev
@@ -589,20 +786,26 @@ async def _process_lecture(
 
     async with _Q_SEM:
         try:
+            # ============================================================
+            # المرحلة 1: تحليل المحاضرة (DeepSeek أولاً)
+            # ============================================================
             _check()
-            await upd(5, "🔍 تحليل المحتوى...")
+            await upd(5, "🔍 تحليل المحتوى باستخدام DeepSeek...")
 
             lecture_data = await _run_or_cancel(uid, analyze_lecture(text, dialect, subject))
             sections = lecture_data.get("sections", [])
 
             if not sections:
-                raise RuntimeError("لم يتم استخراج أقسام")
+                raise RuntimeError("لم يتم استخراج أي أقسام من المحاضرة")
 
             n_sections = len(sections)
             await upd(25, f"✅ تم التحليل — {n_sections} أقسام")
 
+            # ============================================================
+            # المرحلة 2: جلب الصور
+            # ============================================================
             _check()
-            await upd(30, "🎨 جلب الصور...")
+            await upd(30, "🎨 جلب الصور التعليمية...")
 
             async def fetch_images(section):
                 keywords = section.get("keywords", [])[:4]
@@ -624,13 +827,19 @@ async def _process_lecture(
             sections = await asyncio.gather(*[fetch_images(s) for s in sections])
             await upd(50, "✅ تم جلب الصور")
 
+            # ============================================================
+            # المرحلة 3: توليد الصوت (gTTS مجاني)
+            # ============================================================
             _check()
-            await upd(55, "🎤 توليد الصوت...")
+            await upd(55, "🎤 توليد الصوت (مجاني)...")
 
             voice_res = await _run_or_cancel(uid, generate_sections_audio(sections, dialect))
             audio_results = voice_res["results"]
             await upd(70, "✅ تم توليد الصوت")
 
+            # ============================================================
+            # المرحلة 4: إنشاء الفيديو
+            # ============================================================
             _check()
             await upd(75, "🎬 إنتاج الفيديو...")
 
@@ -652,6 +861,9 @@ async def _process_lecture(
 
             await upd(99, "✅ اكتمل! جاري الإرسال...")
 
+            # ============================================================
+            # المرحلة 5: خصم محاولة وإرسال الفيديو
+            # ============================================================
             decrement_attempts(uid)
             increment_total_videos(uid)
             update_video_request(req_id, "done", video_path)
@@ -716,19 +928,22 @@ async def _process_lecture(
 # أوامر الإدارة
 # ============================================================
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر /admin - لوحة التحكم"""
     if is_owner(update.effective_user.id):
         await handle_admin_command(update, context)
 
 
 # ============================================================
-# الدالة الرئيسية
+# الدالة الرئيسية - تشغيل البوت
 # ============================================================
 async def main():
+    """تشغيل البوت"""
     init_db()
     logger.info("🤖 ZAKROS PRO Bot starting...")
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
+    # تسجيل الأوامر
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("cancel", cancel))
@@ -741,13 +956,26 @@ async def main():
     app.add_handler(CommandHandler("broadcast", handle_broadcast))
     app.add_handler(CommandHandler("approve", handle_approve_payment_command))
 
+    # تسجيل معالجات الدفع
     app.add_handler(PreCheckoutQueryHandler(handle_pre_checkout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, handle_successful_payment))
+    
+    # تسجيل معالج الأزرار
     app.add_handler(CallbackQueryHandler(callback_handler))
-    app.add_handler(MessageHandler(filters.TEXT | filters.Document.ALL, receive_content))
+    
+    # تسجيل معالج الرسائل والملفات
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT | filters.Document.ALL,
+            receive_content,
+        )
+    )
 
     logger.info("✅ Bot ready")
 
+    # ============================================================
+    # إعداد Webhook لـ Heroku
+    # ============================================================
     app_url = os.getenv("HEROKU_APP_NAME", "")
     webhook_url = f"https://{app_url}.herokuapp.com/telegram" if app_url else os.getenv("WEBHOOK_URL", "").rstrip("/")
 
@@ -760,7 +988,7 @@ async def main():
                 drop_pending_updates=True,
                 allowed_updates=["message", "callback_query", "pre_checkout_query", "successful_payment"],
             )
-            logger.info(f"✅ Webhook: {webhook_url}")
+            logger.info(f"✅ Webhook set to: {webhook_url}")
 
             try:
                 import web_server as _ws
@@ -770,7 +998,7 @@ async def main():
 
             await asyncio.Event().wait()
         else:
-            logger.info("🔄 Polling...")
+            logger.info("🔄 Polling mode active")
             await app.updater.start_polling(drop_pending_updates=True)
             await asyncio.Event().wait()
             await app.updater.stop()
