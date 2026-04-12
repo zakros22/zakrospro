@@ -1,3 +1,4 @@
+import sys
 import os
 import sys  # ⭐ تأكد من وجود هذا السطر
 
