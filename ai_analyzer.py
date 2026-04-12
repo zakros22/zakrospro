@@ -38,7 +38,7 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# API Keys - نفس ما موجود
+# API Keys - مع OpenRouter كمصدر ثالث
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _google_keys = [k.strip() for k in os.getenv("GOOGLE_API_KEYS", "").split(",") if k.strip()]
@@ -111,7 +111,7 @@ def _mark_or_exhausted(k):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# دوال AI - نفس ما موجود مع رفع درجة الحرارة
+# دوال AI
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def _google_generate(prompt: str, max_tokens: int = 8192) -> str:
@@ -130,7 +130,7 @@ async def _google_generate(prompt: str, max_tokens: int = 8192) -> str:
                     client.models.generate_content,
                     model=model,
                     contents=prompt,
-                    config=genai_types.GenerateContentConfig(temperature=0.95, max_output_tokens=max_tokens)  # ✅ رفع درجة الحرارة
+                    config=genai_types.GenerateContentConfig(temperature=0.9, max_output_tokens=max_tokens)
                 )
                 print(f"[AI] Google success: {model}")
                 return response.text.strip()
@@ -161,7 +161,7 @@ async def _groq_generate(prompt: str, max_tokens: int = 8192) -> str:
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": min(max_tokens, 8192),
-                    "temperature": 0.95  # ✅ رفع درجة الحرارة
+                    "temperature": 0.9
                 }
                 async with aiohttp.ClientSession() as s:
                     async with s.post(
@@ -186,7 +186,8 @@ async def _openrouter_generate(prompt: str, max_tokens: int = 8192) -> str:
     models = [
         "google/gemini-2.0-flash-exp:free",
         "google/gemini-2.0-flash-lite-preview-02-05:free",
-        "nvidia/llama-3.1-nemotron-70b-instruct:free"
+        "nvidia/llama-3.1-nemotron-70b-instruct:free",
+        "meta-llama/llama-3.2-3b-instruct:free"
     ]
     
     for _ in range(len(_openrouter_keys) + 1):
@@ -206,7 +207,7 @@ async def _openrouter_generate(prompt: str, max_tokens: int = 8192) -> str:
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": min(max_tokens, 8192),
-                    "temperature": 0.95  # ✅ رفع درجة الحرارة
+                    "temperature": 0.9
                 }
                 async with aiohttp.ClientSession() as s:
                     async with s.post(
@@ -252,7 +253,7 @@ async def _ai_generate(prompt: str, max_tokens: int = 8192) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# استخراج الكلمات - نفس ما موجود
+# استخراج الكلمات
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _extract_keywords(text: str, max_words: int = 30) -> list:
@@ -276,12 +277,12 @@ def _extract_keywords(text: str, max_words: int = 30) -> list:
 
 def _detect_type(text: str) -> str:
     text = clean_text(text).lower()
-    medical = ['مرض', 'علاج', 'طبيب', 'جراحة', 'دواء', 'تشخيص', 'مريض', 'قلب', 'دم', 'خلية', 'ورم', 'سرطان']
-    math = ['معادلة', 'دالة', 'تفاضل', 'تكامل', 'جبر', 'هندسة', 'رياضيات']
-    physics = ['قوة', 'طاقة', 'حركة', 'سرعة', 'جاذبية', 'كهرباء', 'مغناطيس', 'فيزياء']
-    chemistry = ['تفاعل', 'عنصر', 'مركب', 'جزيء', 'ذرة', 'حمض', 'قاعدة', 'كيمياء']
-    history = ['تاريخ', 'حرب', 'معركة', 'حضارة', 'إمبراطورية', 'ملك', 'ثورة']
-    biology = ['نبات', 'حيوان', 'بيئة', 'وراثة', 'تطور', 'خلية']
+    medical = ['مرض', 'علاج', 'طبيب', 'جراحة', 'دواء', 'تشخيص', 'مريض', 'قلب', 'دم', 'خلية', 'ورم', 'سرطان', 'endometriosis', 'cyst', 'inflammation']
+    math = ['معادلة', 'دالة', 'تفاضل', 'تكامل', 'جبر', 'هندسة', 'رياضيات', 'equation', 'function', 'calculus']
+    physics = ['قوة', 'طاقة', 'حركة', 'سرعة', 'جاذبية', 'كهرباء', 'مغناطيس', 'فيزياء', 'force', 'energy', 'motion']
+    chemistry = ['تفاعل', 'عنصر', 'مركب', 'جزيء', 'ذرة', 'حمض', 'قاعدة', 'كيمياء', 'reaction', 'element', 'compound']
+    history = ['تاريخ', 'حرب', 'معركة', 'حضارة', 'إمبراطورية', 'ملك', 'ثورة', 'history', 'war', 'battle']
+    biology = ['نبات', 'حيوان', 'بيئة', 'وراثة', 'تطور', 'خلية', 'biology', 'plant', 'animal', 'cell']
     
     scores = {
         'medicine': sum(1 for k in medical if k in text),
@@ -296,7 +297,123 @@ def _detect_type(text: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# الدالة الرئيسية - نفس هيكلها بالضبط مع تحسين الـ Prompt فقط
+# خطة احتياطية خرافية - تولد شرحاً احترافياً محلياً
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _generate_fallback_narration(keywords: list, lecture_type: str, original_text: str, section_idx: int, total_sections: int) -> str:
+    """
+    توليد شرح احترافي محلياً إذا فشل AI.
+    هذا يضمن أن الشرح دائماً احترافي ومناسب لنوع المحاضرة.
+    """
+    kw_str = '، '.join(keywords[:3])
+    
+    # مقدمات حسب نوع المحاضرة
+    intros = {
+        'medicine': f"دعونا نتحدث عن {kw_str}. هذا الموضوع مهم جداً في المجال الطبي. ",
+        'math': f"الآن سنشرح {kw_str} بالتفصيل. الرياضيات لغة الكون. ",
+        'physics': f"في هذا القسم ندرس {kw_str}. الفيزياء تفسر الظواهر من حولنا. ",
+        'chemistry': f"نتعرف الآن على {kw_str} في الكيمياء. التفاعلات الكيميائية أساس حياتنا. ",
+        'history': f"اليوم سنسافر عبر الزمن لنتعرف على {kw_str}. التاريخ يعلمنا دروساً قيمة. ",
+        'biology': f"في علم الأحياء، ندرس {kw_str}. الحياة مليئة بالأسرار الرائعة. ",
+        'other': f"مرحباً بكم في هذا القسم الذي سنتعرف فيه على {kw_str}. "
+    }
+    
+    # تفاصيل حسب نوع المحاضرة
+    details = {
+        'medicine': [
+            f"أولاً، يجب أن نفهم تعريف {keywords[0]} بشكل دقيق.",
+            f"ثانياً، نناقش الأعراض والعلامات المرتبطة بـ {keywords[1]}.",
+            f"ثالثاً، نستعرض طرق التشخيص المتاحة لـ {keywords[2]}.",
+            f"رابعاً، نتعرف على خيارات العلاج الحديثة.",
+            f"خامساً، نتحدث عن المضاعفات المحتملة وكيفية تجنبها.",
+            f"سادساً، نناقش طرق الوقاية وأهميتها.",
+            f"سابعاً، نستعرض أحدث الأبحاث في هذا المجال.",
+            f"ثامناً، نذكر بعض الحالات السريرية للتوضيح.",
+            f"تاسعاً، نجيب على الأسئلة الشائعة حول {keywords[0]}.",
+            f"وأخيراً، نلخص أهم النقاط التي يجب تذكرها."
+        ],
+        'math': [
+            f"لنبدأ بتعريف {keywords[0]} وفهم خصائصه الأساسية.",
+            f"ثم نكتب المعادلة الرياضية الخاصة بـ {keywords[1]} ونحللها خطوة بخطوة.",
+            f"بعد ذلك، نعطي مثالاً عددياً لتوضيح الفكرة بشكل عملي.",
+            f"ثم نتحقق من صحة الحل ونتأكد من النتائج.",
+            f"ننتقل إلى تطبيقات {keywords[2]} في الحياة العملية.",
+            f"نناقش أيضاً الحالات الخاصة والشروط اللازمة لتطبيق هذه المعادلات.",
+            f"نختم ببعض التمارين للتأكد من فهم الموضوع.",
+            f"تذكروا دائماً أن التدريب هو مفتاح إتقان الرياضيات."
+        ],
+        'physics': [
+            f"نبدأ بشرح القانون الفيزيائي الأساسي المتعلق بـ {keywords[0]}.",
+            f"ثم نعرض تجربة عملية توضح هذا القانون بشكل ملموس.",
+            f"نحلل النتائج ونستنتج العلاقات بين المتغيرات المختلفة.",
+            f"نربط هذه المفاهيم بحياتنا اليومية، مثل تطبيقات {keywords[1]}.",
+            f"نرى تطبيقات هذا القانون في حركة السيارات أو سقوط الأجسام.",
+            f"نناقش أيضاً حدود تطبيق هذا القانون والحالات التي لا ينطبق فيها.",
+            f"أخيراً، نلخص أهم ما تعلمناه عن {keywords[2]}."
+        ],
+        'chemistry': [
+            f"نبدأ بكتابة المعادلة الكيميائية الموزونة الخاصة بـ {keywords[0]}.",
+            f"نحدد المواد المتفاعلة والناتجة ونشرح دور كل منها.",
+            f"نشرح شروط التفاعل مثل درجة الحرارة والضغط والمواد الحفازة.",
+            f"نحسب كمية المواد المتفاعلة والناتجة باستخدام الحسابات الكيميائية.",
+            f"نذكر تطبيقات هذا التفاعل في الصناعة والحياة اليومية.",
+            f"نناقش المخاطر المحتملة وطرق التعامل الآمن مع {keywords[1]}.",
+            f"نختم بمراجعة سريعة لأهم النقاط حول {keywords[2]}."
+        ],
+        'history': [
+            f"نبدأ بذكر التاريخ والمكان الذي وقعت فيه أحداث {keywords[0]}.",
+            f"نتعرف على الشخصيات الرئيسية وأدوارها في هذه الأحداث.",
+            f"نسرد الأحداث بتسلسل زمني واضح منذ البداية وحتى النهاية.",
+            f"نحلل الأسباب التي أدت إلى {keywords[1]} وتطورها.",
+            f"نناقش النتائج والآثار التي ترتبت على هذه الأحداث.",
+            f"نستخلص الدروس والعبر المستفادة من {keywords[2]}.",
+            f"نختم بربط هذه الأحداث بالواقع المعاصر وأهميتها اليوم."
+        ],
+        'biology': [
+            f"نبدأ بشرح التركيب الأساسي لـ {keywords[0]} ومكوناته.",
+            f"ثم ننتقل إلى الوظائف الحيوية التي يؤديها {keywords[1]}.",
+            f"نستخدم التشبيهات لتقريب المفاهيم، مثلاً نشبه الخلية بالمصنع الصغير.",
+            f"نناقش أهمية هذه العمليات للحفاظ على الحياة.",
+            f"نذكر بعض الأمراض المرتبطة بخلل هذه الوظائف وكيفية علاجها.",
+            f"نختم بمراجعة سريعة وتلخيص لأهم المعلومات عن {keywords[2]}."
+        ],
+        'other': [
+            f"نبدأ بتعريف {keywords[0]} وفهم معناه بدقة.",
+            f"ثم نستعرض المعلومات المتعلقة بـ {keywords[1]} بالتفصيل مع أمثلة توضيحية.",
+            f"نربط هذه المعلومات بالواقع العملي ونرى كيف تؤثر في حياتنا.",
+            f"نجيب على الأسئلة الشائعة حول هذا الموضوع.",
+            f"نذكر بعض النصائح والإرشادات المفيدة المتعلقة بـ {keywords[2]}.",
+            f"أخيراً، نلخص أهم ما تم شرحه في هذا القسم."
+        ]
+    }
+    
+    intro = intros.get(lecture_type, intros['other'])
+    detail_list = details.get(lecture_type, details['other'])
+    
+    # بناء الشرح
+    narration = intro
+    for sentence in detail_list:
+        narration += sentence + " "
+    
+    # إضافة جمل إضافية من النص الأصلي إذا كانت متاحة
+    sentences = re.split(r'(?<=[.!?؟])\s+', original_text)
+    added = 0
+    for s in sentences:
+        if any(kw in s for kw in keywords[:3]) and s not in narration:
+            narration += s + " "
+            added += 1
+            if added >= 5:
+                break
+    
+    # تكرار إذا كان الشرح قصيراً
+    if len(narration.split()) < 50:
+        narration = (narration + " ") * 3
+    
+    return narration.strip()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# الدالة الرئيسية
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
@@ -306,6 +423,7 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     
     keywords = _extract_keywords(text, 40)
     ltype = _detect_type(text)
+    print(f"[AI] Detected type: {ltype}")
     
     wc = len(text.split())
     if wc < 300:
@@ -328,24 +446,20 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     dial_map = {"iraq": "بالعراقي", "egypt": "بالمصري", "syria": "بالشامي", "gulf": "بالخليجي", "msa": "بالفصحى"}
     dial = dial_map.get(dialect, "بالفصحى")
     
-    # ✅ تحسين الـ Prompt بشكل كبير لشرح احترافي
     prompt = f"""أنت {teacher} تشرح لطلابك. اشرح {dial}.
 
-**تعليمات صارمة للشرح الاحترافي:**
-1. حلل النص الأصلي بعمق. استخرج جميع المفاهيم الأساسية والفرعية.
-2. اكتب شرحاً كاملاً ومتنوعاً (20-25 جملة) لكل قسم.
-3. لا تكرر نفس الجملة أبداً. كل جملة يجب أن تضيف معلومة جديدة.
-4. فسر المصطلحات العلمية بلغة بسيطة. أعط أمثلة واقعية من الحياة.
-5. اربط بين المفاهيم. اشرح العلاقات بينها (سبب ونتيجة، تشابه واختلاف).
-6. استخدم أسلوب المعلم: "دعونا نفهم..."، "لاحظوا معي..."، "مثال على ذلك..."، "والآن بعد أن عرفنا...".
-7. غطِّ المحاضرة من البداية إلى النهاية بشكل شامل.
+**تعليمات صارمة:**
+- اكتب شرحاً كاملاً ومتنوعاً (20-25 جملة) لكل قسم.
+- لا تكرر نفس الجملة أبداً.
+- فسر المصطلحات، أعط أمثلة واقعية، اربط الأفكار.
+- استخدم أسلوب المعلم: "دعونا نفهم..."، "لاحظوا معي...".
 
-**النص الأصلي:**
+**النص:**
 ---
 {preview}
 ---
 
-**الكلمات المفتاحية:** {', '.join(keywords[:15])}
+**الكلمات:** {', '.join(keywords[:15])}
 
 **المطلوب - {ns} أقسام:**
 أرجع JSON:
@@ -355,29 +469,33 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     {{
       "title": "عنوان القسم",
       "keywords": ["كلمة1", "كلمة2", "كلمة3", "كلمة4"],
-      "narration": "نص الشرح الكامل (20-25 جملة متنوعة)"
+      "narration": "نص الشرح (20-25 جملة)"
     }}
   ],
-  "summary": "ملخص شامل (6-8 جمل)"
+  "summary": "ملخص (6-8 جمل)"
 }}"""
+    
+    ai_success = False
+    title = keywords[0] if keywords else "محاضرة"
+    ai_secs = []
+    summary = f"شرحنا: {', '.join(keywords[:8])}"
     
     try:
         content = await _ai_generate(prompt, 8192)
         content = re.sub(r'^```json\s*', '', content.strip())
         content = re.sub(r'\s*```$', '', content)
         res = json.loads(content)
-        title = clean_text(res.get("title", keywords[0] if keywords else "محاضرة"))
+        title = clean_text(res.get("title", title))
         ai_secs = res.get("sections", [])
-        summary = clean_text(res.get("summary", f"شرحنا: {', '.join(keywords[:8])}"))
+        summary = clean_text(res.get("summary", summary))
+        ai_success = True
+        print(f"[AI] AI generation successful")
     except Exception as e:
-        print(f"[AI] Parse failed: {e}")
-        title = keywords[0] if keywords else "محاضرة"
-        ai_secs = []
-        summary = f"شرحنا: {', '.join(keywords[:8])}"
+        print(f"[AI] AI failed, using fallback: {e}")
     
     sections = []
     for i in range(ns):
-        if i < len(ai_secs) and ai_secs[i].get("narration"):
+        if ai_success and i < len(ai_secs) and ai_secs[i].get("narration"):
             s = ai_secs[i]
             kw = [clean_text(k) for k in s.get("keywords", [])[:4]]
             st = clean_text(s.get("title", f"قسم {i+1}"))
@@ -386,7 +504,8 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
             idx = (i * 4) % len(keywords)
             kw = [keywords[(idx + j) % len(keywords)] for j in range(4)]
             st = kw[0] if kw else f"قسم {i+1}"
-            nar = _generate_fallback_narration(kw, ltype, text)
+            # ✅ استخدام الخطة الاحتياطية الخرافية
+            nar = _generate_fallback_narration(kw, ltype, text, i, ns)
         
         while len(kw) < 4:
             kw.append("مفهوم")
@@ -403,24 +522,8 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     return {"lecture_type": ltype, "title": title, "sections": sections, "summary": summary, "all_keywords": keywords}
 
 
-def _generate_fallback_narration(keywords: list, lecture_type: str, original_text: str) -> str:
-    """توليد شرح احتياطي من النص الأصلي"""
-    sentences = re.split(r'(?<=[.!?؟])\s+', original_text)
-    selected = []
-    for s in sentences:
-        if any(kw in s for kw in keywords[:3]):
-            selected.append(s)
-        if len(selected) >= 15:
-            break
-    
-    if len(selected) < 5:
-        selected = sentences[:20]
-    
-    return " ".join(selected) if selected else f"شرح مفصل عن {', '.join(keywords[:3])}. " * 15
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
-# الصور الخرافية - 4 مصادر + صورة احتياطية خرافية
+# الصور الخرافية
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _TYPE_COLORS = {
@@ -442,13 +545,11 @@ def _get_font(size: int):
 
 
 def _make_colored_image(keywords: str, color: tuple) -> bytes:
-    """صورة احتياطية خرافية - تملأ الشاشة مع الكلمات المفتاحية"""
     keywords = clean_text(keywords) or "مفهوم"
     W, H = 500, 350
     img = Image.new("RGB", (W, H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
     
-    # خلفية متدرجة جميلة
     for y in range(H):
         t = y / H
         r = int(255 * (1 - t) + color[0] * t * 0.3)
@@ -456,11 +557,8 @@ def _make_colored_image(keywords: str, color: tuple) -> bytes:
         b = int(255 * (1 - t) + color[2] * t * 0.3)
         draw.line([(0, y), (W, y)], fill=(r, g, b))
     
-    # إطار مزدوج
     draw.rounded_rectangle([(8, 8), (W-8, H-8)], radius=20, outline=color, width=6)
     draw.rounded_rectangle([(15, 15), (W-15, H-15)], radius=15, outline=(*color, 100), width=2)
-    
-    # دوائر زخرفية
     draw.ellipse([(W//2-70, H//2-70), (W//2+70, H//2+70)], fill=(*color, 30))
     draw.ellipse([(W//2-50, H//2-50), (W//2+50, H//2+50)], outline=color, width=3)
     
@@ -472,7 +570,6 @@ def _make_colored_image(keywords: str, color: tuple) -> bytes:
     except:
         pass
     
-    # تقسيم الكلمات إلى أسطر
     words = keywords.split()
     lines = []
     cur = []
@@ -489,7 +586,6 @@ def _make_colored_image(keywords: str, color: tuple) -> bytes:
     if cur:
         lines.append(' '.join(cur))
     
-    # رسم الكلمات في المنتصف
     y = H // 2 - (len(lines) * 45) // 2
     for line in lines:
         try:
@@ -497,8 +593,6 @@ def _make_colored_image(keywords: str, color: tuple) -> bytes:
         except:
             tw = len(line) * 18
         x = (W - tw) // 2
-        
-        # ظل للنص
         draw.text((x+3, y+3), line, fill=(100, 100, 100), font=font)
         draw.text((x, y), line, fill=color, font=font)
         y += 45
@@ -509,7 +603,6 @@ def _make_colored_image(keywords: str, color: tuple) -> bytes:
 
 
 async def _pollinations_generate(prompt: str) -> bytes | None:
-    """المصدر الأول: Pollinations.ai"""
     import urllib.parse
     try:
         async with aiohttp.ClientSession() as s:
@@ -518,7 +611,6 @@ async def _pollinations_generate(prompt: str) -> bytes | None:
                 if r.status == 200:
                     raw = await r.read()
                     if len(raw) > 5000:
-                        print(f"[IMG] Pollinations success")
                         return raw
     except:
         pass
@@ -526,40 +618,21 @@ async def _pollinations_generate(prompt: str) -> bytes | None:
 
 
 async def _unsplash_generate(query: str) -> bytes | None:
-    """المصدر الثاني: Unsplash"""
     try:
-        url = f"https://source.unsplash.com/featured/500x350/?{query.replace(' ', '-')[:50]},education,learning"
+        url = f"https://source.unsplash.com/featured/500x350/?{query.replace(' ', '-')[:50]},education"
         async with aiohttp.ClientSession() as s:
             async with s.get(url, timeout=15, allow_redirects=True) as r:
                 if r.status == 200:
-                    raw = await r.read()
-                    if len(raw) > 5000:
-                        print(f"[IMG] Unsplash success")
-                        return raw
-    except:
-        pass
-    return None
-
-
-async def _picsum_generate() -> bytes | None:
-    """المصدر الثالث: Lorem Picsum"""
-    try:
-        async with aiohttp.ClientSession() as s:
-            url = f"https://picsum.photos/500/350?random={random.randint(1, 1000)}"
-            async with s.get(url, timeout=10) as r:
-                if r.status == 200:
-                    print(f"[IMG] Picsum success")
                     return await r.read()
     except:
         pass
     return None
 
 
-async def _placeholder_image_generate(query: str) -> bytes | None:
-    """المصدر الرابع: Placeholder Images"""
+async def _picsum_generate() -> bytes | None:
     try:
-        url = f"https://via.placeholder.com/500x350/FFFFFF/333333?text={query.replace(' ', '+')[:30]}"
         async with aiohttp.ClientSession() as s:
+            url = f"https://picsum.photos/500/350?random={random.randint(1, 1000)}"
             async with s.get(url, timeout=10) as r:
                 if r.status == 200:
                     return await r.read()
@@ -569,30 +642,16 @@ async def _placeholder_image_generate(query: str) -> bytes | None:
 
 
 async def fetch_image_for_keyword(keyword: str, section_title: str = "", lecture_type: str = "other", image_search_en: str = "") -> bytes:
-    """جلب صورة خرافية - 4 مصادر + صورة احتياطية محسنة"""
     keyword = clean_text(keyword) or "مفهوم"
     color = _TYPE_COLORS.get(lecture_type, _TYPE_COLORS['other'])
     
-    # 1. Pollinations.ai (صور AI - الأفضل)
-    img = await _pollinations_generate(f"professional educational illustration of {keyword}, high quality, clean style, cartoon")
+    img = await _pollinations_generate(f"professional educational illustration of {keyword}, high quality, cartoon style")
     if img:
         return img
-    
-    # 2. Unsplash (صور حقيقية عالية الجودة)
     img = await _unsplash_generate(keyword)
     if img:
         return img
-    
-    # 3. Picsum (صور عشوائية)
     img = await _picsum_generate()
     if img:
         return img
-    
-    # 4. Placeholder (نص على صورة)
-    img = await _placeholder_image_generate(keyword)
-    if img:
-        return img
-    
-    # 5. صورة احتياطية خرافية
-    print(f"[IMG] Using colored placeholder for: {keyword[:30]}")
     return _make_colored_image(keyword, color)
