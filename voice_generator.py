@@ -1,168 +1,133 @@
+# -*- coding: utf-8 -*-
 import asyncio
 import io
-import tempfile
-import os
-from typing import List, Dict, Any
+import re
 from gtts import gTTS
-from pydub import AudioSegment
 
 
-# دعم اللهجات المختلفة
-DIALECT_TLD_MAP = {
-    "iraq": "com",
-    "egypt": "com.eg",
-    "syria": "com",
-    "gulf": "com.sa",
-    "msa": "com",
-    "english": "com",
-    "british": "co.uk",
-}
-
-DIALECT_STYLE_HINTS = {
-    "iraq": "بلهجة عراقية: ",
-    "egypt": "بلهجة مصرية: ",
-    "syria": "بلهجة شامية: ",
-    "gulf": "بلهجة خليجية: ",
-    "msa": "بالعربية الفصحى: ",
-    "english": "",
-    "british": "",
-}
+def clean_text(text: str) -> str:
+    """تنظيف النص"""
+    if not text:
+        return ""
+    text = str(text).replace('\x00', '').replace('\0', '')
+    text = re.sub(r'[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
 
 
-def _add_dialect_flavor(text: str, dialect: str) -> str:
-    """إضافة نكهة اللهجة للنص"""
-    if dialect in DIALECT_STYLE_HINTS and DIALECT_STYLE_HINTS[dialect]:
-        return DIALECT_STYLE_HINTS[dialect] + text
+def _convert_numbers(text: str, lang: str) -> str:
+    """تحويل الأرقام إلى كلمات"""
+    try:
+        from num2words import num2words
+        
+        def replace_num(match):
+            num_str = match.group(0).replace(',', '')
+            try:
+                if '.' in num_str:
+                    num = float(num_str)
+                else:
+                    num = int(num_str)
+                return num2words(num, lang=lang)
+            except:
+                return match.group(0)
+        
+        text = re.sub(r'\d[\d,]*\.?\d*', replace_num, text)
+    except:
+        pass
     return text
 
 
-def _generate_single_audio(text: str, dialect: str, lang: str = "ar") -> tuple[bytes, float]:
-    """توليد ملف صوتي باستخدام gTTS"""
+def _convert_percentages(text: str, lang: str) -> str:
+    """تحويل النسب المئوية إلى كلمات"""
     try:
-        tld = DIALECT_TLD_MAP.get(dialect, "com")
-        flavored_text = _add_dialect_flavor(text, dialect)
-
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-            tmp_path = tmp.name
-
-        tts = gTTS(text=flavored_text, lang=lang, tld=tld, slow=False)
-        tts.save(tmp_path)
-
-        with open(tmp_path, "rb") as f:
-            audio_bytes = f.read()
-
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
-
-        audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
-        duration = len(audio) / 1000.0
-
-        return audio_bytes, duration
-
-    except Exception as e:
-        print(f"❌ gTTS error for dialect {dialect}: {e}")
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-                tmp_path = tmp.name
-
-            tts = gTTS(text=text, lang=lang, slow=False)
-            tts.save(tmp_path)
-
-            with open(tmp_path, "rb") as f:
-                audio_bytes = f.read()
-
+        from num2words import num2words
+        
+        def replace_pct(match):
+            num_str = match.group(1).replace(',', '')
             try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
+                if '.' in num_str:
+                    num = float(num_str)
+                else:
+                    num = int(num_str)
+                words = num2words(num, lang=lang)
+                suffix = " بالمئة" if lang == "ar" else " percent"
+                return words + suffix
+            except:
+                return match.group(0)
+        
+        text = re.sub(r'([\d,]+\.?\d*)\s*%', replace_pct, text)
+    except:
+        pass
+    return text
 
-            audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
-            duration = len(audio) / 1000.0
 
-            return audio_bytes, duration
+GTTS_LANG_MAP = {
+    "iraq": "ar",
+    "egypt": "ar",
+    "syria": "ar",
+    "gulf": "ar",
+    "msa": "ar",
+    "english": "en",
+    "british": "en"
+}
 
-        except Exception as e2:
-            print(f"❌ gTTS fallback also failed: {e2}")
-            raise
 
-
-async def _generate_single_audio_async(text: str, dialect: str) -> Dict[str, Any]:
-    """نسخة غير متزامنة من توليد الصوت"""
+async def generate_voice(text: str, dialect: str = "msa") -> tuple[bytes, bool]:
+    """توليد الصوت باستخدام gTTS مع تحويل الأرقام"""
+    text = clean_text(text) or "محاضرة"
+    lang = GTTS_LANG_MAP.get(dialect, "ar")
+    
+    # تحويل الأرقام والنسب المئوية
+    text = _convert_percentages(text, lang)
+    text = _convert_numbers(text, lang)
+    
+    def _synth():
+        buf = io.BytesIO()
+        tts = gTTS(text=text, lang=lang, slow=False)
+        tts.write_to_fp(buf)
+        buf.seek(0)
+        return buf.read()
+    
     loop = asyncio.get_event_loop()
+    audio = await loop.run_in_executor(None, _synth)
+    return audio, False
 
-    if dialect in ("english", "british"):
-        lang = "en"
-    else:
-        lang = "ar"
 
+async def get_audio_duration(audio: bytes) -> float:
+    """حساب مدة الصوت"""
     try:
-        audio_bytes, duration = await loop.run_in_executor(
-            None, _generate_single_audio, text, dialect, lang
-        )
-        return {
-            "audio": audio_bytes,
-            "duration": duration,
-            "dialect": dialect,
-            "used_fallback": False,
-            "provider": "gTTS",
-        }
-    except Exception as e:
-        print(f"❌ Audio generation failed for dialect {dialect}: {e}")
-        raise
+        from pydub import AudioSegment
+        seg = AudioSegment.from_mp3(io.BytesIO(audio))
+        return len(seg) / 1000.0
+    except:
+        return max(5.0, len(audio) / 16000)
 
 
-async def generate_sections_audio(
-    sections: List[Dict[str, Any]],
-    dialect: str = "msa"
-) -> Dict[str, Any]:
-    """توليد الصوت لجميع الأقسام باستخدام gTTS"""
-    results = []
-    total_duration = 0.0
-
-    print(f"🎤 Generating audio for {len(sections)} sections using gTTS...")
-
-    for idx, section in enumerate(sections):
-        narration = section.get("narration", "")
-        if not narration:
-            narration = section.get("content", f"القسم {idx + 1}")
-
-        print(f"  🔊 Generating section {idx + 1}/{len(sections)}...")
-
-        try:
-            result = await _generate_single_audio_async(narration, dialect)
-            results.append(result)
-            total_duration += result["duration"]
-            print(f"  ✅ Section {idx + 1} audio ready ({result['duration']:.1f}s)")
-        except Exception as e:
-            print(f"  ⚠️ Section {idx + 1} failed, using silent audio: {e}")
-            silent = AudioSegment.silent(duration=5000)
-            buf = io.BytesIO()
-            silent.export(buf, format="mp3")
-            results.append({
-                "audio": buf.getvalue(),
-                "duration": 5.0,
-                "dialect": dialect,
-                "used_fallback": True,
-                "provider": "silent_fallback",
-            })
-            total_duration += 5.0
-
+async def generate_sections_audio(sections: list, dialect: str) -> dict:
+    """توليد الصوت لجميع الأقسام"""
+    sem = asyncio.Semaphore(3)
+    
+    async def _gen_one(i: int, section: dict):
+        txt = clean_text(section.get("narration", ""))
+        if not txt:
+            txt = " ".join(section.get("keywords", ["مفهوم"]))
+        
+        async with sem:
+            try:
+                aud, _ = await generate_voice(txt, dialect)
+                dur = await get_audio_duration(aud)
+                return {"index": i, "audio": aud, "duration": dur, "ok": True}
+            except Exception as e:
+                print(f"TTS error: {e}")
+                return {"index": i, "audio": None, "duration": 30, "ok": False}
+    
+    results = await asyncio.gather(*[_gen_one(i, s) for i, s in enumerate(sections)])
+    results = sorted(results, key=lambda x: x["index"])
+    
     return {
         "results": results,
-        "total_duration": total_duration,
-        "used_fallback": False,
-        "provider": "gTTS",
-    }
-
-
-def keys_status() -> Dict[str, Any]:
-    """حالة المفاتيح - gTTS مجاني دائماً"""
-    return {
-        "total": 1,
-        "active": 1,
-        "exhausted": 0,
-        "all_gone": False,
+        "used_fallback": True,
+        "all_failed": all(not r["ok"] for r in results)
+            }        "all_gone": False,
         "provider": "gTTS (مجاني)",
 }
