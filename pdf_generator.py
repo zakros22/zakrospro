@@ -145,22 +145,58 @@ async def create_pdf_summary(lecture_data: dict, sections: list, output_path: st
     story = []
     styles = getSampleStyleSheet()
     
-    def _style(name, *, font, size, color=colors.black, align=TA_LEFT, leading=None, after=4):
-        return ParagraphStyle(
-            name, parent=styles["Normal"],
-            fontName=font, fontSize=size,
-            textColor=color, alignment=align,
-            leading=leading or size * 1.55,
-            spaceAfter=after,
-        )
+    # Header style
+    header_style = ParagraphStyle(
+        "Header", parent=styles["Normal"],
+        fontName=bold_font, fontSize=18,
+        textColor=colors.white, alignment=TA_RIGHT if not is_english else TA_LEFT,
+        leading=28,
+    )
     
-    header_style = _style("Hdr", font=bold_font, size=18, color=colors.white, align=TA_RIGHT if not is_english else TA_LEFT, leading=28)
-    sub_white = _style("Sub", font=reg_font, size=10, color=colors.HexColor("#ffffffcc"), align=TA_RIGHT if not is_english else TA_LEFT, leading=16)
-    sec_lbl = _style("SLbl", font=bold_font, size=13, color=theme_color, align=align_body, leading=22, after=4)
-    body_style = _style("Body", font=reg_font, size=11, color=colors.HexColor("#212121"), align=align_body, leading=22, after=4)
-    bullet_style = _style("Bul", font=reg_font, size=11, color=colors.HexColor("#37474f"), align=align_body, leading=20, after=2, left=0 if not is_english else 8, right=8 if not is_english else 0)
-    keyword_style = _style("Kw", font=bold_font, size=10, color=colors.HexColor("#1565c0"), align=align_body, leading=18, after=2)
-    footer_style = _style("Ftr", font=reg_font, size=9, color=colors.HexColor("#9e9e9e"), align=TA_CENTER, leading=14)
+    sub_white = ParagraphStyle(
+        "SubWhite", parent=styles["Normal"],
+        fontName=reg_font, fontSize=10,
+        textColor=colors.HexColor("#ffffffcc"),
+        alignment=TA_RIGHT if not is_english else TA_LEFT,
+        leading=16,
+    )
+    
+    sec_lbl = ParagraphStyle(
+        "SectionLabel", parent=styles["Normal"],
+        fontName=bold_font, fontSize=13,
+        textColor=theme_color, alignment=align_body,
+        leading=22, spaceAfter=4,
+    )
+    
+    body_style = ParagraphStyle(
+        "Body", parent=styles["Normal"],
+        fontName=reg_font, fontSize=11,
+        textColor=colors.HexColor("#212121"), alignment=align_body,
+        leading=22, spaceAfter=4,
+    )
+    
+    bullet_style = ParagraphStyle(
+        "Bullet", parent=styles["Normal"],
+        fontName=reg_font, fontSize=11,
+        textColor=colors.HexColor("#37474f"), alignment=align_body,
+        leading=20, spaceAfter=2,
+        leftIndent=0 if not is_english else 8,
+        rightIndent=8 if not is_english else 0,
+    )
+    
+    keyword_style = ParagraphStyle(
+        "Keyword", parent=styles["Normal"],
+        fontName=bold_font, fontSize=10,
+        textColor=colors.HexColor("#1565c0"), alignment=align_body,
+        leading=18, spaceAfter=2,
+    )
+    
+    footer_style = ParagraphStyle(
+        "Footer", parent=styles["Normal"],
+        fontName=reg_font, fontSize=9,
+        textColor=colors.HexColor("#9e9e9e"), alignment=TA_CENTER,
+        leading=14,
+    )
     
     # Header
     title_display = fmt(title_raw) if not is_english else _clean(title_raw)
