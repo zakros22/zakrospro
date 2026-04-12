@@ -1,8 +1,8 @@
+# -*- coding: utf-8 -*-
 import asyncio
 import os
 import sys
 
-# Patch PIL
 try:
     import PIL.Image as _pil
     if not hasattr(_pil, "ANTIALIAS"):
@@ -10,18 +10,30 @@ try:
 except:
     pass
 
+
 async def main():
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
-        print("ERROR: TELEGRAM_BOT_TOKEN not set!")
-        sys.exit(1)
+        print("ERROR: TELEGRAM_BOT_TOKEN not set")
+        return
 
     from web_server import start_web_server
-    web_task = asyncio.create_task(start_web_server())
-    await asyncio.sleep(2)
+    asyncio.create_task(start_web_server())
 
-    from bot import run_bot
-    await run_bot()
+    from bot import main as bot_main
+
+    while True:
+        try:
+            print("[main] Starting bot...")
+            await bot_main()
+            print("[main] Restarting...")
+            await asyncio.sleep(3)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"[main] Crashed: {e}")
+            await asyncio.sleep(5)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
