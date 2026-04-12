@@ -37,7 +37,10 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
     return clean_text(text)
 
 
-# API Keys
+# ═══════════════════════════════════════════════════════════════════════════════
+# API Keys - نفس ما موجود
+# ═══════════════════════════════════════════════════════════════════════════════
+
 _google_keys = [k.strip() for k in os.getenv("GOOGLE_API_KEYS", "").split(",") if k.strip()]
 _current_google_idx = 0
 _exhausted_google = set()
@@ -107,6 +110,10 @@ def _mark_or_exhausted(k):
     _current_or_idx += 1
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# دوال AI - نفس ما موجود مع رفع درجة الحرارة
+# ═══════════════════════════════════════════════════════════════════════════════
+
 async def _google_generate(prompt: str, max_tokens: int = 8192) -> str:
     models = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
     
@@ -123,7 +130,7 @@ async def _google_generate(prompt: str, max_tokens: int = 8192) -> str:
                     client.models.generate_content,
                     model=model,
                     contents=prompt,
-                    config=genai_types.GenerateContentConfig(temperature=0.9, max_output_tokens=max_tokens)
+                    config=genai_types.GenerateContentConfig(temperature=0.95, max_output_tokens=max_tokens)  # ✅ رفع درجة الحرارة
                 )
                 print(f"[AI] Google success: {model}")
                 return response.text.strip()
@@ -154,7 +161,7 @@ async def _groq_generate(prompt: str, max_tokens: int = 8192) -> str:
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": min(max_tokens, 8192),
-                    "temperature": 0.9
+                    "temperature": 0.95  # ✅ رفع درجة الحرارة
                 }
                 async with aiohttp.ClientSession() as s:
                     async with s.post(
@@ -199,7 +206,7 @@ async def _openrouter_generate(prompt: str, max_tokens: int = 8192) -> str:
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": min(max_tokens, 8192),
-                    "temperature": 0.9
+                    "temperature": 0.95  # ✅ رفع درجة الحرارة
                 }
                 async with aiohttp.ClientSession() as s:
                     async with s.post(
@@ -244,6 +251,10 @@ async def _ai_generate(prompt: str, max_tokens: int = 8192) -> str:
     raise Exception("All AI services failed")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# استخراج الكلمات - نفس ما موجود
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def _extract_keywords(text: str, max_words: int = 30) -> list:
     text = clean_text(text)
     stop_words = {
@@ -284,6 +295,10 @@ def _detect_type(text: str) -> str:
     return best if scores[best] > 1 else 'other'
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# الدالة الرئيسية - نفس هيكلها بالضبط مع تحسين الـ Prompt فقط
+# ═══════════════════════════════════════════════════════════════════════════════
+
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     text = clean_text(text)
     if not text:
@@ -313,16 +328,17 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     dial_map = {"iraq": "بالعراقي", "egypt": "بالمصري", "syria": "بالشامي", "gulf": "بالخليجي", "msa": "بالفصحى"}
     dial = dial_map.get(dialect, "بالفصحى")
     
+    # ✅ تحسين الـ Prompt بشكل كبير لشرح احترافي
     prompt = f"""أنت {teacher} تشرح لطلابك. اشرح {dial}.
 
 **تعليمات صارمة للشرح الاحترافي:**
 1. حلل النص الأصلي بعمق. استخرج جميع المفاهيم الأساسية والفرعية.
 2. اكتب شرحاً كاملاً ومتنوعاً (20-25 جملة) لكل قسم.
 3. لا تكرر نفس الجملة أبداً. كل جملة يجب أن تضيف معلومة جديدة.
-4. فسر المصطلحات العلمية بلغة بسيطة. أعط أمثلة واقعية.
-5. اربط بين المفاهيم. اشرح العلاقات بينها.
-6. استخدم أسلوب المعلم الذي يتحدث لطلابه: "دعونا نفهم..."، "لاحظوا معي..."، "مثال على ذلك...".
-7. غطِّ المحاضرة من البداية إلى النهاية.
+4. فسر المصطلحات العلمية بلغة بسيطة. أعط أمثلة واقعية من الحياة.
+5. اربط بين المفاهيم. اشرح العلاقات بينها (سبب ونتيجة، تشابه واختلاف).
+6. استخدم أسلوب المعلم: "دعونا نفهم..."، "لاحظوا معي..."، "مثال على ذلك..."، "والآن بعد أن عرفنا...".
+7. غطِّ المحاضرة من البداية إلى النهاية بشكل شامل.
 
 **النص الأصلي:**
 ---
@@ -403,7 +419,10 @@ def _generate_fallback_narration(keywords: list, lecture_type: str, original_tex
     return " ".join(selected) if selected else f"شرح مفصل عن {', '.join(keywords[:3])}. " * 15
 
 
-# الصور
+# ═══════════════════════════════════════════════════════════════════════════════
+# الصور الخرافية - 4 مصادر + صورة احتياطية خرافية
+# ═══════════════════════════════════════════════════════════════════════════════
+
 _TYPE_COLORS = {
     'medicine': (231, 76, 126), 'math': (52, 152, 219), 'physics': (52, 152, 219),
     'chemistry': (46, 204, 113), 'history': (230, 126, 34), 'biology': (46, 204, 113),
@@ -423,59 +442,83 @@ def _get_font(size: int):
 
 
 def _make_colored_image(keywords: str, color: tuple) -> bytes:
+    """صورة احتياطية خرافية - تملأ الشاشة مع الكلمات المفتاحية"""
     keywords = clean_text(keywords) or "مفهوم"
     W, H = 500, 350
     img = Image.new("RGB", (W, H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
     
+    # خلفية متدرجة جميلة
     for y in range(H):
         t = y / H
-        r = int(255 * (1 - t) + color[0] * t * 0.2)
-        g = int(255 * (1 - t) + color[1] * t * 0.2)
-        b = int(255 * (1 - t) + color[2] * t * 0.2)
+        r = int(255 * (1 - t) + color[0] * t * 0.3)
+        g = int(255 * (1 - t) + color[1] * t * 0.3)
+        b = int(255 * (1 - t) + color[2] * t * 0.3)
         draw.line([(0, y), (W, y)], fill=(r, g, b))
     
-    draw.rounded_rectangle([(10, 10), (W-10, H-10)], radius=20, outline=color, width=8)
-    draw.ellipse([(W//2-60, H//2-60), (W//2+60, H//2+60)], fill=(*color, 25))
+    # إطار مزدوج
+    draw.rounded_rectangle([(8, 8), (W-8, H-8)], radius=20, outline=color, width=6)
+    draw.rounded_rectangle([(15, 15), (W-15, H-15)], radius=15, outline=(*color, 100), width=2)
     
-    font = _get_font(28)
+    # دوائر زخرفية
+    draw.ellipse([(W//2-70, H//2-70), (W//2+70, H//2+70)], fill=(*color, 30))
+    draw.ellipse([(W//2-50, H//2-50), (W//2+50, H//2+50)], outline=color, width=3)
+    
+    font = _get_font(32)
     try:
         import arabic_reshaper
         from bidi.algorithm import get_display
-        keywords = get_display(arabic_reshaper.reshape(keywords[:40]))
+        keywords = get_display(arabic_reshaper.reshape(keywords[:50]))
     except:
         pass
     
+    # تقسيم الكلمات إلى أسطر
+    words = keywords.split()
     lines = []
-    for kw in keywords.split():
-        if len(lines) < 3:
-            lines.append(kw)
+    cur = []
+    for w in words:
+        cur.append(w)
+        line = ' '.join(cur)
+        try:
+            if font.getbbox(line)[2] - font.getbbox(line)[0] > W - 60:
+                cur.pop()
+                lines.append(' '.join(cur))
+                cur = [w]
+        except:
+            pass
+    if cur:
+        lines.append(' '.join(cur))
     
-    y = H // 2 - (len(lines) * 40) // 2
+    # رسم الكلمات في المنتصف
+    y = H // 2 - (len(lines) * 45) // 2
     for line in lines:
         try:
             tw = font.getbbox(line)[2] - font.getbbox(line)[0]
         except:
-            tw = len(line) * 16
+            tw = len(line) * 18
         x = (W - tw) // 2
-        draw.text((x+3, y+3), line, fill=(200, 200, 200), font=font)
+        
+        # ظل للنص
+        draw.text((x+3, y+3), line, fill=(100, 100, 100), font=font)
         draw.text((x, y), line, fill=color, font=font)
         y += 45
     
     buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=90)
+    img.save(buf, "JPEG", quality=95)
     return buf.getvalue()
 
 
 async def _pollinations_generate(prompt: str) -> bytes | None:
+    """المصدر الأول: Pollinations.ai"""
     import urllib.parse
     try:
         async with aiohttp.ClientSession() as s:
-            url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt[:200])}?width=500&height=350&nologo=true"
-            async with s.get(url, timeout=15) as r:
+            url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt[:200])}?width=500&height=350&nologo=true&model=flux"
+            async with s.get(url, timeout=20) as r:
                 if r.status == 200:
                     raw = await r.read()
                     if len(raw) > 5000:
+                        print(f"[IMG] Pollinations success")
                         return raw
     except:
         pass
@@ -483,21 +526,40 @@ async def _pollinations_generate(prompt: str) -> bytes | None:
 
 
 async def _unsplash_generate(query: str) -> bytes | None:
+    """المصدر الثاني: Unsplash"""
     try:
-        url = f"https://source.unsplash.com/featured/500x350/?{query.replace(' ', '-')[:50]},education"
+        url = f"https://source.unsplash.com/featured/500x350/?{query.replace(' ', '-')[:50]},education,learning"
         async with aiohttp.ClientSession() as s:
             async with s.get(url, timeout=15, allow_redirects=True) as r:
                 if r.status == 200:
-                    return await r.read()
+                    raw = await r.read()
+                    if len(raw) > 5000:
+                        print(f"[IMG] Unsplash success")
+                        return raw
     except:
         pass
     return None
 
 
 async def _picsum_generate() -> bytes | None:
+    """المصدر الثالث: Lorem Picsum"""
     try:
         async with aiohttp.ClientSession() as s:
             url = f"https://picsum.photos/500/350?random={random.randint(1, 1000)}"
+            async with s.get(url, timeout=10) as r:
+                if r.status == 200:
+                    print(f"[IMG] Picsum success")
+                    return await r.read()
+    except:
+        pass
+    return None
+
+
+async def _placeholder_image_generate(query: str) -> bytes | None:
+    """المصدر الرابع: Placeholder Images"""
+    try:
+        url = f"https://via.placeholder.com/500x350/FFFFFF/333333?text={query.replace(' ', '+')[:30]}"
+        async with aiohttp.ClientSession() as s:
             async with s.get(url, timeout=10) as r:
                 if r.status == 200:
                     return await r.read()
@@ -507,24 +569,30 @@ async def _picsum_generate() -> bytes | None:
 
 
 async def fetch_image_for_keyword(keyword: str, section_title: str = "", lecture_type: str = "other", image_search_en: str = "") -> bytes:
+    """جلب صورة خرافية - 4 مصادر + صورة احتياطية محسنة"""
     keyword = clean_text(keyword) or "مفهوم"
     color = _TYPE_COLORS.get(lecture_type, _TYPE_COLORS['other'])
     
-    prompt = f"educational illustration of {keyword}, simple clean style, white background"
-    img = await _pollinations_generate(prompt)
+    # 1. Pollinations.ai (صور AI - الأفضل)
+    img = await _pollinations_generate(f"professional educational illustration of {keyword}, high quality, clean style, cartoon")
     if img:
-        print(f"[IMG] Pollinations success for: {keyword[:30]}")
         return img
     
+    # 2. Unsplash (صور حقيقية عالية الجودة)
     img = await _unsplash_generate(keyword)
     if img:
-        print(f"[IMG] Unsplash success for: {keyword[:30]}")
         return img
     
+    # 3. Picsum (صور عشوائية)
     img = await _picsum_generate()
     if img:
-        print(f"[IMG] Picsum success")
         return img
     
+    # 4. Placeholder (نص على صورة)
+    img = await _placeholder_image_generate(keyword)
+    if img:
+        return img
+    
+    # 5. صورة احتياطية خرافية
     print(f"[IMG] Using colored placeholder for: {keyword[:30]}")
     return _make_colored_image(keyword, color)
