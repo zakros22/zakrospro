@@ -18,8 +18,28 @@ from config import (
 _key_pool: list[str] = list(GOOGLE_API_KEYS) if GOOGLE_API_KEYS else ([GOOGLE_API_KEY] if GOOGLE_API_KEY else [])
 _groq_pool: list[str] = list(GROQ_API_KEYS) if GROQ_API_KEYS else []
 _or_pool: list[str] = list(OPENROUTER_API_KEYS) if OPENROUTER_API_KEYS else []
+
+# ⭐═════════════════════════════════════════════════════════════════════════════
+# DEEPSEEK API KEY POOL - الأولوية الأولى
+# ⭐═════════════════════════════════════════════════════════════════════════════
+_raw_ds = os.getenv("DEEPSEEK_API_KEYS", "") or os.getenv("DEEPSEEK_API_KEY", "")
+_ds_from_comma: list[str] = [k.strip() for k in _raw_ds.split(",") if k.strip()]
+_ds_from_numbered: list[str] = [
+    v for i in range(1, 10)
+    if (v := os.getenv(f"DEEPSEEK_API_KEY_{i}", "")).strip()
+]
+_deepseek_pool: list[str] = _ds_from_comma + [k for k in _ds_from_numbered if k not in _ds_from_comma]
+DEEPSEEK_API_KEYS: list[str] = _deepseek_pool
+DEEPSEEK_API_KEY = DEEPSEEK_API_KEYS[0] if DEEPSEEK_API_KEYS else ""
+
+if DEEPSEEK_API_KEYS:
+    print(f"✅ تم تحميل {len(DEEPSEEK_API_KEYS)} مفتاح DeepSeek API (الأولوية الأولى)", file=sys.stderr)
+else:
+    print("ℹ️ لا توجد مفاتيح DeepSeek. سيتم استخدام البدائل.", file=sys.stderr)
+
 _key_clients: dict[str, object] = {}
 _current_key_idx: int = 0
+_current_ds_idx: int = 0  # مؤشر منفصل لـ DeepSeek
 
 
 def _get_client(key: str | None = None):
@@ -36,19 +56,128 @@ class QuotaExhaustedError(Exception):
 
 
 # ============================================================
-# نماذج الذكاء الاصطناعي الاحتياطية
+# نماذج الذكاء الاصطناعي
 # ============================================================
+_DEEPSEEK_MODEL = "deepseek-chat"  # النموذج الرئيسي لـ DeepSeek
 _GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it"]
 _OR_MODELS = [
     "openai/gpt-oss-120b:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
     "openai/gpt-oss-20b:free",
     "liquid/lfm-2.5-1.2b-instruct:free",
+    "deepseek/deepseek-chat:free",  # DeepSeek عبر OpenRouter كبديل إضافي
 ]
 
 
+# ============================================================
+# ⭐ DEEPSEEK - الأولوية الأولى ⭐
+# ============================================================
+async def _generate_with_deepseek(prompt: str, max_tokens: int = 8192) -> str:
+    """
+    استخدام DeepSeek API كأولوية أولى للتحليل والشرح.
+    DeepSeek ممتاز في اللغة العربية والفهم العميق للنصوص.
+    """
+    global _current_ds_idx
+    
+    if not _deepseek_pool:
+        raise QuotaExhaustedError("لا يوجد DEEPSEEK_API_KEY")
+    
+    for i in range(len(_deepseek_pool)):
+        key_idx = (_current_ds_idx + i) % len(_deepseek_pool)
+        key = _deepseek_pool[key_idx]
+        
+        try:
+            headers = {
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "model": _DEEPSEEK_MODEL,
+                "messages": [
+                    {"role": "system", "content": "أنت معلم خبير ومتخصص في تبسيط المحاضرات التعليمية. تكتب بأسلوب واضح ومفصل مع دعم كامل للغة العربية."},
+                    {"role": "user", "content": prompt}
+                ],
+                "max_tokens": min(max_tokens, 8192),
+                "temperature": 0.3,
+                "stream": False
+            }
+            
+            async with aiohttp.ClientSession() as s:
+                async with s.post(
+                    "https://api.deepseek.com/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=120)
+                ) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        _current_ds_idx = key_idx
+                        content = data["choices"][0]["message"]["content"]
+                        print(f"✅ DeepSeek success with key {key_idx+1}")
+                        return content.strip()
+                    elif r.status == 429:
+                        print(f"⚠️ DeepSeek key {key_idx+1} rate limited")
+                        continue
+                    elif r.status == 401:
+                        print(f"⚠️ DeepSeek key {key_idx+1} invalid")
+                        continue
+                    else:
+                        body = await r.text()
+                        print(f"⚠️ DeepSeek error {r.status}: {body[:100]}")
+                        continue
+                        
+        except Exception as e:
+            print(f"⚠️ DeepSeek key {key_idx+1} error: {str(e)[:50]}")
+            continue
+    
+    raise QuotaExhaustedError("نفدت جميع مفاتيح DeepSeek")
+
+
+# ============================================================
+# Google Gemini - الأولوية الثانية
+# ============================================================
+async def _generate_with_gemini(prompt: str, max_tokens: int = 8192) -> str:
+    """استخدام Google Gemini كأولوية ثانية"""
+    global _current_key_idx
+    gemini_models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
+    
+    for i in range(len(_key_pool)):
+        key_idx = (_current_key_idx + i) % len(_key_pool)
+        key = _key_pool[key_idx]
+        client = _get_client(key)
+        
+        for model in gemini_models:
+            try:
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=model,
+                    contents=prompt,
+                    config=genai_types.GenerateContentConfig(
+                        temperature=0.3,
+                        max_output_tokens=max_tokens
+                    ),
+                )
+                _current_key_idx = key_idx
+                print(f"✅ Gemini success: {model} with key {key_idx+1}")
+                return response.text.strip()
+            except Exception as e:
+                err = str(e)
+                if "429" in err or "quota" in err.lower() or "exhausted" in err.lower():
+                    print(f"⚠️ Gemini key {key_idx+1} quota exhausted")
+                    continue
+                else:
+                    print(f"⚠️ Gemini error: {err[:50]}")
+                    continue
+    
+    raise QuotaExhaustedError("نفدت جميع مفاتيح Gemini")
+
+
+# ============================================================
+# Groq - الأولوية الثالثة
+# ============================================================
 async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
-    """استخدام Groq كبديل أول"""
+    """استخدام Groq كأولوية ثالثة"""
     if not _groq_pool:
         raise QuotaExhaustedError("لا يوجد GROQ_API_KEY")
     
@@ -82,8 +211,11 @@ async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
     raise QuotaExhaustedError("نفدت حصة Groq")
 
 
+# ============================================================
+# OpenRouter - الأولوية الرابعة (والأخيرة)
+# ============================================================
 async def _generate_with_openrouter(prompt: str, max_tokens: int = 8192) -> str:
-    """استخدام OpenRouter كبديل ثاني"""
+    """استخدام OpenRouter كأولوية رابعة"""
     if not _or_pool:
         raise QuotaExhaustedError("لا يوجد OPENROUTER_API_KEY")
     
@@ -121,62 +253,51 @@ async def _generate_with_openrouter(prompt: str, max_tokens: int = 8192) -> str:
     raise QuotaExhaustedError("نفدت حصة OpenRouter")
 
 
+# ============================================================
+# نظام التوليد الذكي - DeepSeek أولاً
+# ============================================================
 async def _generate_with_rotation(prompt: str, max_output_tokens: int = 8192) -> str:
     """
     نظام تبادل المفاتيح الذكي:
-    1. Google Gemini (جميع المفاتيح)
-    2. Groq (جميع المفاتيح)
-    3. OpenRouter (جميع المفاتيح)
+    1. ⭐ DeepSeek (الأولوية الأولى - الأفضل للعربية والتحليل)
+    2. Google Gemini (الأولوية الثانية)
+    3. Groq (الأولوية الثالثة)
+    4. OpenRouter (الأولوية الرابعة)
     """
-    global _current_key_idx
-    gemini_models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
     
-    # Phase 1: Gemini
-    for i in range(len(_key_pool)):
-        key_idx = (_current_key_idx + i) % len(_key_pool)
-        key = _key_pool[key_idx]
-        client = _get_client(key)
-        
-        for model in gemini_models:
-            try:
-                response = await asyncio.to_thread(
-                    client.models.generate_content,
-                    model=model,
-                    contents=prompt,
-                    config=genai_types.GenerateContentConfig(
-                        temperature=0.3,
-                        max_output_tokens=max_output_tokens
-                    ),
-                )
-                _current_key_idx = key_idx
-                print(f"✅ Gemini success: {model} with key {key_idx+1}")
-                return response.text.strip()
-            except Exception as e:
-                err = str(e)
-                if "429" in err or "quota" in err.lower() or "exhausted" in err.lower():
-                    print(f"⚠️ Gemini key {key_idx+1} quota exhausted")
-                    continue
-                else:
-                    print(f"⚠️ Gemini error: {err[:50]}")
-                    continue
+    # ⭐ Phase 1: DeepSeek - الأولوية الأولى ⭐
+    if _deepseek_pool:
+        print("🔄 Trying DeepSeek (Priority 1)...")
+        try:
+            return await _generate_with_deepseek(prompt, max_output_tokens)
+        except QuotaExhaustedError as e:
+            print(f"⚠️ DeepSeek exhausted: {e}")
     
-    # Phase 2: Groq
+    # Phase 2: Google Gemini
+    if _key_pool:
+        print("🔄 Trying Google Gemini (Priority 2)...")
+        try:
+            return await _generate_with_gemini(prompt, max_output_tokens)
+        except QuotaExhaustedError as e:
+            print(f"⚠️ Gemini exhausted: {e}")
+    
+    # Phase 3: Groq
     if _groq_pool:
-        print("🔄 Switching to Groq...")
+        print("🔄 Trying Groq (Priority 3)...")
         try:
             return await _generate_with_groq(prompt, max_output_tokens)
-        except QuotaExhaustedError:
-            pass
+        except QuotaExhaustedError as e:
+            print(f"⚠️ Groq exhausted: {e}")
     
-    # Phase 3: OpenRouter
+    # Phase 4: OpenRouter
     if _or_pool:
-        print("🔄 Switching to OpenRouter...")
+        print("🔄 Trying OpenRouter (Priority 4)...")
         try:
             return await _generate_with_openrouter(prompt, max_output_tokens)
-        except QuotaExhaustedError:
-            pass
+        except QuotaExhaustedError as e:
+            print(f"⚠️ OpenRouter exhausted: {e}")
     
-    raise QuotaExhaustedError("QUOTA_EXHAUSTED: جميع المفاتيح منتهية")
+    raise QuotaExhaustedError("QUOTA_EXHAUSTED: جميع المفاتيح منتهية (DeepSeek, Gemini, Groq, OpenRouter)")
 
 
 # ============================================================
@@ -454,6 +575,7 @@ SUBJECT_INSTRUCTIONS = {
 async def analyze_lecture(text: str, dialect: str = "msa", subject_hint: str = "other") -> dict:
     """
     تحليل المحاضرة واستخراج الأقسام والمحتوى.
+    يستخدم DeepSeek كأولوية أولى للتحليل.
     
     Args:
         text: نص المحاضرة
@@ -479,7 +601,7 @@ async def analyze_lecture(text: str, dialect: str = "msa", subject_hint: str = "
     
     # حساب عدد الأقسام
     num_sections, narration_sentences, max_tokens = _compute_lecture_scale(text)
-    text_limit = min(len(text), 5000)
+    text_limit = min(len(text), 6000)  # زيادة الحد لـ DeepSeek
     is_english = dialect in ("english", "british")
     
     # إعدادات الإخراج حسب اللغة
@@ -502,8 +624,8 @@ async def analyze_lecture(text: str, dialect: str = "msa", subject_hint: str = "
         narration_hint = f"نص الشرح الكامل باللهجة المطلوبة ({narration_sentences} جمل)"
         lang_note = "النص يجب أن يكون باللهجة المطلوبة"
     
-    # بناء الموجه (Prompt)
-    prompt = f"""أنت معلم خبير ومتخصص في تبسيط المحاضرات التعليمية.
+    # بناء الموجه (Prompt) - محسن لـ DeepSeek
+    prompt = f"""أنت معلم خبير ومتخصص في تبسيط المحاضرات التعليمية. مهمتك تحليل المحاضرة التالية وإنتاج محتوى تعليمي احترافي.
 
 {instruction}
 
@@ -547,7 +669,7 @@ async def analyze_lecture(text: str, dialect: str = "msa", subject_hint: str = "
 - أرجع JSON فقط بدون أي نص إضافي أو علامات ```json
 """
     
-    # إرسال الطلب
+    # إرسال الطلب عبر نظام التوليد الذكي (DeepSeek أولاً)
     content = await _generate_with_rotation(prompt, max_output_tokens=max_tokens)
     content = content.strip()
     content = re.sub(r'^```json\s*', '', content)
@@ -777,6 +899,39 @@ async def _dalle_generate(prompt: str) -> bytes | None:
     return None
 
 
+async def _pexels_generate(keyword: str) -> bytes | None:
+    """البحث عن صورة في Pexels"""
+    pexels_key = os.getenv("PEXELS_API_KEY", "")
+    if not pexels_key:
+        return None
+    
+    import urllib.parse
+    
+    try:
+        headers = {"Authorization": pexels_key}
+        query = urllib.parse.quote(f"{keyword} education")
+        
+        async with aiohttp.ClientSession() as s:
+            async with s.get(
+                f"https://api.pexels.com/v1/search?query={query}&per_page=3",
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    for photo in data.get("photos", []):
+                        img_url = photo["src"].get("large")
+                        if img_url:
+                            async with s.get(img_url, timeout=15) as ir:
+                                if ir.status == 200:
+                                    print(f"✅ Pexels found image")
+                                    return await ir.read()
+    except Exception as e:
+        print(f"⚠️ Pexels failed: {e}")
+    
+    return None
+
+
 async def fetch_image_for_keyword(
     keyword: str,
     section_title: str,
@@ -789,7 +944,8 @@ async def fetch_image_for_keyword(
     الترتيب:
     1. Pollinations.ai (مجاني وسريع)
     2. DALL-E (إذا توفر مفتاح OpenAI)
-    3. صورة بديلة محلية
+    3. Pexels (صور حقيقية مجانية)
+    4. صورة بديلة محلية
     """
     subject = (image_search_en or keyword).strip()
     
@@ -804,7 +960,12 @@ async def fetch_image_for_keyword(
     if img:
         return img
     
-    # 3. صورة بديلة
+    # 3. Pexels
+    img = await _pexels_generate(subject)
+    if img:
+        return img
+    
+    # 4. صورة بديلة
     print(f"🎨 Creating placeholder for: {subject[:30]}")
     return _make_placeholder_image([keyword, section_title], lecture_type)
 
@@ -859,5 +1020,5 @@ async def extract_text_from_url(url: str) -> str:
 
 
 async def translate_full_text(text: str, dialect: str) -> str:
-    """ترجمة النص إلى اللهجة المطلوبة (للتطوير المستقبلي)"""
+    """ترجمة النص إلى اللهجة المطلوبة"""
     return text
