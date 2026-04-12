@@ -295,9 +295,6 @@ def get_level_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 
-# -*- coding: utf-8 -*-
-# ... (الكود السابق من الجزء الأول) ...
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # استلام المحتوى
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -638,104 +635,6 @@ async def _process_lecture(uid, text, filename, dialect, lecture_meta, prog_msg,
         )
 
     try:
-        # 1. تحليل المحاضرة
-        await upd(10, "🔍 تحليل المحاضرة...")
-        lecture_data = await _run_or_cancel(uid, analyze_lecture(text, dialect))
-        
-        # إضافة معلومات المعلم إلى بيانات المحاضرة
-        lecture_data["teacher_name"] = lecture_meta["teacher_name"]
-        lecture_data["teacher_outfit"] = lecture_meta["teacher_outfit"]
-        lecture_data["main_type"] = lecture_meta["main_type"]
-        lecture_data["education_level"] = lecture_meta["level"]
-
-        sections = lecture_data.get("sections", [])
-        if not sections:
-            raise RuntimeError("لم يتم استخراج أقسام")
-        
-        n_sec = len(sections)
-        await upd(30, f"✅ تم التحليل - {n_sec} أقسام")
-
-        # 2. جلب الصور
-        await upd(40, "🖼️ جاري جلب الصور التوضيحية...")
-        for i, s in enumerate(sections):
-            if not s.get("_image_bytes"):
-                kw = s.get("keywords", ["مفهوم"])[:4]
-                s["_image_bytes"] = await fetch_image_for_keyword(
-                    " ".join(kw), s.get("title", ""), 
-                    lecture_data.get("lecture_type", "other"),
-                    lecture_data.get("is_english", False)
-                )
-            await upd(40 + int((i+1) / n_sec * 15), f"🖼️ جاري جلب الصور... ({i+1}/{n_sec})")
-        
-        await upd(55, "✅ الصور جاهزة")
-
-        # 3. توليد الصوت
-        await upd(60, "🎤 جاري توليد الصوت...")
-        voice_res = await _run_or_cancel(uid, generate_sections_audio(sections, dialect))
-        audio_results = voice_res["results"]
-        await upd(75, "✅ الصوت جاهز")
-
-        # 4. إنتاج الفيديو
-        await upd(80, "🎬 جاري إنتاج الفيديو...")
-        fd, video_path = tempfile.mkstemp(prefix=f"vid_{uid}_", suffix=".mp4", dir=TEMP_DIR)
-        os.close(fd)
-
-        total_secs = await create_video_from_sections(
-            sections=sections,
-            audio_results=audio_results,
-            lecture_data=lecture_data,
-            output_path=video_path,
-            dialect=dialect
-        )
-        await upd(95, "✅ الفيديو جاهز")
-
-        # 5. إرسال الفيديو
-        decrement_attempts(uid)
-        increment_total_videos(uid)
-        update_video_request(req_id, "done", video_path, pdf_path)
-
-        title = lecture_data.get("title", filename)
-        vid_min = int(total_secs // 60)
-        vid_sec = int(total_secs % 60)
-        remaining = get_user(uid)["attempts_left"]
-
-        caption = f"🎬 *{title}*\n\n📚 الأقسام: {n_sec}\n⏱️ المدة: {vid_min}:{vid_sec:02d}\n💳 المحاولات: {remaining}"
-
-        with open(video_path, "rb") as vf:
-            await context.bot.send_video(
-                chat_id=uid, video=vf, caption=caption,
-                parse_mode="Markdown", supports_streaming=True
-# ═══════════════════════════════════════════════════════════════════════════════
-# دالة المعالجة الرئيسية - مع عرض تفصيلي لجميع المراحل
-# ═══════════════════════════════════════════════════════════════════════════════
-
-async def _process_lecture(uid, text, filename, dialect, lecture_meta, prog_msg, context):
-    _active_jobs[uid] = "processing"
-    cancel_ev = asyncio.Event()
-    _cancel_flags[uid] = cancel_ev
-    
-    req_id = save_video_request(
-        uid, "text", dialect,
-        lecture_meta["main_type"],
-        lecture_meta["subtype"],
-        lecture_meta["level"],
-        lecture_meta["teacher_name"],
-        lecture_meta["teacher_outfit"]
-    )
-    
-    t_start = time.time()
-    video_path = None
-    pdf_path = None
-
-    async def upd(pct, label):
-        elapsed = time.time() - t_start
-        await _safe_edit(
-            prog_msg,
-            f"⏳ *جاري المعالجة...*\n\n{_pbar(pct)} *{pct}%*\n{label}\n\n⏱️ {_fmt_elapsed(elapsed)}",
-            reply_markup=CANCEL_KB
-        )
-
-    try:
         # ───────────────────────────────────────────────────────────────────────────
         # المرحلة 1: التحليل
         # ───────────────────────────────────────────────────────────────────────────
@@ -765,7 +664,7 @@ async def _process_lecture(uid, text, filename, dialect, lecture_meta, prog_msg,
         n_sec = len(sections)
         is_eng = lecture_data.get("is_english", False)
         
-        await upd(25, f"✅ تم تحليل المحاضرة بنجاح!")
+        await upd(25, "✅ تم تحليل المحاضرة بنجاح!")
         await asyncio.sleep(0.5)
         await upd(28, f"📚 تم تقسيم المحاضرة إلى {n_sec} أقسام تعليمية")
         await asyncio.sleep(0.5)
@@ -821,7 +720,7 @@ async def _process_lecture(uid, text, filename, dialect, lecture_meta, prog_msg,
         total_min = int(total_duration // 60)
         total_sec = int(total_duration % 60)
         
-        await upd(72, f"✅ تم توليد الصوت لجميع الأقسام!")
+        await upd(72, "✅ تم توليد الصوت لجميع الأقسام!")
         await asyncio.sleep(0.5)
         await upd(75, f"⏱️ المدة الإجمالية للصوت: {total_min}:{total_sec:02d}")
 
@@ -881,7 +780,7 @@ async def _process_lecture(uid, text, filename, dialect, lecture_meta, prog_msg,
         await prog_msg.delete()
         await context.bot.send_message(
             uid, 
-            f"✅ *تم بنجاح!* 🎓\n\n"
+            "✅ *تم بنجاح!* 🎓\n\n"
             f"📹 الفيديو جاهز للمشاهدة\n"
             f"📚 عدد الأقسام: {n_sec}\n"
             f"⏱️ المدة: {vid_min}:{vid_sec:02d}\n"
@@ -1028,4 +927,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main()). 
