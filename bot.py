@@ -293,3 +293,562 @@ def get_level_keyboard():
     for key, name in EDUCATION_LEVELS.items():
         keyboard.append([InlineKeyboardButton(name, callback_data=f"level_{key}")])
     return InlineKeyboardMarkup(keyboard)
+
+
+# -*- coding: utf-8 -*-
+# ... (الكود السابق من الجزء الأول) ...
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# استلام المحتوى
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = await ensure_user(update)
+    if not user:
+        return
+
+    uid = update.effective_user.id
+    msg = update.message
+
+    if is_owner(uid):
+        if await handle_admin_text_search(update, context):
+            return
+
+    if msg.text:
+        text = msg.text.strip()
+        if text == "📤 رفع محاضرة":
+            await msg.reply_text("📤 أرسل ملف PDF أو اكتب نص المحاضرة:", reply_markup=ReplyKeyboardRemove())
+            return
+        if text == "📊 رصيدي":
+            await msg.reply_text(f"💳 رصيدك: {user['attempts_left']} محاولات")
+            return
+        if text == "🔗 رابط الإحالة":
+            stats = get_referral_stats(uid)
+            bot = await context.bot.get_me()
+            ref_link = f"https://t.me/{bot.username}?start=ref_{uid}"
+            await msg.reply_text(f"🔗 رابطك:\n{ref_link}\n👥 المدعوين: {stats['total_referrals']}")
+            return
+        if text == "❓ مساعدة":
+            await msg.reply_text("📖 أرسل PDF أو نص طويل (200 حرف على الأقل)")
+            return
+
+    if uid in _active_jobs:
+        await msg.reply_text("⏳ لديك محاضرة قيد المعالجة...")
+        return
+
+    lecture_text = None
+    filename = "lecture"
+
+    if msg.document:
+        fname = msg.document.file_name or ""
+        ext = fname.split(".")[-1].lower() if "." in fname else ""
+        
+        if ext not in ("pdf", "txt"):
+            await msg.reply_text("⚠️ PDF أو TXT فقط")
+            return
+
+        wait = await msg.reply_text("📥 جاري قراءة الملف...")
+        
+        try:
+            file = await msg.document.get_file()
+            raw = await file.download_as_bytearray()
+            
+            if ext == "pdf":
+                lecture_text = await extract_full_text_from_pdf(bytes(raw))
+                filename = fname.replace(".pdf", "")
+            else:
+                lecture_text = raw.decode("utf-8", errors="ignore")
+                filename = fname.replace(".txt", "")
+            
+            await wait.delete()
+        except Exception as e:
+            await wait.edit_text(f"❌ خطأ: {str(e)[:100]}")
+            return
+
+    elif msg.text and len(msg.text.strip()) >= 200:
+        lecture_text = msg.text.strip()
+
+    else:
+        await msg.reply_text("⚠️ أرسل PDF أو نص (200 حرف على الأقل)")
+        return
+
+    lecture_text = clean_text(lecture_text)
+    
+    if not lecture_text or len(lecture_text) < 50:
+        await msg.reply_text("❌ نص غير كاف")
+        return
+
+    if user["attempts_left"] <= 0:
+        await send_payment_required_message(update, context)
+        return
+
+    # حفظ النص في الحالة
+    user_states[uid] = {
+        "state": "awaiting_type",
+        "text": lecture_text,
+        "filename": filename
+    }
+
+    words = len(lecture_text.split())
+    detected = _detect_type(lecture_text)
+    detected_name = LECTURE_TYPES.get(detected, '📖 أخرى')
+
+    await msg.reply_text(
+        f"✅ *تم استلام المحاضرة!*\n\n"
+        f"📝 عدد الكلمات: {words:,}\n"
+        f"🔍 النوع المقترح: {detected_name}\n\n"
+        f"👆 *اختر نوع المحاضرة:*",
+        parse_mode="Markdown",
+        reply_markup=get_type_keyboard()
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Callback Handler - معالجة جميع الاختيارات
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    data = q.data
+    uid = q.from_user.id
+
+    if data.startswith("admin_"):
+        await handle_admin_callback(update, context)
+        return
+
+    await q.answer()
+
+    # Payment callbacks
+    if data in ("pay_stars", "pay_mastercard", "pay_crypto"):
+        if data == "pay_stars":
+            await handle_pay_stars(update, context)
+        elif data == "pay_mastercard":
+            await handle_pay_mastercard(update, context)
+        else:
+            await handle_pay_crypto(update, context)
+        return
+
+    if data.startswith("sent_"):
+        await handle_payment_sent(update, context)
+        return
+
+    if data == "cancel_job":
+        ev = _cancel_flags.get(uid)
+        if ev and not ev.is_set():
+            ev.set()
+            await q.edit_message_text("⛔ تم الإلغاء")
+        return
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # اختيار نوع المحاضرة
+    # ═══════════════════════════════════════════════════════════════════════════
+    if data.startswith("type_"):
+        main_type = data[5:]
+        state = user_states.get(uid, {})
+        
+        if state.get("state") != "awaiting_type":
+            await q.edit_message_text("⚠️ انتهت الجلسة، أرسل المحاضرة مرة أخرى")
+            return
+        
+        state["main_type"] = main_type
+        state["state"] = "awaiting_subtype"
+        user_states[uid] = state
+        
+        type_name = LECTURE_TYPES.get(main_type, main_type)
+        
+        # إذا كان النوع له تخصصات فرعية
+        if main_type in SUB_TYPES:
+            await q.edit_message_text(
+                f"📚 النوع: *{type_name}*\n\n"
+                f"👆 اختر التخصص الفرعي:",
+                parse_mode="Markdown",
+                reply_markup=get_subtype_keyboard(main_type)
+            )
+        else:
+            # لا يوجد تخصصات فرعية، ننتقل للمرحلة الدراسية
+            state["subtype"] = "none"
+            state["state"] = "awaiting_level"
+            user_states[uid] = state
+            
+            await q.edit_message_text(
+                f"📚 النوع: *{type_name}*\n\n"
+                f"👆 اختر المرحلة الدراسية:",
+                parse_mode="Markdown",
+                reply_markup=get_level_keyboard()
+            )
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # اختيار التخصص الفرعي
+    # ═══════════════════════════════════════════════════════════════════════════
+    elif data.startswith("subtype_"):
+        parts = data.split("_")
+        main_type = parts[1]
+        subtype = "_".join(parts[2:]) if len(parts) > 2 else "none"
+        
+        state = user_states.get(uid, {})
+        if state.get("state") != "awaiting_subtype":
+            await q.edit_message_text("⚠️ انتهت الجلسة")
+            return
+        
+        state["subtype"] = subtype
+        state["state"] = "awaiting_level"
+        user_states[uid] = state
+        
+        type_name = LECTURE_TYPES.get(main_type, main_type)
+        sub_name = "بدون تخصص"
+        if main_type in SUB_TYPES and subtype in SUB_TYPES[main_type]:
+            sub_name = SUB_TYPES[main_type][subtype]
+        
+        await q.edit_message_text(
+            f"📚 النوع: *{type_name}*\n"
+            f"🔬 التخصص: *{sub_name}*\n\n"
+            f"👆 اختر المرحلة الدراسية:",
+            parse_mode="Markdown",
+            reply_markup=get_level_keyboard()
+        )
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # اختيار المرحلة الدراسية
+    # ═══════════════════════════════════════════════════════════════════════════
+    elif data.startswith("level_"):
+        level = data[6:]
+        state = user_states.get(uid, {})
+        
+        if state.get("state") != "awaiting_level":
+            await q.edit_message_text("⚠️ انتهت الجلسة")
+            return
+        
+        state["level"] = level
+        state["state"] = "awaiting_dialect"
+        user_states[uid] = state
+        
+        level_name = EDUCATION_LEVELS.get(level, level)
+        
+        await q.edit_message_text(
+            f"✅ *تم تحديد جميع الإعدادات!*\n\n"
+            f"📚 النوع: {LECTURE_TYPES.get(state.get('main_type', 'other'), 'أخرى')}\n"
+            f"🏫 المرحلة: {level_name}\n\n"
+            f"🌍 اختر لهجة الشرح:",
+            parse_mode="Markdown",
+            reply_markup=DIALECT_KEYBOARD
+        )
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # اختيار اللهجة وبدء المعالجة
+    # ═══════════════════════════════════════════════════════════════════════════
+    elif data.startswith("dial_"):
+        dialect = data[5:]
+        state = user_states.get(uid, {})
+        
+        if state.get("state") != "awaiting_dialect":
+            await q.edit_message_text("⚠️ انتهت الجلسة")
+            return
+
+        user = get_user(uid)
+        if not user or user["attempts_left"] <= 0:
+            await q.edit_message_text("❌ لا محاولات")
+            return
+
+        # تجهيز معلومات المعلم
+        main_type = state.get("main_type", "other")
+        teacher_info = TEACHER_CHARACTERS.get(main_type, TEACHER_CHARACTERS["other"])
+        teacher_name = teacher_info["name"]
+        teacher_outfit = teacher_info["outfit"]
+        
+        # تعديل اسم المعلم حسب المرحلة
+        level = state.get("level", "university")
+        if level == "elementary":
+            teacher_name = "معلم " + teacher_name
+        elif level == "middle":
+            teacher_name = "أستاذ " + teacher_name
+        
+        dial_name = DIALECT_NAMES.get(dialect, dialect)
+        
+        prog_msg = await q.edit_message_text(
+            f"🎬 *بدأت المعالجة!*\n"
+            f"👨‍🏫 المعلم: {teacher_name}\n"
+            f"🌍 اللهجة: {dial_name}\n\n"
+            f"{_pbar(0)} 0%\n"
+            f"🔍 جاري التحليل...",
+            parse_mode="Markdown"
+        )
+
+        text = state["text"]
+        filename = state.get("filename", "lecture")
+        
+        # حفظ معلومات إضافية للفيديو
+        lecture_meta = {
+            "main_type": main_type,
+            "subtype": state.get("subtype", "none"),
+            "level": level,
+            "teacher_name": teacher_name,
+            "teacher_outfit": teacher_outfit,
+        }
+        
+        user_states.pop(uid, None)
+
+        task = asyncio.create_task(
+            _process_lecture(uid, text, filename, dialect, lecture_meta, prog_msg, context)
+        )
+        _active_tasks[uid] = task
+        return
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # عرض الإحالة
+    # ═══════════════════════════════════════════════════════════════════════════
+    elif data == "show_referral":
+        stats = get_referral_stats(uid)
+        bot = await context.bot.get_me()
+        ref_link = f"https://t.me/{bot.username}?start=ref_{uid}"
+        await q.message.reply_text(
+            f"🔗 *رابط الإحالة*\n`{ref_link}`\n👥 {stats['total_referrals']} شخص",
+            parse_mode="Markdown"
+        )
+        return
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# دالة المعالجة الرئيسية
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def _process_lecture(uid, text, filename, dialect, lecture_meta, prog_msg, context):
+    _active_jobs[uid] = "processing"
+    cancel_ev = asyncio.Event()
+    _cancel_flags[uid] = cancel_ev
+    
+    req_id = save_video_request(
+        uid, "text", dialect,
+        lecture_meta["main_type"],
+        lecture_meta["subtype"],
+        lecture_meta["level"],
+        lecture_meta["teacher_name"],
+        lecture_meta["teacher_outfit"]
+    )
+    
+    t_start = time.time()
+    video_path = None
+    pdf_path = None
+
+    async def upd(pct, label):
+        elapsed = time.time() - t_start
+        await _safe_edit(
+            prog_msg,
+            f"⏳ *جاري المعالجة...*\n\n{_pbar(pct)} *{pct}%*\n{label}\n\n⏱️ {_fmt_elapsed(elapsed)}",
+            reply_markup=CANCEL_KB
+        )
+
+    try:
+        # 1. تحليل المحاضرة
+        await upd(10, "🔍 تحليل المحاضرة...")
+        lecture_data = await _run_or_cancel(uid, analyze_lecture(text, dialect))
+        
+        # إضافة معلومات المعلم إلى بيانات المحاضرة
+        lecture_data["teacher_name"] = lecture_meta["teacher_name"]
+        lecture_data["teacher_outfit"] = lecture_meta["teacher_outfit"]
+        lecture_data["main_type"] = lecture_meta["main_type"]
+        lecture_data["education_level"] = lecture_meta["level"]
+
+        sections = lecture_data.get("sections", [])
+        if not sections:
+            raise RuntimeError("لم يتم استخراج أقسام")
+        
+        n_sec = len(sections)
+        await upd(30, f"✅ تم التحليل - {n_sec} أقسام")
+
+        # 2. جلب الصور
+        await upd(40, "🖼️ جاري جلب الصور التوضيحية...")
+        for i, s in enumerate(sections):
+            if not s.get("_image_bytes"):
+                kw = s.get("keywords", ["مفهوم"])[:4]
+                s["_image_bytes"] = await fetch_image_for_keyword(
+                    " ".join(kw), s.get("title", ""), 
+                    lecture_data.get("lecture_type", "other"),
+                    lecture_data.get("is_english", False)
+                )
+            await upd(40 + int((i+1) / n_sec * 15), f"🖼️ جاري جلب الصور... ({i+1}/{n_sec})")
+        
+        await upd(55, "✅ الصور جاهزة")
+
+        # 3. توليد الصوت
+        await upd(60, "🎤 جاري توليد الصوت...")
+        voice_res = await _run_or_cancel(uid, generate_sections_audio(sections, dialect))
+        audio_results = voice_res["results"]
+        await upd(75, "✅ الصوت جاهز")
+
+        # 4. إنتاج الفيديو
+        await upd(80, "🎬 جاري إنتاج الفيديو...")
+        fd, video_path = tempfile.mkstemp(prefix=f"vid_{uid}_", suffix=".mp4", dir=TEMP_DIR)
+        os.close(fd)
+
+        total_secs = await create_video_from_sections(
+            sections=sections,
+            audio_results=audio_results,
+            lecture_data=lecture_data,
+            output_path=video_path,
+            dialect=dialect
+        )
+        await upd(95, "✅ الفيديو جاهز")
+
+        # 5. إرسال الفيديو
+        decrement_attempts(uid)
+        increment_total_videos(uid)
+        update_video_request(req_id, "done", video_path, pdf_path)
+
+        title = lecture_data.get("title", filename)
+        vid_min = int(total_secs // 60)
+        vid_sec = int(total_secs % 60)
+        remaining = get_user(uid)["attempts_left"]
+
+        caption = f"🎬 *{title}*\n\n📚 الأقسام: {n_sec}\n⏱️ المدة: {vid_min}:{vid_sec:02d}\n💳 المحاولات: {remaining}"
+
+        with open(video_path, "rb") as vf:
+            await context.bot.send_video(
+                chat_id=uid, video=vf, caption=caption,
+                parse_mode="Markdown", supports_streaming=True
+            )
+
+        await prog_msg.delete()
+        await context.bot.send_message(
+            uid, "✅ *تم بنجاح!* 🎓",
+            parse_mode="Markdown", reply_markup=main_keyboard()
+        )
+
+    except asyncio.CancelledError:
+        update_video_request(req_id, "cancelled")
+        await context.bot.send_message(uid, "⛔ تم الإلغاء", reply_markup=main_keyboard())
+
+    except Exception as e:
+        update_video_request(req_id, "failed")
+        logger.error(f"Error: {e}")
+        await _safe_edit(prog_msg, f"❌ خطأ: {str(e)[:200]}")
+        await context.bot.send_message(uid, "❌ حاول مرة أخرى", reply_markup=main_keyboard())
+
+    finally:
+        _active_jobs.pop(uid, None)
+        _active_tasks.pop(uid, None)
+        _cancel_flags.pop(uid, None)
+        if video_path and os.path.exists(video_path):
+            try:
+                os.remove(video_path)
+            except:
+                pass
+        if pdf_path and os.path.exists(pdf_path):
+            try:
+                os.remove(pdf_path)
+            except:
+                pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# أوامر البوت الأساسية
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    uid = update.effective_user.id
+
+    if args and args[0].startswith("ref_"):
+        try:
+            ref_id = int(args[0][4:])
+            if ref_id != uid:
+                user_states.setdefault(uid, {})["ref_by"] = ref_id
+        except:
+            pass
+
+    user = await ensure_user(update)
+    if not user:
+        return
+
+    await update.message.reply_text(
+        f"👋 أهلاً *{update.effective_user.first_name}*!\n\n"
+        f"🎓 أنا *بوت المحاضرات الذكي*\n"
+        f"📥 أرسل لي ملف PDF أو نص المحاضرة\n"
+        f"🎬 سأحوله إلى فيديو تعليمي احترافي\n"
+        f"👨‍🏫 مع شخصية كرتونية تناسب تخصصك!\n\n"
+        f"🎁 لديك *{user['attempts_left']}* محاولة مجانية",
+        parse_mode="Markdown",
+        reply_markup=main_keyboard()
+    )
+
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📖 *كيفية الاستخدام*\n\n"
+        "1️⃣ أرسل ملف PDF أو نص المحاضرة\n"
+        "2️⃣ اختر نوع المحاضرة (طب، هندسة، رياضيات...)\n"
+        "3️⃣ اختر التخصص الفرعي\n"
+        "4️⃣ اختر المرحلة الدراسية\n"
+        "5️⃣ اختر لهجة الشرح\n"
+        "6️⃣ انتظر الفيديو!\n\n"
+        "/referral - رابط الإحالة\n"
+        "/cancel - إلغاء المعالجة",
+        parse_mode="Markdown"
+    )
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    ev = _cancel_flags.get(uid)
+    if ev and not ev.is_set():
+        ev.set()
+        await update.message.reply_text("⛔ تم إلغاء المعالجة.", reply_markup=main_keyboard())
+    else:
+        await update.message.reply_text("✅ لا توجد عملية جارية.")
+
+
+async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update.effective_user.id):
+        return
+    await handle_admin_command(update, context)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# تشغيل البوت
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def main():
+    init_db()
+    logger.info("🤖 Bot starting...")
+
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("cancel", cancel))
+    app.add_handler(CommandHandler("admin", admin_cmd))
+    app.add_handler(CommandHandler("add", handle_add_attempts))
+    app.add_handler(CommandHandler("set", handle_set_attempts))
+    app.add_handler(CommandHandler("ban", handle_ban))
+    app.add_handler(CommandHandler("unban", handle_unban))
+    app.add_handler(CommandHandler("broadcast", handle_broadcast))
+    app.add_handler(CommandHandler("approve", handle_approve_payment_command))
+
+    app.add_handler(PreCheckoutQueryHandler(handle_pre_checkout))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, handle_successful_payment))
+    app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(MessageHandler(
+        (filters.TEXT | filters.Document.ALL) & ~filters.COMMAND, receive_content
+    ))
+
+    logger.info("✅ Ready")
+
+    webhook_url = os.getenv("WEBHOOK_URL", "").rstrip("/")
+
+    async with app:
+        await app.start()
+
+        if webhook_url:
+            await app.bot.set_webhook(url=f"{webhook_url}/telegram", drop_pending_updates=True)
+            logger.info(f"✅ Webhook: {webhook_url}")
+            await asyncio.Event().wait()
+        else:
+            logger.info("🔄 Polling...")
+            await app.updater.start_polling(drop_pending_updates=True)
+            await asyncio.Event().wait()
+            await app.updater.stop()
+
+        await app.stop()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
