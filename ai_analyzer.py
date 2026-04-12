@@ -1,10 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-AI Analyzer Module - النسخة الخرافية
-- 3 مصادر AI: Google Gemini → Groq → OpenRouter
-- 4 مصادر صور: Pollinations.ai → Unsplash → Picsum → صورة ملونة
-"""
-
 import json
 import re
 import io
@@ -27,53 +21,32 @@ def clean_text(text: str) -> str:
 
 
 async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
-    try:
-        import pdfplumber
-        
-        def _extract():
-            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-                pages = []
-                for page in pdf.pages:
-                    page_text = page.extract_text() or ""
-                    if page_text.strip():
-                        pages.append(page_text)
-                return "\n\n".join(pages)
-        
-        loop = asyncio.get_event_loop()
-        text = await asyncio.wait_for(loop.run_in_executor(None, _extract), timeout=90.0)
-        return clean_text(text)
-    except ImportError:
-        import PyPDF2
-        
-        def _extract():
-            reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
-            pages = []
-            for page in reader.pages:
-                page_text = page.extract_text() or ""
-                if page_text.strip():
-                    pages.append(page_text)
-            return "\n\n".join(pages)
-        
-        loop = asyncio.get_event_loop()
-        text = await asyncio.wait_for(loop.run_in_executor(None, _extract), timeout=90.0)
-        return clean_text(text)
-    except asyncio.TimeoutError:
-        raise RuntimeError("استخراج النص من PDF استغرق وقتاً طويلاً")
-    except Exception as e:
-        raise RuntimeError(f"فشل استخراج النص من PDF: {str(e)}")
+    import PyPDF2
+    
+    def _extract():
+        reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
+        pages = []
+        for page in reader.pages:
+            page_text = page.extract_text() or ""
+            if page_text.strip():
+                pages.append(page_text)
+        return "\n\n".join(pages)
+    
+    loop = asyncio.get_event_loop()
+    text = await asyncio.wait_for(loop.run_in_executor(None, _extract), timeout=90.0)
+    return clean_text(text)
 
 
-from config import get_google_keys, get_groq_keys, get_openrouter_keys
-
-_google_keys = get_google_keys()
+# API Keys
+_google_keys = [k.strip() for k in os.getenv("GOOGLE_API_KEYS", "").split(",") if k.strip()]
 _current_google_idx = 0
 _exhausted_google = set()
 
-_groq_keys = get_groq_keys()
+_groq_keys = [k.strip() for k in os.getenv("GROQ_API_KEYS", "").split(",") if k.strip()]
 _current_groq_idx = 0
 _exhausted_groq = set()
 
-_openrouter_keys = get_openrouter_keys()
+_openrouter_keys = [k.strip() for k in os.getenv("OPENROUTER_API_KEYS", "").split(",") if k.strip()]
 _current_or_idx = 0
 _exhausted_or = set()
 
@@ -158,7 +131,7 @@ async def _google_generate(prompt: str, max_tokens: int = 8192) -> str:
                 err = str(e)
                 if "429" in err or "RESOURCE_EXHAUSTED" in err or "quota" in err.lower():
                     _mark_google_exhausted(key)
-                    print(f"[AI] Google key exhausted")
+                    print("[AI] Google key exhausted")
                     break
                 else:
                     continue
@@ -194,7 +167,7 @@ async def _groq_generate(prompt: str, max_tokens: int = 8192) -> str:
                             return data["choices"][0]["message"]["content"].strip()
                         elif resp.status == 429:
                             _mark_groq_exhausted(key)
-                            print(f"[AI] Groq key exhausted")
+                            print("[AI] Groq key exhausted")
                             break
             except:
                 continue
@@ -241,7 +214,7 @@ async def _openrouter_generate(prompt: str, max_tokens: int = 8192) -> str:
                                 return content.strip()
                         elif resp.status == 429:
                             _mark_or_exhausted(key)
-                            print(f"[AI] OpenRouter key exhausted")
+                            print("[AI] OpenRouter key exhausted")
                             break
             except:
                 continue
@@ -312,17 +285,21 @@ def _detect_type(text: str) -> str:
 
 
 def _fallback_narration(keywords: list, lecture_type: str) -> str:
-    kw_str = '، '.join(keywords[:3])
-    narrations = {
-        'medicine': f"نتحدث عن {kw_str}. هذا الموضوع مهم جداً في المجال الطبي. " * 10,
-        'math': f"الآن سنشرح {kw_str} بالتفصيل. " * 10,
-        'physics': f"في هذا القسم ندرس {kw_str}. " * 10,
-        'chemistry': f"نتعرف الآن على {kw_str} في الكيمياء. " * 10,
-        'history': f"اليوم سنسافر عبر الزمن لنتعرف على {kw_str}. " * 10,
-        'biology': f"في علم الأحياء، ندرس {kw_str}. " * 10,
-        'other': f"مرحباً بكم في هذا القسم الذي سنتعرف فيه على {kw_str}. " * 10
-    }
-    return narrations.get(lecture_type, narrations['other'])
+    kw_str = ', '.join(keywords[:3])
+    base = f"نتعرف على {kw_str}. "
+    if lecture_type == 'medicine':
+        base += "نشرح الأعراض والتشخيص والعلاج. "
+    elif lecture_type == 'math':
+        base += "نشرح المعادلات والخطوات. "
+    elif lecture_type == 'physics':
+        base += "نشرح القوانين والتطبيقات. "
+    elif lecture_type == 'chemistry':
+        base += "نشرح التفاعلات والمعادلات. "
+    elif lecture_type == 'history':
+        base += "نسرد الأحداث ونحلل الأسباب. "
+    elif lecture_type == 'biology':
+        base += "نشرح التركيب والوظائف. "
+    return base * 15
 
 
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
@@ -365,7 +342,8 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         title = clean_text(res.get("title", keywords[0] if keywords else "محاضرة"))
         ai_secs = res.get("sections", [])
         summary = clean_text(res.get("summary", f"شرحنا: {', '.join(keywords[:8])}"))
-    except:
+    except Exception as e:
+        print(f"[AI] Parse failed: {e}")
         title = keywords[0] if keywords else "محاضرة"
         ai_secs = []
         summary = f"شرحنا: {', '.join(keywords[:8])}"
@@ -398,10 +376,7 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     return {"lecture_type": ltype, "title": title, "sections": sections, "summary": summary, "all_keywords": keywords}
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
 # الصور
-# ═══════════════════════════════════════════════════════════════════════════════
-
 _TYPE_COLORS = {
     'medicine': (231, 76, 126), 'math': (52, 152, 219), 'physics': (52, 152, 219),
     'chemistry': (46, 204, 113), 'history': (230, 126, 34), 'biology': (46, 204, 113),
@@ -480,8 +455,10 @@ async def _pollinations_generate(prompt: str) -> bytes | None:
         async with aiohttp.ClientSession() as s:
             url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt[:200])}?width=500&height=350&nologo=true"
             async with s.get(url, timeout=15) as r:
-                if r.status == 200 and len(await r.read()) > 5000:
-                    return await r.read()
+                if r.status == 200:
+                    raw = await r.read()
+                    if len(raw) > 5000:
+                        return raw
     except:
         pass
     return None
