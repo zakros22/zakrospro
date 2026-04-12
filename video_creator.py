@@ -22,19 +22,10 @@ def estimate_encoding_seconds(t):
     return max(20, t * 0.6)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# الحل النهائي للغة العربية
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def _get_font(size):
-    """تحميل خط يدعم العربية"""
     paths = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-        "/app/fonts/Amiri-Regular.ttf",
-        "fonts/Amiri-Regular.ttf"
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     ]
     for p in paths:
         if os.path.exists(p):
@@ -46,36 +37,19 @@ def _get_font(size):
 
 
 def _arabic(text):
-    """
-    تحويل النص العربي لعرض صحيح 100%
-    - يعيد تشكيل الحروف (arabic_reshaper)
-    - يعكس الاتجاه (bidi)
-    """
     if not text:
         return ""
-    
-    # إذا كان النص لا يحتوي على أحرف عربية، نرجعه كما هو
     if not any('\u0600' <= c <= '\u06FF' for c in text):
         return text
-    
     try:
         import arabic_reshaper
         from bidi.algorithm import get_display
-        
-        # الخطوة 1: إعادة تشكيل الحروف العربية
-        reshaped = arabic_reshaper.reshape(text)
-        
-        # الخطوة 2: عكس اتجاه النص (RTL)
-        bidi_text = get_display(reshaped)
-        
-        return bidi_text
-    except Exception as e:
-        print(f"[WARN] Arabic reshape failed: {e}")
+        return get_display(arabic_reshaper.reshape(text))
+    except:
         return text
 
 
 def _text_width(text, font):
-    """حساب عرض النص بعد معالجته للعربية"""
     text = _arabic(text)
     try:
         bbox = font.getbbox(text)
@@ -85,50 +59,148 @@ def _text_width(text, font):
 
 
 def _draw_text(draw, x, y, text, font, color, shadow=True):
-    """
-    رسم نص مع دعم كامل للعربية.
-    هذه هي الدالة الوحيدة التي يجب استخدامها لرسم أي نص.
-    """
     text = _arabic(text)
     if shadow:
         draw.text((x + 2, y + 2), text, fill=(200, 200, 200), font=font)
     draw.text((x, y), text, fill=color, font=font)
 
 
-def _draw_centered_text(draw, y, text, font, color):
-    """رسم نص في منتصف العرض"""
-    text = _arabic(text)
-    w = _text_width(text, font)
-    x = (TARGET_W - w) // 2
-    draw.text((x + 2, y + 2), text, fill=(200, 200, 200), font=font)
-    draw.text((x, y), text, fill=color, font=font)
-    return y + font.size + 10
+# ═══════════════════════════════════════════════════════════════════════════════
+# شريحة السؤال التفاعلي (مؤقت 5 ثواني)
+# ═══════════════════════════════════════════════════════════════════════════════
 
+def _draw_question_slide(question: str, section_idx: int) -> str:
+    """شريحة سؤال مع مؤقت"""
+    fd, path = tempfile.mkstemp(suffix=".jpg")
+    os.close(fd)
+    col = COLORS[section_idx % len(COLORS)]
+    img = Image.new("RGB", (TARGET_W, TARGET_H), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
 
-def _wrap_text(text, font, max_width):
-    """تقسيم النص العربي إلى أسطر"""
-    text = _arabic(text)
-    words = text.split()
+    draw.rectangle([(0, 0), (TARGET_W, 8)], fill=col)
+    draw.rectangle([(0, TARGET_H - 8), (TARGET_W, TARGET_H)], fill=col)
+
+    # أيقونة سؤال
+    f = _get_font(50)
+    _draw_text(draw, TARGET_W // 2 - 30, 80, "❓", f, col)
+
+    # نص السؤال
+    f2 = _get_font(28)
     lines = []
+    words = question.split()
     cur = []
-    
     for w in words:
         cur.append(w)
         line = ' '.join(cur)
-        if _text_width(line, font) > max_width:
+        if _text_width(line, f2) > TARGET_W - 100:
             cur.pop()
-            if cur:
-                lines.append(' '.join(cur))
+            lines.append(' '.join(cur))
             cur = [w]
-    
     if cur:
         lines.append(' '.join(cur))
-    
-    return lines if lines else [text]
+
+    y = 160
+    for line in lines:
+        w = _text_width(line, f2)
+        x = (TARGET_W - w) // 2
+        _draw_text(draw, x, y, line, f2, (44, 62, 80))
+        y += 45
+
+    # مؤقت
+    f3 = _get_font(20)
+    timer_text = "⏳ فكر في الإجابة... (5 ثوان)"
+    w3 = _text_width(timer_text, f3)
+    x3 = (TARGET_W - w3) // 2
+    _draw_text(draw, x3, TARGET_H - 100, timer_text, f3, col)
+
+    img.save(path, "JPEG", quality=90)
+    return path
+
+
+def _draw_answer_slide(question: str, answer: str, section_idx: int) -> str:
+    """شريحة الإجابة"""
+    fd, path = tempfile.mkstemp(suffix=".jpg")
+    os.close(fd)
+    col = COLORS[section_idx % len(COLORS)]
+    img = Image.new("RGB", (TARGET_W, TARGET_H), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+
+    draw.rectangle([(0, 0), (TARGET_W, 8)], fill=col)
+    draw.rectangle([(0, TARGET_H - 8), (TARGET_W, TARGET_H)], fill=col)
+
+    # أيقونة إجابة
+    f = _get_font(40)
+    _draw_text(draw, TARGET_W // 2 - 25, 50, "✅", f, col)
+
+    # السؤال (صغير)
+    f2 = _get_font(18)
+    q_text = question[:60] + "..." if len(question) > 60 else question
+    w2 = _text_width(q_text, f2)
+    x2 = (TARGET_W - w2) // 2
+    _draw_text(draw, x2, 110, q_text, f2, (100, 100, 100))
+
+    # الإجابة
+    f3 = _get_font(26)
+    lines = []
+    words = answer.split()
+    cur = []
+    for w in words:
+        cur.append(w)
+        line = ' '.join(cur)
+        if _text_width(line, f3) > TARGET_W - 80:
+            cur.pop()
+            lines.append(' '.join(cur))
+            cur = [w]
+    if cur:
+        lines.append(' '.join(cur))
+
+    y = 180
+    for line in lines:
+        w = _text_width(line, f3)
+        x = (TARGET_W - w) // 2
+        _draw_text(draw, x, y, line, f3, col)
+        y += 45
+
+    img.save(path, "JPEG", quality=90)
+    return path
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# شرائح الفيديو
+# شريحة المعادلات الرياضية (سبورة بيضاء)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _draw_equation_slide(equation: str, step: int, total_steps: int, section_idx: int) -> str:
+    """شريحة عرض معادلة رياضية على سبورة بيضاء"""
+    fd, path = tempfile.mkstemp(suffix=".jpg")
+    os.close(fd)
+    col = COLORS[section_idx % len(COLORS)]
+    img = Image.new("RGB", (TARGET_W, TARGET_H), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+
+    # إطار السبورة
+    draw.rectangle([(10, 10), (TARGET_W - 10, TARGET_H - 10)], outline=(180, 180, 180), width=3)
+    draw.rectangle([(0, 0), (TARGET_W, 8)], fill=col)
+
+    # عنوان
+    f = _get_font(20)
+    title = f"خطوة {step} من {total_steps}"
+    w = _text_width(title, f)
+    x = (TARGET_W - w) // 2
+    _draw_text(draw, x, 25, title, f, col)
+
+    # المعادلة بخط كبير
+    f2 = _get_font(36)
+    eq_text = equation
+    w2 = _text_width(eq_text, f2)
+    x2 = (TARGET_W - w2) // 2
+    _draw_text(draw, x2, TARGET_H // 2 - 20, eq_text, f2, (44, 62, 80))
+
+    img.save(path, "JPEG", quality=90)
+    return path
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# شرائح الفيديو الأساسية
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _draw_welcome():
@@ -171,7 +243,18 @@ def _draw_title(title):
     draw.rectangle([(0, 0), (TARGET_W, 6)], fill=COLORS[1])
 
     f = _get_font(38)
-    lines = _wrap_text(title, f, TARGET_W - 80)
+    lines = []
+    words = title.split()
+    cur = []
+    for w in words:
+        cur.append(w)
+        line = ' '.join(cur)
+        if _text_width(line, f) > TARGET_W - 80:
+            cur.pop()
+            lines.append(' '.join(cur))
+            cur = [w]
+    if cur:
+        lines.append(' '.join(cur))
 
     y = TARGET_H // 2 - (len(lines) * 45) // 2
     for line in lines:
@@ -375,7 +458,11 @@ def _ffmpeg_cat(segs, out):
     os.remove(lst)
 
 
-def _build(sections, audio_results, title, all_kw):
+# ═══════════════════════════════════════════════════════════════════════════════
+# بناء الفيديو مع الأسئلة التفاعلية
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _build(sections, audio_results, title, all_kw, has_equations):
     segs = []
     tmps = []
     total = 0
@@ -405,7 +492,13 @@ def _build(sections, audio_results, title, all_kw):
         img = s.get("_image_bytes")
         aud = a.get("audio")
         dur = max(a.get("duration", 30), 5)
-        kd = dur / len(kw)
+        
+        # إذا كان هناك معادلات، نعرض خطوات المعادلة
+        if has_equations:
+            steps = min(3, len(kw))
+            kd = dur / (len(kw) + steps + 2)  # +2 للسؤال والجواب
+        else:
+            kd = dur / (len(kw) + 2)  # +2 للسؤال والجواب
 
         ap = None
         if aud:
@@ -415,11 +508,39 @@ def _build(sections, audio_results, title, all_kw):
                 f.write(aud)
             tmps.append(ap)
 
+        # شرائح المحتوى (الكلمات المفتاحية)
+        audio_offset = 0
         for j in range(len(kw)):
             p = _draw_content(img, kw, s.get("title", ""), i, j, len(kw))
             tmps.append(p)
-            segs.append({"img": p, "audio": ap, "audio_start": j * kd, "dur": kd})
+            segs.append({"img": p, "audio": ap, "audio_start": audio_offset, "dur": kd})
+            audio_offset += kd
             total += kd
+
+        # إذا كان هناك معادلات، نعرض خطوات المعادلة
+        if has_equations:
+            for step in range(3):
+                eq = f"خطوة {step + 1}: {kw[step % len(kw)]} = ..."
+                p = _draw_equation_slide(eq, step + 1, 3, i)
+                tmps.append(p)
+                segs.append({"img": p, "audio": ap, "audio_start": audio_offset, "dur": kd})
+                audio_offset += kd
+                total += kd
+
+        # سؤال تفاعلي (مؤقت 5 ثواني)
+        question = s.get("question", f"❓ ما هو {kw[0]}؟")
+        p = _draw_question_slide(question, i)
+        tmps.append(p)
+        segs.append({"img": p, "audio": None, "audio_start": 0, "dur": 5})
+        total += 5
+
+        # شريحة الإجابة
+        answer = s.get("answer", f"✅ {kw[0]} هو ...")
+        p = _draw_answer_slide(question, answer, i)
+        tmps.append(p)
+        segs.append({"img": p, "audio": ap, "audio_start": audio_offset, "dur": kd})
+        audio_offset += kd
+        total += kd
 
     p = _draw_summary(all_kw)
     tmps.append(p)
@@ -451,15 +572,20 @@ async def create_video_from_sections(sections, audio_results, lecture_data, outp
 
     title = lecture_data.get("title", "المحاضرة التعليمية")
     all_kw = lecture_data.get("all_keywords", [])
+    has_equations = lecture_data.get("has_equations", False)
 
     for s in sections:
         if "keywords" not in s or not s["keywords"]:
             s["keywords"] = ["مفهوم", "تعريف", "شرح", "تحليل"]
         if "_image_bytes" not in s:
             s["_image_bytes"] = None
+        if "question" not in s:
+            s["question"] = f"❓ ما هو {s['keywords'][0]}؟"
+        if "answer" not in s:
+            s["answer"] = f"✅ {s['keywords'][0]} هو مفهوم أساسي في هذا المجال."
 
     segs, tmps, total = await loop.run_in_executor(
-        None, _build, sections, audio_results, title, all_kw
+        None, _build, sections, audio_results, title, all_kw, has_equations
     )
 
     await loop.run_in_executor(None, _encode, segs, output_path)
