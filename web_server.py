@@ -4,7 +4,7 @@
 ZAKROS PRO - خادم الويب
 يدعم Webhook لتلقي تحديثات تيليجرام على Heroku
 """
-
+import sys
 import os
 import asyncio
 import json
