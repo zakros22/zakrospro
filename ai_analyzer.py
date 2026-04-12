@@ -38,7 +38,7 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# API Keys - مع OpenRouter كمصدر ثالث
+# API Keys
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _google_keys = [k.strip() for k in os.getenv("GOOGLE_API_KEYS", "").split(",") if k.strip()]
@@ -253,7 +253,7 @@ async def _ai_generate(prompt: str, max_tokens: int = 8192) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# استخراج الكلمات
+# استخراج الكلمات وتحديد النوع
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _extract_keywords(text: str, max_words: int = 30) -> list:
@@ -278,9 +278,9 @@ def _extract_keywords(text: str, max_words: int = 30) -> list:
 def _detect_type(text: str) -> str:
     text = clean_text(text).lower()
     medical = ['مرض', 'علاج', 'طبيب', 'جراحة', 'دواء', 'تشخيص', 'مريض', 'قلب', 'دم', 'خلية', 'ورم', 'سرطان', 'endometriosis', 'cyst', 'inflammation']
-    math = ['معادلة', 'دالة', 'تفاضل', 'تكامل', 'جبر', 'هندسة', 'رياضيات', 'equation', 'function', 'calculus']
-    physics = ['قوة', 'طاقة', 'حركة', 'سرعة', 'جاذبية', 'كهرباء', 'مغناطيس', 'فيزياء', 'force', 'energy', 'motion']
-    chemistry = ['تفاعل', 'عنصر', 'مركب', 'جزيء', 'ذرة', 'حمض', 'قاعدة', 'كيمياء', 'reaction', 'element', 'compound']
+    math = ['معادلة', 'دالة', 'تفاضل', 'تكامل', 'جبر', 'هندسة', 'رياضيات', 'equation', 'function', 'calculus', 'derivative', 'integral', 'matrix']
+    physics = ['قوة', 'طاقة', 'حركة', 'سرعة', 'جاذبية', 'كهرباء', 'مغناطيس', 'فيزياء', 'force', 'energy', 'motion', 'velocity']
+    chemistry = ['تفاعل', 'عنصر', 'مركب', 'جزيء', 'ذرة', 'حمض', 'قاعدة', 'كيمياء', 'reaction', 'element', 'compound', 'molecule']
     history = ['تاريخ', 'حرب', 'معركة', 'حضارة', 'إمبراطورية', 'ملك', 'ثورة', 'history', 'war', 'battle']
     biology = ['نبات', 'حيوان', 'بيئة', 'وراثة', 'تطور', 'خلية', 'biology', 'plant', 'animal', 'cell']
     
@@ -296,124 +296,59 @@ def _detect_type(text: str) -> str:
     return best if scores[best] > 1 else 'other'
 
 
+def _detect_has_equations(text: str) -> bool:
+    """الكشف عن وجود معادلات رياضية"""
+    patterns = [r'[=+\-*/^()]', r'\d+', r'[xyzXYZ]', r'\[.*\]', r'\(.*\)']
+    for p in patterns:
+        if re.search(p, text):
+            return True
+    return False
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
-# خطة احتياطية خرافية - تولد شرحاً احترافياً محلياً
+# توليد الأسئلة التفاعلية
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _generate_fallback_narration(keywords: list, lecture_type: str, original_text: str, section_idx: int, total_sections: int) -> str:
-    """
-    توليد شرح احترافي محلياً إذا فشل AI.
-    هذا يضمن أن الشرح دائماً احترافي ومناسب لنوع المحاضرة.
-    """
-    kw_str = '، '.join(keywords[:3])
+def _generate_question(keywords: list, lecture_type: str, section_title: str) -> tuple:
+    """توليد سؤال وجواب لكل قسم"""
+    kw = keywords[0] if keywords else "المفهوم"
     
-    # مقدمات حسب نوع المحاضرة
-    intros = {
-        'medicine': f"دعونا نتحدث عن {kw_str}. هذا الموضوع مهم جداً في المجال الطبي. ",
-        'math': f"الآن سنشرح {kw_str} بالتفصيل. الرياضيات لغة الكون. ",
-        'physics': f"في هذا القسم ندرس {kw_str}. الفيزياء تفسر الظواهر من حولنا. ",
-        'chemistry': f"نتعرف الآن على {kw_str} في الكيمياء. التفاعلات الكيميائية أساس حياتنا. ",
-        'history': f"اليوم سنسافر عبر الزمن لنتعرف على {kw_str}. التاريخ يعلمنا دروساً قيمة. ",
-        'biology': f"في علم الأحياء، ندرس {kw_str}. الحياة مليئة بالأسرار الرائعة. ",
-        'other': f"مرحباً بكم في هذا القسم الذي سنتعرف فيه على {kw_str}. "
+    questions = {
+        'medicine': (
+            f"❓ سؤال: ما هو تعريف {kw}؟ وما هي أبرز أعراضه؟",
+            f"✅ الإجابة: {kw} هو ... (يتم شرحه في القسم). من أبرز أعراضه: ..."
+        ),
+        'math': (
+            f"❓ سؤال: كيف يمكننا حل معادلة {kw}؟",
+            f"✅ الإجابة: لحل معادلة {kw}، نتبع الخطوات التالية: ..."
+        ),
+        'physics': (
+            f"❓ سؤال: ما هو القانون الفيزيائي المرتبط بـ {kw}؟",
+            f"✅ الإجابة: القانون هو ... وينص على أن ..."
+        ),
+        'chemistry': (
+            f"❓ سؤال: ما هي معادلة تفاعل {kw}؟ وما شروطه؟",
+            f"✅ الإجابة: معادلة التفاعل هي ... وتحتاج إلى درجة حرارة ..."
+        ),
+        'history': (
+            f"❓ سؤال: متى وقعت أحداث {kw}؟ ومن هي الشخصيات الرئيسية؟",
+            f"✅ الإجابة: وقعت في عام ... وأهم شخصياتها: ..."
+        ),
+        'biology': (
+            f"❓ سؤال: ما هو تركيب {kw}؟ وما وظيفته؟",
+            f"✅ الإجابة: يتكون {kw} من ... ووظيفته الأساسية هي ..."
+        ),
+        'other': (
+            f"❓ سؤال: ما هو {kw}؟ وما أهميته؟",
+            f"✅ الإجابة: {kw} هو ... وتكمن أهميته في ..."
+        )
     }
     
-    # تفاصيل حسب نوع المحاضرة
-    details = {
-        'medicine': [
-            f"أولاً، يجب أن نفهم تعريف {keywords[0]} بشكل دقيق.",
-            f"ثانياً، نناقش الأعراض والعلامات المرتبطة بـ {keywords[1]}.",
-            f"ثالثاً، نستعرض طرق التشخيص المتاحة لـ {keywords[2]}.",
-            f"رابعاً، نتعرف على خيارات العلاج الحديثة.",
-            f"خامساً، نتحدث عن المضاعفات المحتملة وكيفية تجنبها.",
-            f"سادساً، نناقش طرق الوقاية وأهميتها.",
-            f"سابعاً، نستعرض أحدث الأبحاث في هذا المجال.",
-            f"ثامناً، نذكر بعض الحالات السريرية للتوضيح.",
-            f"تاسعاً، نجيب على الأسئلة الشائعة حول {keywords[0]}.",
-            f"وأخيراً، نلخص أهم النقاط التي يجب تذكرها."
-        ],
-        'math': [
-            f"لنبدأ بتعريف {keywords[0]} وفهم خصائصه الأساسية.",
-            f"ثم نكتب المعادلة الرياضية الخاصة بـ {keywords[1]} ونحللها خطوة بخطوة.",
-            f"بعد ذلك، نعطي مثالاً عددياً لتوضيح الفكرة بشكل عملي.",
-            f"ثم نتحقق من صحة الحل ونتأكد من النتائج.",
-            f"ننتقل إلى تطبيقات {keywords[2]} في الحياة العملية.",
-            f"نناقش أيضاً الحالات الخاصة والشروط اللازمة لتطبيق هذه المعادلات.",
-            f"نختم ببعض التمارين للتأكد من فهم الموضوع.",
-            f"تذكروا دائماً أن التدريب هو مفتاح إتقان الرياضيات."
-        ],
-        'physics': [
-            f"نبدأ بشرح القانون الفيزيائي الأساسي المتعلق بـ {keywords[0]}.",
-            f"ثم نعرض تجربة عملية توضح هذا القانون بشكل ملموس.",
-            f"نحلل النتائج ونستنتج العلاقات بين المتغيرات المختلفة.",
-            f"نربط هذه المفاهيم بحياتنا اليومية، مثل تطبيقات {keywords[1]}.",
-            f"نرى تطبيقات هذا القانون في حركة السيارات أو سقوط الأجسام.",
-            f"نناقش أيضاً حدود تطبيق هذا القانون والحالات التي لا ينطبق فيها.",
-            f"أخيراً، نلخص أهم ما تعلمناه عن {keywords[2]}."
-        ],
-        'chemistry': [
-            f"نبدأ بكتابة المعادلة الكيميائية الموزونة الخاصة بـ {keywords[0]}.",
-            f"نحدد المواد المتفاعلة والناتجة ونشرح دور كل منها.",
-            f"نشرح شروط التفاعل مثل درجة الحرارة والضغط والمواد الحفازة.",
-            f"نحسب كمية المواد المتفاعلة والناتجة باستخدام الحسابات الكيميائية.",
-            f"نذكر تطبيقات هذا التفاعل في الصناعة والحياة اليومية.",
-            f"نناقش المخاطر المحتملة وطرق التعامل الآمن مع {keywords[1]}.",
-            f"نختم بمراجعة سريعة لأهم النقاط حول {keywords[2]}."
-        ],
-        'history': [
-            f"نبدأ بذكر التاريخ والمكان الذي وقعت فيه أحداث {keywords[0]}.",
-            f"نتعرف على الشخصيات الرئيسية وأدوارها في هذه الأحداث.",
-            f"نسرد الأحداث بتسلسل زمني واضح منذ البداية وحتى النهاية.",
-            f"نحلل الأسباب التي أدت إلى {keywords[1]} وتطورها.",
-            f"نناقش النتائج والآثار التي ترتبت على هذه الأحداث.",
-            f"نستخلص الدروس والعبر المستفادة من {keywords[2]}.",
-            f"نختم بربط هذه الأحداث بالواقع المعاصر وأهميتها اليوم."
-        ],
-        'biology': [
-            f"نبدأ بشرح التركيب الأساسي لـ {keywords[0]} ومكوناته.",
-            f"ثم ننتقل إلى الوظائف الحيوية التي يؤديها {keywords[1]}.",
-            f"نستخدم التشبيهات لتقريب المفاهيم، مثلاً نشبه الخلية بالمصنع الصغير.",
-            f"نناقش أهمية هذه العمليات للحفاظ على الحياة.",
-            f"نذكر بعض الأمراض المرتبطة بخلل هذه الوظائف وكيفية علاجها.",
-            f"نختم بمراجعة سريعة وتلخيص لأهم المعلومات عن {keywords[2]}."
-        ],
-        'other': [
-            f"نبدأ بتعريف {keywords[0]} وفهم معناه بدقة.",
-            f"ثم نستعرض المعلومات المتعلقة بـ {keywords[1]} بالتفصيل مع أمثلة توضيحية.",
-            f"نربط هذه المعلومات بالواقع العملي ونرى كيف تؤثر في حياتنا.",
-            f"نجيب على الأسئلة الشائعة حول هذا الموضوع.",
-            f"نذكر بعض النصائح والإرشادات المفيدة المتعلقة بـ {keywords[2]}.",
-            f"أخيراً، نلخص أهم ما تم شرحه في هذا القسم."
-        ]
-    }
-    
-    intro = intros.get(lecture_type, intros['other'])
-    detail_list = details.get(lecture_type, details['other'])
-    
-    # بناء الشرح
-    narration = intro
-    for sentence in detail_list:
-        narration += sentence + " "
-    
-    # إضافة جمل إضافية من النص الأصلي إذا كانت متاحة
-    sentences = re.split(r'(?<=[.!?؟])\s+', original_text)
-    added = 0
-    for s in sentences:
-        if any(kw in s for kw in keywords[:3]) and s not in narration:
-            narration += s + " "
-            added += 1
-            if added >= 5:
-                break
-    
-    # تكرار إذا كان الشرح قصيراً
-    if len(narration.split()) < 50:
-        narration = (narration + " ") * 3
-    
-    return narration.strip()
+    return questions.get(lecture_type, questions['other'])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# الدالة الرئيسية
+# الدالة الرئيسية - تحليل ذكي مع أسئلة تفاعلية
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
@@ -423,7 +358,9 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     
     keywords = _extract_keywords(text, 40)
     ltype = _detect_type(text)
-    print(f"[AI] Detected type: {ltype}")
+    has_equations = _detect_has_equations(text)
+    
+    print(f"[AI] Type: {ltype}, Has equations: {has_equations}")
     
     wc = len(text.split())
     if wc < 300:
@@ -446,12 +383,41 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     dial_map = {"iraq": "بالعراقي", "egypt": "بالمصري", "syria": "بالشامي", "gulf": "بالخليجي", "msa": "بالفصحى"}
     dial = dial_map.get(dialect, "بالفصحى")
     
+    # تخصيص prompt حسب نوع المحاضرة
+    if ltype == 'math' or has_equations:
+        style_instruction = """
+- اشرح المعادلات خطوة بخطوة.
+- اكتب المعادلة كاملة ثم حللها.
+- اشرح كل متغير وماذا يمثل.
+- أعط مثالاً عددياً محلولاً.
+"""
+    elif ltype == 'medicine':
+        style_instruction = """
+- اشرح pathophysiology (الآلية المرضية).
+- اذكر الأعراض والعلامات.
+- اشرح طرق التشخيص.
+- اذكر خيارات العلاج.
+"""
+    elif ltype == 'physics' or ltype == 'chemistry':
+        style_instruction = """
+- اذكر القانون أو المعادلة أولاً.
+- اشرح كل رمز في المعادلة.
+- أعط مثالاً تطبيقياً.
+- اشرح الوحدات المستخدمة.
+"""
+    else:
+        style_instruction = """
+- اشرح المفاهيم بلغة واضحة.
+- أعط أمثلة واقعية.
+- اربط بين الأفكار.
+"""
+    
     prompt = f"""أنت {teacher} تشرح لطلابك. اشرح {dial}.
 
-**تعليمات صارمة:**
-- اكتب شرحاً كاملاً ومتنوعاً (20-25 جملة) لكل قسم.
-- لا تكرر نفس الجملة أبداً.
-- فسر المصطلحات، أعط أمثلة واقعية، اربط الأفكار.
+**تعليمات الشرح:**
+{style_instruction}
+- اكتب شرحاً كاملاً (20-25 جملة).
+- لا تكرر الجمل.
 - استخدم أسلوب المعلم: "دعونا نفهم..."، "لاحظوا معي...".
 
 **النص:**
@@ -504,26 +470,68 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
             idx = (i * 4) % len(keywords)
             kw = [keywords[(idx + j) % len(keywords)] for j in range(4)]
             st = kw[0] if kw else f"قسم {i+1}"
-            # ✅ استخدام الخطة الاحتياطية الخرافية
             nar = _generate_fallback_narration(kw, ltype, text, i, ns)
         
         while len(kw) < 4:
             kw.append("مفهوم")
         
+        # توليد سؤال تفاعلي للقسم
+        question, answer = _generate_question(kw, ltype, st)
+        
         sections.append({
-            "title": st, "keywords": kw[:4], "narration": nar,
-            "duration_estimate": max(45, len(nar.split()) // 3), "_image_bytes": None
+            "title": st,
+            "keywords": kw[:4],
+            "narration": nar,
+            "question": question,
+            "answer": answer,
+            "duration_estimate": max(45, len(nar.split()) // 3),
+            "_image_bytes": None,
+            "_has_equations": has_equations
         })
     
     for s in sections:
         q = " ".join(s["keywords"][:4])
         s["_image_bytes"] = await fetch_image_for_keyword(q, s["title"], ltype)
     
-    return {"lecture_type": ltype, "title": title, "sections": sections, "summary": summary, "all_keywords": keywords}
+    return {
+        "lecture_type": ltype,
+        "title": title,
+        "sections": sections,
+        "summary": summary,
+        "all_keywords": keywords,
+        "has_equations": has_equations
+    }
+
+
+def _generate_fallback_narration(keywords: list, lecture_type: str, original_text: str, section_idx: int, total_sections: int) -> str:
+    """خطة احتياطية ذكية حسب نوع المحاضرة"""
+    kw_str = '، '.join(keywords[:3])
+    
+    if lecture_type == 'medicine':
+        return f"نتحدث عن {kw_str}. تعريف {keywords[0]} هو الأساس. الأعراض تشمل {keywords[1]}. التشخيص يتم عبر {keywords[2]}. العلاج يشمل أدوية وجراحة. المضاعفات قد تكون خطيرة. الوقاية مهمة جداً. " * 8
+    elif lecture_type == 'math':
+        return f"لحل معادلة {kw_str}، نتبع خطوات محددة. أولاً، نحدد المتغيرات. ثانياً، نكتب المعادلة. ثالثاً، نبسط الطرفين. رابعاً، نعزل المتغير. خامساً، نتحقق من الحل. مثال: إذا كانت x + 2 = 5، فإن x = 3. " * 6
+    elif lecture_type == 'physics':
+        return f"قانون {kw_str} ينص على أن القوة تساوي الكتلة مضروبة في التسارع (F = ma). هذا يعني أنه كلما زادت الكتلة، زادت القوة المطلوبة. تطبيقات هذا القانون كثيرة في حياتنا اليومية. " * 7
+    elif lecture_type == 'chemistry':
+        return f"تفاعل {kw_str} يتم وفق معادلة كيميائية موزونة. المواد المتفاعلة هي {keywords[0]}، والنواتج هي {keywords[1]}. شروط التفاعل تشمل درجة حرارة وضغط محددين. " * 7
+    elif lecture_type == 'history':
+        return f"أحداث {kw_str} وقعت في فترة مهمة من التاريخ. الأسباب كانت متعددة. النتائج غيرت مجرى التاريخ. الشخصيات الرئيسية لعبت أدواراً حاسمة. " * 8
+    else:
+        sentences = re.split(r'(?<=[.!?؟])\s+', original_text)
+        selected = []
+        for s in sentences:
+            if any(kw in s for kw in keywords[:3]):
+                selected.append(s)
+            if len(selected) >= 15:
+                break
+        if len(selected) < 5:
+            selected = sentences[:20]
+        return " ".join(selected) if selected else f"شرح مفصل عن {kw_str}. " * 15
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# الصور الخرافية
+# الصور
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _TYPE_COLORS = {
@@ -645,7 +653,19 @@ async def fetch_image_for_keyword(keyword: str, section_title: str = "", lecture
     keyword = clean_text(keyword) or "مفهوم"
     color = _TYPE_COLORS.get(lecture_type, _TYPE_COLORS['other'])
     
-    img = await _pollinations_generate(f"professional educational illustration of {keyword}, high quality, cartoon style")
+    # تخصيص وصف الصورة حسب نوع المحاضرة
+    if lecture_type == 'medicine':
+        prompt = f"medical illustration of {keyword}, anatomy style, clean"
+    elif lecture_type == 'math':
+        prompt = f"math equation illustration of {keyword}, whiteboard style"
+    elif lecture_type == 'physics':
+        prompt = f"physics diagram of {keyword}, scientific illustration"
+    elif lecture_type == 'chemistry':
+        prompt = f"chemistry molecular structure of {keyword}"
+    else:
+        prompt = f"educational illustration of {keyword}, cartoon style"
+    
+    img = await _pollinations_generate(prompt)
     if img:
         return img
     img = await _unsplash_generate(keyword)
