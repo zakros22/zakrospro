@@ -456,6 +456,32 @@ def _is_english(text: str) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# دالة متوافقة مع bot.py القديم
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _detect_type(text: str) -> str:
+    """تحديد نوع المحاضرة - نسخة متوافقة مع bot.py"""
+    text_lower = clean_text(text).lower()
+    medical = ['مرض', 'علاج', 'طبيب', 'جراحة', 'دواء', 'تشخيص', 'مريض', 'قلب', 'دم', 'خلية', 'ورم', 'سرطان', 'disease', 'treatment', 'diagnosis', 'symptom']
+    math = ['معادلة', 'دالة', 'تفاضل', 'تكامل', 'جبر', 'هندسة', 'رياضيات', 'equation', 'function', 'calculus', 'algebra']
+    physics = ['قوة', 'طاقة', 'حركة', 'سرعة', 'جاذبية', 'كهرباء', 'مغناطيس', 'فيزياء', 'force', 'energy', 'motion']
+    chemistry = ['تفاعل', 'عنصر', 'مركب', 'جزيء', 'ذرة', 'حمض', 'قاعدة', 'كيمياء', 'reaction', 'element', 'compound']
+    history = ['تاريخ', 'حرب', 'معركة', 'حضارة', 'إمبراطورية', 'ملك', 'ثورة', 'history', 'war', 'battle']
+    biology = ['نبات', 'حيوان', 'بيئة', 'وراثة', 'تطور', 'خلية', 'biology', 'plant', 'animal', 'cell']
+    
+    scores = {
+        'medicine': sum(1 for k in medical if k in text_lower),
+        'math': sum(1 for k in math if k in text_lower),
+        'physics': sum(1 for k in physics if k in text_lower),
+        'chemistry': sum(1 for k in chemistry if k in text_lower),
+        'history': sum(1 for k in history if k in text_lower),
+        'biology': sum(1 for k in biology if k in text_lower)
+    }
+    best = max(scores, key=scores.get)
+    return best if scores[best] > 0 else 'other'
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # التحليل الذكي - تحديد النوع والعنوان
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -500,22 +526,7 @@ Keywords: {', '.join(keywords[:15])}"""
         )
     except Exception as e:
         print(f"[AI] Smart detect failed: {e}")
-        text_lower = text.lower()
-        if any(k in text_lower for k in ['مرض', 'علاج', 'طبيب', 'disease', 'treatment']):
-            ltype = 'medicine'
-        elif any(k in text_lower for k in ['معادلة', 'دالة', 'تفاضل', 'equation', 'calculus']):
-            ltype = 'math'
-        elif any(k in text_lower for k in ['قوة', 'طاقة', 'حركة', 'force', 'energy']):
-            ltype = 'physics'
-        elif any(k in text_lower for k in ['تفاعل', 'عنصر', 'مركب', 'reaction', 'element']):
-            ltype = 'chemistry'
-        elif any(k in text_lower for k in ['تاريخ', 'حرب', 'معركة', 'history', 'war']):
-            ltype = 'history'
-        elif any(k in text_lower for k in ['نبات', 'حيوان', 'خلية', 'biology', 'cell']):
-            ltype = 'biology'
-        else:
-            ltype = 'other'
-        
+        ltype = _detect_type(text)
         title = keywords[0] if keywords else ("Lecture" if is_eng else "محاضرة")
         return ltype, title, []
 
