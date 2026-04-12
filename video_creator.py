@@ -10,11 +10,11 @@ TARGET_W, TARGET_H = 854, 480
 WATERMARK = "@zakros_probot"
 
 COLORS = [
-    (231, 76, 126),
-    (52, 152, 219),
-    (46, 204, 113),
-    (155, 89, 182),
-    (230, 126, 34),
+    (231, 76, 126),   # وردي
+    (52, 152, 219),   # أزرق
+    (46, 204, 113),   # أخضر
+    (155, 89, 182),   # بنفسجي
+    (230, 126, 34),   # برتقالي
 ]
 
 
@@ -22,12 +22,19 @@ def estimate_encoding_seconds(t):
     return max(20, t * 0.6)
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# الحل النهائي للغة العربية
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def _get_font(size):
+    """تحميل خط يدعم العربية"""
     paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
+        "/app/fonts/Amiri-Regular.ttf",
+        "fonts/Amiri-Regular.ttf"
     ]
     for p in paths:
         if os.path.exists(p):
@@ -39,19 +46,37 @@ def _get_font(size):
 
 
 def _arabic(text):
+    """
+    تحويل النص العربي لعرض صحيح 100%
+    - يعيد تشكيل الحروف (arabic_reshaper)
+    - يعكس الاتجاه (bidi)
+    """
     if not text:
         return ""
+    
+    # إذا كان النص لا يحتوي على أحرف عربية، نرجعه كما هو
+    if not any('\u0600' <= c <= '\u06FF' for c in text):
+        return text
+    
     try:
         import arabic_reshaper
         from bidi.algorithm import get_display
-        if any('\u0600' <= c <= '\u06FF' for c in text):
-            return get_display(arabic_reshaper.reshape(text))
-    except:
-        pass
-    return text
+        
+        # الخطوة 1: إعادة تشكيل الحروف العربية
+        reshaped = arabic_reshaper.reshape(text)
+        
+        # الخطوة 2: عكس اتجاه النص (RTL)
+        bidi_text = get_display(reshaped)
+        
+        return bidi_text
+    except Exception as e:
+        print(f"[WARN] Arabic reshape failed: {e}")
+        return text
 
 
 def _text_width(text, font):
+    """حساب عرض النص بعد معالجته للعربية"""
+    text = _arabic(text)
     try:
         bbox = font.getbbox(text)
         return bbox[2] - bbox[0]
@@ -59,11 +84,52 @@ def _text_width(text, font):
         return len(text) * (font.size // 2)
 
 
-def _draw_text(draw, x, y, text, font, color):
+def _draw_text(draw, x, y, text, font, color, shadow=True):
+    """
+    رسم نص مع دعم كامل للعربية.
+    هذه هي الدالة الوحيدة التي يجب استخدامها لرسم أي نص.
+    """
     text = _arabic(text)
-    draw.text((x + 2, y + 2), text, fill=(200, 200, 200), font=font)
+    if shadow:
+        draw.text((x + 2, y + 2), text, fill=(200, 200, 200), font=font)
     draw.text((x, y), text, fill=color, font=font)
 
+
+def _draw_centered_text(draw, y, text, font, color):
+    """رسم نص في منتصف العرض"""
+    text = _arabic(text)
+    w = _text_width(text, font)
+    x = (TARGET_W - w) // 2
+    draw.text((x + 2, y + 2), text, fill=(200, 200, 200), font=font)
+    draw.text((x, y), text, fill=color, font=font)
+    return y + font.size + 10
+
+
+def _wrap_text(text, font, max_width):
+    """تقسيم النص العربي إلى أسطر"""
+    text = _arabic(text)
+    words = text.split()
+    lines = []
+    cur = []
+    
+    for w in words:
+        cur.append(w)
+        line = ' '.join(cur)
+        if _text_width(line, font) > max_width:
+            cur.pop()
+            if cur:
+                lines.append(' '.join(cur))
+            cur = [w]
+    
+    if cur:
+        lines.append(' '.join(cur))
+    
+    return lines if lines else [text]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# شرائح الفيديو
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def _draw_welcome():
     fd, path = tempfile.mkstemp(suffix=".jpg")
@@ -88,7 +154,7 @@ def _draw_welcome():
 
     f2 = _get_font(36)
     welcome = "أهلاً ومرحباً بكم"
-    w2 = _text_width(_arabic(welcome), f2)
+    w2 = _text_width(welcome, f2)
     x2 = (TARGET_W - w2) // 2
     _draw_text(draw, x2, TARGET_H // 2 + 30, welcome, f2, (44, 62, 80))
 
@@ -105,22 +171,11 @@ def _draw_title(title):
     draw.rectangle([(0, 0), (TARGET_W, 6)], fill=COLORS[1])
 
     f = _get_font(38)
-    lines = []
-    words = title.split()
-    cur = []
-    for w in words:
-        cur.append(w)
-        line = ' '.join(cur)
-        if _text_width(_arabic(line), f) > TARGET_W - 80:
-            cur.pop()
-            lines.append(' '.join(cur))
-            cur = [w]
-    if cur:
-        lines.append(' '.join(cur))
+    lines = _wrap_text(title, f, TARGET_W - 80)
 
     y = TARGET_H // 2 - (len(lines) * 45) // 2
     for line in lines:
-        w = _text_width(_arabic(line), f)
+        w = _text_width(line, f)
         x = (TARGET_W - w) // 2
         _draw_text(draw, x, y, line, f, (44, 62, 80))
         y += 45
@@ -139,7 +194,7 @@ def _draw_map(titles):
 
     f = _get_font(30)
     mt = "📋 خريطة المحاضرة"
-    w = _text_width(_arabic(mt), f)
+    w = _text_width(mt, f)
     x = (TARGET_W - w) // 2
     _draw_text(draw, x, 30, mt, f, COLORS[2])
 
@@ -173,7 +228,7 @@ def _draw_section_title(title, idx):
     draw.text((cx - nw // 2, cy - 22), num, fill=(255, 255, 255), font=f)
 
     f2 = _get_font(30)
-    w2 = _text_width(_arabic(title), f2)
+    w2 = _text_width(title, f2)
     x = (TARGET_W - w2) // 2
     _draw_text(draw, x, cy + 50, title, f2, (44, 62, 80))
 
@@ -191,10 +246,10 @@ def _draw_content(img_bytes, keywords, sec_title, sec_idx, cur, total):
     draw.rectangle([(0, 0), (TARGET_W, 6)], fill=col)
 
     fh = _get_font(18)
-    hd = _arabic(sec_title[:40])
+    hd = sec_title[:40]
     hw = _text_width(hd, fh)
     hx = (TARGET_W - hw) // 2
-    _draw_text(draw, hx, 15, sec_title[:40], fh, (44, 62, 80))
+    _draw_text(draw, hx, 15, hd, fh, (44, 62, 80))
 
     if img_bytes:
         try:
@@ -217,7 +272,7 @@ def _draw_content(img_bytes, keywords, sec_title, sec_idx, cur, total):
     vis = keywords[:cur + 1]
     for i, kw in enumerate(vis):
         kcol = COLORS[i % len(COLORS)]
-        kwt = _arabic(kw)
+        kwt = kw
         kw_w = _text_width(kwt, fk)
         cx = 100 + (i % 2) * 350
         cy = 330 + (i // 2) * 40
@@ -225,7 +280,7 @@ def _draw_content(img_bytes, keywords, sec_title, sec_idx, cur, total):
             [(cx - 10, cy - 5), (cx + kw_w + 10, cy + 30)],
             radius=8, fill=(*kcol, 20), outline=kcol, width=2
         )
-        draw.text((cx, cy), kwt, fill=kcol, font=fk)
+        _draw_text(draw, cx, cy, kwt, fk, kcol)
 
     dot_y = TARGET_H - 30
     for i in range(total):
@@ -236,7 +291,7 @@ def _draw_content(img_bytes, keywords, sec_title, sec_idx, cur, total):
 
     fw = _get_font(12)
     wm_w = _text_width(WATERMARK, fw)
-    draw.text((TARGET_W - wm_w - 20, TARGET_H - 25), WATERMARK, fill=col, font=fw)
+    _draw_text(draw, TARGET_W - wm_w - 20, TARGET_H - 25, WATERMARK, fw, col)
 
     img.save(path, "JPEG", quality=92)
     return path
@@ -253,7 +308,7 @@ def _draw_summary(keywords):
 
     f = _get_font(30)
     mt = "📋 ملخص المحاضرة"
-    w = _text_width(_arabic(mt), f)
+    w = _text_width(mt, f)
     x = (TARGET_W - w) // 2
     _draw_text(draw, x, 35, mt, f, (44, 62, 80))
 
@@ -261,7 +316,7 @@ def _draw_summary(keywords):
     f2 = _get_font(18)
     for i, kw in enumerate(keywords[:12]):
         col = COLORS[i % len(COLORS)]
-        kwt = _arabic(kw)
+        kwt = kw
         kw_w = _text_width(kwt, f2)
         cx = 50 + (i % 3) * 250
         cy = y + (i // 3) * 45
@@ -269,17 +324,21 @@ def _draw_summary(keywords):
             [(cx - 10, cy - 5), (cx + kw_w + 10, cy + 28)],
             radius=8, fill=(*col, 20), outline=col, width=2
         )
-        draw.text((cx, cy), kwt, fill=col, font=f2)
+        _draw_text(draw, cx, cy, kwt, f2, col)
 
     f3 = _get_font(26)
     th = "🙏 شكراً لحسن استماعكم"
-    w3 = _text_width(_arabic(th), f3)
+    w3 = _text_width(th, f3)
     x3 = (TARGET_W - w3) // 2
     _draw_text(draw, x3, TARGET_H - 60, th, f3, COLORS[0])
 
     img.save(path, "JPEG", quality=90)
     return path
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FFmpeg
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def _ffmpeg_seg(img, dur, aud, start, out):
     dstr = f"{dur:.3f}"
