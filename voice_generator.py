@@ -6,8 +6,18 @@ import os
 from typing import List, Dict, Any
 
 # ============================================================
-# توليد الصوت - مع نظام احتياطي يضمن عدم الفشل
+# إعدادات اللهجات
 # ============================================================
+DIALECT_TLD_MAP = {
+    "iraq": "com",
+    "egypt": "com.eg",
+    "syria": "com",
+    "gulf": "com.sa",
+    "msa": "com",
+    "english": "com",
+    "british": "co.uk",
+}
+
 
 def _generate_silent_audio(duration: float = 5.0) -> bytes:
     """توليد صوت صامت كحل أخير"""
@@ -18,11 +28,10 @@ def _generate_silent_audio(duration: float = 5.0) -> bytes:
         silent.export(buf, format="mp3")
         return buf.getvalue()
     except:
-        # إذا فشل pydub، نرجع صوت فارغ
         return b""
 
 
-def _generate_with_gtts(text: str, lang: str = "ar", tld: str = "com") -> tuple[bytes, float]:
+def _generate_with_gtts(text: str, lang: str = "ar", tld: str = "com") -> tuple:
     """توليد صوت باستخدام gTTS"""
     try:
         from gtts import gTTS
@@ -30,7 +39,6 @@ def _generate_with_gtts(text: str, lang: str = "ar", tld: str = "com") -> tuple[
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
             tmp_path = tmp.name
         
-        # محاولة توليد الصوت
         tts = gTTS(text=text, lang=lang, tld=tld, slow=False)
         tts.save(tmp_path)
         
@@ -42,13 +50,11 @@ def _generate_with_gtts(text: str, lang: str = "ar", tld: str = "com") -> tuple[
         except:
             pass
         
-        # حساب المدة
         try:
             from pydub import AudioSegment
             audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
             duration = len(audio) / 1000.0
         except:
-            # تقدير المدة: حوالي 150 كلمة في الدقيقة
             duration = len(text.split()) * 0.4
         
         return audio_bytes, max(duration, 3.0)
@@ -59,54 +65,41 @@ def _generate_with_gtts(text: str, lang: str = "ar", tld: str = "com") -> tuple[
 
 
 async def _generate_single_audio(text: str, dialect: str) -> Dict[str, Any]:
-    """توليد صوت لقسم واحد مع نظام احتياطي"""
-    
-    # تحديد اللغة
+    """توليد صوت لقسم واحد"""
     if dialect in ("english", "british"):
         lang = "en"
         tld = "co.uk" if dialect == "british" else "com"
     else:
         lang = "ar"
         tld_map = {
-            "iraq": "com", "egypt": "com.eg", "syria": "com", 
+            "iraq": "com", "egypt": "com.eg", "syria": "com",
             "gulf": "com.sa", "msa": "com"
         }
         tld = tld_map.get(dialect, "com")
     
-    # تنظيف النص
     text = text.strip()
     if not text:
         text = "المحتوى غير متوفر"
     
-    # المحاولة الأولى - gTTS مع الإعدادات المحددة
+    # المحاولة الأولى
     try:
         loop = asyncio.get_event_loop()
         audio_bytes, duration = await loop.run_in_executor(
             None, _generate_with_gtts, text, lang, tld
         )
-        print(f"✅ Audio generated: {duration:.1f}s")
-        return {
-            "audio": audio_bytes,
-            "duration": duration,
-            "used_fallback": False,
-        }
+        return {"audio": audio_bytes, "duration": duration, "used_fallback": False}
     except Exception as e:
-        print(f"⚠️ First attempt failed: {str(e)[:50]}")
+        print(f"⚠️ First attempt: {str(e)[:50]}")
     
-    # المحاولة الثانية - gTTS بدون tld محدد
+    # المحاولة الثانية
     try:
         loop = asyncio.get_event_loop()
         audio_bytes, duration = await loop.run_in_executor(
             None, _generate_with_gtts, text, lang, "com"
         )
-        print(f"✅ Audio generated (fallback): {duration:.1f}s")
-        return {
-            "audio": audio_bytes,
-            "duration": duration,
-            "used_fallback": True,
-        }
+        return {"audio": audio_bytes, "duration": duration, "used_fallback": True}
     except Exception as e:
-        print(f"⚠️ Second attempt failed: {str(e)[:50]}")
+        print(f"⚠️ Second attempt: {str(e)[:50]}")
     
     # المحاولة الثالثة - نص مختصر
     try:
@@ -115,31 +108,18 @@ async def _generate_single_audio(text: str, dialect: str) -> Dict[str, Any]:
         audio_bytes, duration = await loop.run_in_executor(
             None, _generate_with_gtts, short_text, lang, "com"
         )
-        print(f"✅ Audio generated (short): {duration:.1f}s")
-        return {
-            "audio": audio_bytes,
-            "duration": duration,
-            "used_fallback": True,
-        }
+        return {"audio": audio_bytes, "duration": duration, "used_fallback": True}
     except Exception as e:
-        print(f"⚠️ Third attempt failed: {str(e)[:50]}")
+        print(f"⚠️ Third attempt: {str(e)[:50]}")
     
-    # الحل الأخير - صوت صامت
-    print("🔇 Using silent audio as last resort")
+    # صوت صامت
+    print("🔇 Using silent audio")
     duration = max(len(text.split()) * 0.4, 5.0)
     silent_audio = _generate_silent_audio(duration)
-    
-    return {
-        "audio": silent_audio,
-        "duration": duration,
-        "used_fallback": True,
-    }
+    return {"audio": silent_audio, "duration": duration, "used_fallback": True}
 
 
-async def generate_sections_audio(
-    sections: List[Dict[str, Any]],
-    dialect: str = "msa"
-) -> Dict[str, Any]:
+async def generate_sections_audio(sections: List[Dict[str, Any]], dialect: str = "msa") -> Dict[str, Any]:
     """توليد الصوت لجميع الأقسام"""
     results = []
     total_duration = 0.0
@@ -169,16 +149,15 @@ async def generate_sections_audio(
 
 async def generate_audio_for_section(text: str, dialect: str) -> Dict[str, Any]:
     """توليد صوت لقسم واحد"""
-  
     return await _generate_single_audio(text, dialect)
-    def keys_status() -> dict:
-    """
-    حالة المفاتيح - gTTS مجاني دائماً ولا يحتاج مفاتيح.
-    """
+
+
+def keys_status() -> dict:
+    """حالة المفاتيح - gTTS مجاني دائماً"""
     return {
         "total": 1,
         "active": 1,
         "exhausted": 0,
         "all_gone": False,
         "provider": "gTTS (مجاني بالكامل)",
-    }
+        }
