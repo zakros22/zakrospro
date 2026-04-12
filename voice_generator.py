@@ -169,4 +169,16 @@ async def generate_sections_audio(
 
 async def generate_audio_for_section(text: str, dialect: str) -> Dict[str, Any]:
     """توليد صوت لقسم واحد"""
+  
     return await _generate_single_audio(text, dialect)
+    def keys_status() -> dict:
+    """
+    حالة المفاتيح - gTTS مجاني دائماً ولا يحتاج مفاتيح.
+    """
+    return {
+        "total": 1,
+        "active": 1,
+        "exhausted": 0,
+        "all_gone": False,
+        "provider": "gTTS (مجاني بالكامل)",
+    }
