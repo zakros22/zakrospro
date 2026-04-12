@@ -1,3 +1,4 @@
+import sys
 import psycopg2
 import psycopg2.extras
 from psycopg2 import sql
