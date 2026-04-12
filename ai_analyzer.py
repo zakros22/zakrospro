@@ -1,930 +1,863 @@
-# -*- coding: utf-8 -*-
-"""
-AI Analyzer Module - النسخة الكاملة والمفصلة
-=============================================
-الميزات:
-- استخراج النص من PDF (pdfplumber + PyPDF2)
-- 4 مصادر للصور: Pollinations → Unsplash → Picsum → صورة ملونة
-- 3 مصادر للذكاء الاصطناعي: DeepSeek → Google Gemini → Groq
-- نظام تدوير المفاتيح (9 مفاتيح لكل مصدر)
-- نظام إعادة المحاولة التلقائي (3 محاولات لكل مرحلة)
-- استخراج الكلمات المفتاحية (عربي + إنجليزي)
-- تحديد نوع المحاضرة (20+ نوع)
-- توليد شرح احترافي غير مكرر
-- دعم الترجمة من إنجليزي إلى عربي مع الاحتفاظ بالمصطلحات
-- خطة احتياطية كاملة عند فشل AI
-"""
-
 import json
 import re
 import io
 import asyncio
 import aiohttp
 import os
-import random
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image as PILImage, ImageDraw, ImageFont
 from google import genai
 from google.genai import types as genai_types
+from config import (
+    GOOGLE_API_KEY, GOOGLE_API_KEYS, GROQ_API_KEYS, 
+    OPENROUTER_API_KEYS, OPENAI_API_KEY, SUBJECT_COLORS
+)
+
+# ============================================================
+# API Key Pools
+# ============================================================
+_key_pool: list[str] = list(GOOGLE_API_KEYS) if GOOGLE_API_KEYS else ([GOOGLE_API_KEY] if GOOGLE_API_KEY else [])
+_groq_pool: list[str] = list(GROQ_API_KEYS) if GROQ_API_KEYS else []
+_or_pool: list[str] = list(OPENROUTER_API_KEYS) if OPENROUTER_API_KEYS else []
+_key_clients: dict[str, object] = {}
+_current_key_idx: int = 0
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 1. تنظيف النص
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def clean_text(text: str) -> str:
-    """
-    تنظيف النص من جميع الأحرف غير المرغوبة.
-    """
-    if not text:
-        return ""
-    text = str(text).replace('\x00', '').replace('\0', '')
-    text = re.sub(r'[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
+def _get_client(key: str | None = None):
+    if not _key_pool:
+        raise RuntimeError("GOOGLE_API_KEY غير مضبوط")
+    use_key = key or _key_pool[_current_key_idx % len(_key_pool)]
+    if use_key not in _key_clients:
+        _key_clients[use_key] = genai.Client(api_key=use_key)
+    return _key_clients[use_key]
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 2. استخراج النص من PDF (مع إعادة المحاولة)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
-    """
-    استخراج النص من PDF مع إعادة المحاولة بمكتبات مختلفة.
-    """
-    errors = []
-    
-    # ───────────────────────────────────────────────────────────────────────────
-    # المحاولة 1: pdfplumber (الأفضل للملفات المعقدة)
-    # ───────────────────────────────────────────────────────────────────────────
-    try:
-        import pdfplumber
-        
-        def _extract_with_pdfplumber():
-            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-                pages = []
-                for page in pdf.pages:
-                    page_text = page.extract_text() or ""
-                    if page_text.strip():
-                        pages.append(page_text)
-                return "\n\n".join(pages)
-        
-        loop = asyncio.get_event_loop()
-        text = await asyncio.wait_for(
-            loop.run_in_executor(None, _extract_with_pdfplumber),
-            timeout=60.0
-        )
-        if len(text.strip()) > 100:
-            print("[PDF] ✅ pdfplumber success")
-            return clean_text(text)
-    except Exception as e:
-        errors.append(f"pdfplumber: {e}")
-        print(f"[PDF] ⚠️ pdfplumber failed: {e}")
-    
-    # ───────────────────────────────────────────────────────────────────────────
-    # المحاولة 2: PyPDF2 (احتياطي)
-    # ───────────────────────────────────────────────────────────────────────────
-    try:
-        import PyPDF2
-        
-        def _extract_with_pypdf2():
-            reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
-            pages = []
-            for page in reader.pages:
-                page_text = page.extract_text() or ""
-                if page_text.strip():
-                    pages.append(page_text)
-            return "\n\n".join(pages)
-        
-        loop = asyncio.get_event_loop()
-        text = await asyncio.wait_for(
-            loop.run_in_executor(None, _extract_with_pypdf2),
-            timeout=60.0
-        )
-        if len(text.strip()) > 50:
-            print("[PDF] ✅ PyPDF2 success")
-            return clean_text(text)
-    except Exception as e:
-        errors.append(f"PyPDF2: {e}")
-        print(f"[PDF] ⚠️ PyPDF2 failed: {e}")
-    
-    # ───────────────────────────────────────────────────────────────────────────
-    # فشل جميع المحاولات
-    # ───────────────────────────────────────────────────────────────────────────
-    raise RuntimeError(f"❌ فشل استخراج النص من PDF: {' | '.join(errors)}")
+class QuotaExhaustedError(Exception):
+    pass
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 3. تحميل مفاتيح API
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _load_api_keys(env_name: str) -> list:
-    """
-    تحميل المفاتيح من متغيرات البيئة.
-    تدعم الصيغ:
-    - مفتاح واحد: API_KEY=xxx
-    - مفاتيح متعددة بفواصل: API_KEYS=xxx,yyy,zzz
-    """
-    keys = []
-    
-    # الطريقة 1: مفاتيح متعددة بفواصل
-    raw = os.getenv(f"{env_name}_KEYS", "")
-    if raw:
-        for k in raw.split(","):
-            k = k.strip()
-            if k and k not in keys:
-                keys.append(k)
-    
-    # الطريقة 2: مفتاح واحد
-    single = os.getenv(env_name, "").strip()
-    if single and single not in keys:
-        keys.append(single)
-    
-    return [k for k in keys if k]
-
-
-# تحميل المفاتيح
-_deepseek_keys = _load_api_keys("DEEPSEEK_API")
-_google_keys = _load_api_keys("GOOGLE_API")
-_groq_keys = _load_api_keys("GROQ_API")
-_openrouter_keys = _load_api_keys("OPENROUTER_API")
-
-print(f"[AI] Keys loaded - DeepSeek: {len(_deepseek_keys)}, Google: {len(_google_keys)}, Groq: {len(_groq_keys)}, OpenRouter: {len(_openrouter_keys)}")
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 4. نظام تدوير المفاتيح
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class APIKeyManager:
-    """
-    مدير المفاتيح مع تدوير تلقائي.
-    """
-    def __init__(self, keys: list, name: str):
-        self.keys = keys
-        self.name = name
-        self.current_idx = 0
-        self.exhausted = set()
-    
-    def get_next(self) -> str | None:
-        """الحصول على المفتاح التالي المتاح"""
-        if not self.keys:
-            return None
-        
-        for _ in range(len(self.keys)):
-            key = self.keys[self.current_idx % len(self.keys)]
-            if key not in self.exhausted:
-                return key
-            self.current_idx += 1
-        
-        return None
-    
-    def mark_exhausted(self, key: str):
-        """تعليم مفتاح على أنه منتهي"""
-        self.exhausted.add(key)
-        self.current_idx += 1
-        remaining = len(self.keys) - len(self.exhausted)
-        print(f"[{self.name}] Key exhausted. {remaining} remaining.")
-    
-    def has_available(self) -> bool:
-        """هل هناك مفاتيح متاحة؟"""
-        return len(self.exhausted) < len(self.keys)
-
-
-# إنشاء مديري المفاتيح
-_deepseek_mgr = APIKeyManager(_deepseek_keys, "DeepSeek")
-_google_mgr = APIKeyManager(_google_keys, "Google")
-_groq_mgr = APIKeyManager(_groq_keys, "Groq")
-_openrouter_mgr = APIKeyManager(_openrouter_keys, "OpenRouter")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 5. دوال التوليد لكل مزود
-# ═══════════════════════════════════════════════════════════════════════════════
-
-async def _generate_with_deepseek(prompt: str, max_tokens: int = 8192) -> str:
-    """
-    توليد النص باستخدام DeepSeek.
-    """
-    for attempt in range(3):
-        key = _deepseek_mgr.get_next()
-        if not key:
-            break
-        
-        try:
-            headers = {
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "model": "deepseek-chat",
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": min(max_tokens, 8192),
-                "temperature": 0.9 if attempt > 0 else 0.7
-            }
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    "https://api.deepseek.com/v1/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(90)
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        content = data["choices"][0]["message"]["content"].strip()
-                        if len(content) > 100:
-                            print(f"[DeepSeek] ✅ Success (attempt {attempt+1})")
-                            return content
-                    elif resp.status in (429, 402):
-                        _deepseek_mgr.mark_exhausted(key)
-                        continue
-        except Exception as e:
-            print(f"[DeepSeek] ⚠️ Attempt {attempt+1} failed: {str(e)[:100]}")
-            continue
-    
-    raise Exception("All DeepSeek attempts failed")
-
-
-async def _generate_with_google(prompt: str, max_tokens: int = 8192) -> str:
-    """
-    توليد النص باستخدام Google Gemini.
-    """
-    models = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
-    
-    for attempt in range(3):
-        key = _google_mgr.get_next()
-        if not key:
-            break
-        
-        try:
-            client = genai.Client(api_key=key)
-            
-            for model in models:
-                try:
-                    response = await asyncio.to_thread(
-                        client.models.generate_content,
-                        model=model,
-                        contents=prompt,
-                        config=genai_types.GenerateContentConfig(
-                            temperature=0.9 if attempt > 0 else 0.7,
-                            max_output_tokens=max_tokens
-                        )
-                    )
-                    content = response.text.strip()
-                    if len(content) > 100:
-                        print(f"[Google] ✅ Success with {model} (attempt {attempt+1})")
-                        return content
-                except Exception as e:
-                    err = str(e)
-                    if "429" in err or "quota" in err.lower():
-                        _google_mgr.mark_exhausted(key)
-                        break
-                    continue
-        except Exception as e:
-            print(f"[Google] ⚠️ Attempt {attempt+1} failed: {str(e)[:100]}")
-            continue
-    
-    raise Exception("All Google attempts failed")
+# ============================================================
+# نماذج الذكاء الاصطناعي الاحتياطية
+# ============================================================
+_GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it"]
+_OR_MODELS = [
+    "openai/gpt-oss-120b:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "openai/gpt-oss-20b:free",
+    "liquid/lfm-2.5-1.2b-instruct:free",
+]
 
 
 async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
-    """
-    توليد النص باستخدام Groq.
-    """
-    models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it"]
+    """استخدام Groq كبديل أول"""
+    if not _groq_pool:
+        raise QuotaExhaustedError("لا يوجد GROQ_API_KEY")
     
-    for attempt in range(3):
-        key = _groq_mgr.get_next()
-        if not key:
-            break
-        
-        for model in models:
+    for groq_key in _groq_pool:
+        for model in _GROQ_MODELS:
             try:
                 headers = {
-                    "Authorization": f"Bearer {key}",
+                    "Authorization": f"Bearer {groq_key}",
                     "Content-Type": "application/json"
                 }
                 payload = {
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": min(max_tokens, 8192),
-                    "temperature": 0.9 if attempt > 0 else 0.7
+                    "temperature": 0.3
                 }
-                
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
+                async with aiohttp.ClientSession() as s:
+                    async with s.post(
                         "https://api.groq.com/openai/v1/chat/completions",
                         headers=headers,
                         json=payload,
-                        timeout=aiohttp.ClientTimeout(60)
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            content = data["choices"][0]["message"]["content"].strip()
-                            if len(content) > 100:
-                                print(f"[Groq] ✅ Success with {model} (attempt {attempt+1})")
-                                return content
-                        elif resp.status == 429:
-                            _groq_mgr.mark_exhausted(key)
-                            break
-            except Exception as e:
+                        timeout=aiohttp.ClientTimeout(total=60)
+                    ) as r:
+                        if r.status == 200:
+                            data = await r.json()
+                            print(f"✅ Groq success: {model}")
+                            return data["choices"][0]["message"]["content"].strip()
+            except Exception:
                 continue
     
-    raise Exception("All Groq attempts failed")
+    raise QuotaExhaustedError("نفدت حصة Groq")
 
 
 async def _generate_with_openrouter(prompt: str, max_tokens: int = 8192) -> str:
-    """
-    توليد النص باستخدام OpenRouter (احتياطي أخير).
-    """
-    models = [
-        "deepseek/deepseek-chat",
-        "google/gemini-2.0-flash-exp:free",
-        "nvidia/llama-3.1-nemotron-70b-instruct:free",
-        "meta-llama/llama-3.2-3b-instruct:free"
-    ]
+    """استخدام OpenRouter كبديل ثاني"""
+    if not _or_pool:
+        raise QuotaExhaustedError("لا يوجد OPENROUTER_API_KEY")
     
-    for key in _openrouter_keys[:3]:
-        for model in models:
+    for or_key in _or_pool:
+        for model in _OR_MODELS:
             try:
                 headers = {
-                    "Authorization": f"Bearer {key}",
+                    "Authorization": f"Bearer {or_key}",
                     "Content-Type": "application/json",
                     "HTTP-Referer": "https://replit.com",
-                    "X-Title": "Lecture Video Bot"
+                    "X-Title": "ZAKROS PRO Lecture Bot"
                 }
                 payload = {
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": min(max_tokens, 8192),
-                    "temperature": 0.9
+                    "temperature": 0.3
                 }
-                
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
+                async with aiohttp.ClientSession() as s:
+                    async with s.post(
                         "https://openrouter.ai/api/v1/chat/completions",
                         headers=headers,
                         json=payload,
-                        timeout=aiohttp.ClientTimeout(90)
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            content = data["choices"][0]["message"]["content"].strip()
-                            if len(content) > 100:
-                                print(f"[OpenRouter] ✅ Success with {model}")
-                                return content
+                        timeout=aiohttp.ClientTimeout(total=90)
+                    ) as r:
+                        if r.status == 200:
+                            data = await r.json()
+                            content = data["choices"][0]["message"]["content"]
+                            if content and content.strip():
+                                print(f"✅ OpenRouter success: {model}")
+                                return content.strip()
             except Exception:
                 continue
     
-    raise Exception("All OpenRouter attempts failed")
+    raise QuotaExhaustedError("نفدت حصة OpenRouter")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 6. نظام التوليد الرئيسي (مع الأولويات)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-async def _call_ai_with_fallback(prompt: str, max_tokens: int = 8192) -> str:
+async def _generate_with_rotation(prompt: str, max_output_tokens: int = 8192) -> str:
     """
-    نظام التوليد مع الأولويات:
-    1. DeepSeek (الأساسي)
-    2. Google Gemini
-    3. Groq
-    4. OpenRouter
+    نظام تبادل المفاتيح الذكي:
+    1. Google Gemini (جميع المفاتيح)
+    2. Groq (جميع المفاتيح)
+    3. OpenRouter (جميع المفاتيح)
     """
+    global _current_key_idx
+    gemini_models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
     
-    # 1. DeepSeek
-    if _deepseek_mgr.has_available():
-        try:
-            return await _generate_with_deepseek(prompt, max_tokens)
-        except Exception as e:
-            print(f"[AI] DeepSeek failed: {e}")
-    
-    # 2. Google Gemini
-    if _google_mgr.has_available():
-        try:
-            return await _generate_with_google(prompt, max_tokens)
-        except Exception as e:
-            print(f"[AI] Google failed: {e}")
-    
-    # 3. Groq
-    if _groq_mgr.has_available():
-        try:
-            return await _generate_with_groq(prompt, max_tokens)
-        except Exception as e:
-            print(f"[AI] Groq failed: {e}")
-    
-    # 4. OpenRouter (احتياطي أخير)
-    if _openrouter_keys:
-        try:
-            return await _generate_with_openrouter(prompt, max_tokens)
-        except Exception as e:
-            print(f"[AI] OpenRouter failed: {e}")
-    
-    raise Exception("❌ All AI providers failed")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 7. استخراج الكلمات المفتاحية
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _extract_keywords(text: str, max_words: int = 30) -> list:
-    """
-    استخراج الكلمات المفتاحية من النص (عربي + إنجليزي).
-    """
-    text = clean_text(text)
-    
-    # قائمة الكلمات المستبعدة
-    stop_words = {
-        'و', 'في', 'من', 'على', 'إلى', 'أن', 'هو', 'هي', 'هذا', 'هذه', 'كان', 'كانت',
-        'مع', 'ما', 'لا', 'عن', 'إذا', 'لم', 'لن', 'قد', 'ثم', 'أو', 'أم', 'لكن',
-        'حتى', 'بل', 'كل', 'بعض', 'the', 'a', 'an', 'is', 'are', 'was', 'were',
-        'of', 'to', 'in', 'that', 'it', 'be', 'for', 'on', 'with', 'as', 'at',
-        'by', 'this', 'and', 'or', 'but', 'from', 'they', 'we', 'you', 'i'
-    }
-    
-    # استخراج الكلمات (4 أحرف فأكثر)
-    words = re.findall(r'[\u0600-\u06FF]{4,}|[a-zA-Z]{4,}', text)
-    
-    # حساب التكرار
-    freq = {}
-    for w in words:
-        wl = w.lower()
-        if wl not in stop_words:
-            freq[w] = freq.get(w, 0) + 1
-    
-    # ترتيب تنازلي
-    sorted_words = sorted(freq.items(), key=lambda x: x[1], reverse=True)
-    keywords = [w[0] for w in sorted_words[:max_words]]
-    
-    # إذا كانت الكلمات قليلة، نضيف المزيد
-    if len(keywords) < 4:
-        extra = re.findall(r'[\u0600-\u06FF]{3,}|[a-zA-Z]{3,}', text)
-        for w in extra:
-            if w not in keywords and w.lower() not in stop_words:
-                keywords.append(w)
-                if len(keywords) >= max_words:
-                    break
-    
-    return keywords
-
-
-def _is_english(text: str) -> bool:
-    """
-    التحقق مما إذا كان النص إنجليزي.
-    """
-    arabic_chars = len(re.findall(r'[\u0600-\u06FF]', text))
-    english_chars = len(re.findall(r'[a-zA-Z]', text))
-    return english_chars > arabic_chars
-
-
-def _detect_type(text: str) -> str:
-    """
-    تحديد نوع المحاضرة من خلال الكلمات المفتاحية.
-    """
-    text_lower = clean_text(text).lower()
-    
-    # قوائم الكلمات الدالة
-    medical = ['مرض', 'علاج', 'طبيب', 'جراحة', 'دواء', 'تشخيص', 'مريض', 'قلب', 'دم', 'خلية', 'ورم', 'سرطان', 'disease', 'treatment', 'diagnosis', 'symptom']
-    math = ['معادلة', 'دالة', 'تفاضل', 'تكامل', 'جبر', 'هندسة', 'رياضيات', 'equation', 'function', 'calculus', 'algebra']
-    physics = ['قوة', 'طاقة', 'حركة', 'سرعة', 'جاذبية', 'كهرباء', 'مغناطيس', 'فيزياء', 'force', 'energy', 'motion']
-    chemistry = ['تفاعل', 'عنصر', 'مركب', 'جزيء', 'ذرة', 'حمض', 'قاعدة', 'كيمياء', 'reaction', 'element', 'compound']
-    history = ['تاريخ', 'حرب', 'معركة', 'حضارة', 'إمبراطورية', 'ملك', 'ثورة', 'history', 'war', 'battle']
-    biology = ['نبات', 'حيوان', 'بيئة', 'وراثة', 'تطور', 'خلية', 'biology', 'plant', 'animal', 'cell']
-    islamic = ['قرآن', 'حديث', 'فقه', 'عقيدة', 'سيرة', 'تفسير', 'صلاة', 'زكاة', 'حج', 'صوم']
-    
-    scores = {
-        'medicine': sum(1 for k in medical if k in text_lower),
-        'math': sum(1 for k in math if k in text_lower),
-        'physics': sum(1 for k in physics if k in text_lower),
-        'chemistry': sum(1 for k in chemistry if k in text_lower),
-        'history': sum(1 for k in history if k in text_lower),
-        'biology': sum(1 for k in biology if k in text_lower),
-        'islamic': sum(1 for k in islamic if k in text_lower),
-    }
-    
-    best = max(scores, key=scores.get)
-    return best if scores[best] > 0 else 'other'
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 8. توليد شرح احتياطي احترافي (غير مكرر)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _generate_fallback_narration(keywords: list, lecture_type: str, is_english: bool) -> str:
-    """
-    توليد شرح احتياطي احترافي غير مكرر.
-    """
-    kw = keywords[:4]
-    if not kw:
-        kw = ["concept"] * 4 if is_english else ["مفهوم"] * 4
-    
-    if is_english:
-        templates = [
-            f"Let's begin with {kw[0]}. This is a fundamental concept in {lecture_type}. ",
-            f"First, we need to understand what {kw[0]} means. It refers to... ",
-            f"Now, let's look at {kw[1]}. This is closely related to {kw[0]}. ",
-            f"The relationship between {kw[0]} and {kw[1]} is important because... ",
-            f"Moving on to {kw[2]}. This concept helps us understand how... ",
-            f"An example of {kw[2]} in real life would be... ",
-            f"Finally, we have {kw[3]}. This completes our understanding of the topic. ",
-            f"To summarize what we've learned: {kw[0]}, {kw[1]}, {kw[2]}, and {kw[3]}. ",
-            f"A key takeaway is that these concepts are interconnected. ",
-            f"This knowledge can be applied in various situations. "
-        ]
-    else:
-        templates = [
-            f"نبدأ بالحديث عن {kw[0]}. هذا مفهوم أساسي في {lecture_type}. ",
-            f"أولاً، يجب أن نفهم معنى {kw[0]}. إنه يشير إلى... ",
-            f"الآن، ننتقل إلى {kw[1]}. هذا المفهوم مرتبط ارتباطاً وثيقاً بـ {kw[0]}. ",
-            f"العلاقة بين {kw[0]} و {kw[1]} مهمة جداً لأنها... ",
-            f"ننتقل الآن إلى {kw[2]}. هذا المفهوم يساعدنا على فهم كيفية... ",
-            f"مثال على {kw[2]} في الحياة الواقعية هو... ",
-            f"أخيراً، نصل إلى {kw[3]}. هذا يكمل فهمنا للموضوع. ",
-            f"لتلخيص ما تعلمناه: {kw[0]}، {kw[1]}، {kw[2]}، و {kw[3]}. ",
-            f"النقطة الأساسية هي أن هذه المفاهيم مترابطة مع بعضها. ",
-            f"يمكن تطبيق هذه المعرفة في مواقف مختلفة. "
-        ]
-    
-    # بناء الشرح بتكرار القوالب 15 مرة (حوالي 20-25 جملة)
-    narration = ""
-    for i in range(15):
-        narration += templates[i % len(templates)]
-    
-    return narration
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 9. الدالة الرئيسية - تحليل المحاضرة
-# ═══════════════════════════════════════════════════════════════════════════════
-
-async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
-    """
-    تحليل المحاضرة بشكل كامل.
-    
-    Args:
-        text: النص المراد تحليله
-        dialect: اللهجة المطلوبة للشرح
-    
-    Returns:
-        dict: يحتوي على:
-            - lecture_type: نوع المحاضرة
-            - title: عنوان المحاضرة
-            - sections: قائمة الأقسام (كل قسم: title, keywords, narration, _image_bytes)
-            - summary: ملخص المحاضرة
-            - all_keywords: جميع الكلمات المفتاحية
-            - is_english: هل النص إنجليزي؟
-    """
-    print("[AI] ========== بدء تحليل المحاضرة ==========")
-    
-    # 1. تنظيف النص
-    text = clean_text(text)
-    if not text:
-        raise ValueError("❌ النص فارغ بعد التنظيف")
-    
-    # 2. تحديد اللغة
-    is_eng = _is_english(text)
-    print(f"[AI] اللغة: {'🇬🇧 إنجليزية' if is_eng else '🇸🇦 عربية'}")
-    
-    # 3. استخراج الكلمات المفتاحية
-    keywords = _extract_keywords(text, 40)
-    print(f"[AI] تم استخراج {len(keywords)} كلمة مفتاحية")
-    
-    # 4. إذا كانت الكلمات قليلة، نعيد الاستخراج بمعايير أوسع
-    if len(keywords) < 10:
-        print("[AI] ⚠️ الكلمات قليلة، إعادة الاستخراج...")
-        keywords = _extract_keywords(text, 60)
-    
-    # 5. تحديد نوع المحاضرة
-    ltype = _detect_type(text)
-    print(f"[AI] نوع المحاضرة: {ltype}")
-    
-    # 6. تحديد عدد الأقسام حسب طول النص
-    wc = len(text.split())
-    if wc < 300:
-        ns = 3
-    elif wc < 600:
-        ns = 4
-    elif wc < 1000:
-        ns = 5
-    else:
-        ns = 6
-    print(f"[AI] عدد الأقسام: {ns}")
-    
-    # 7. أخذ جزء من النص للتحليل (4000 حرف)
-    preview = text[:4000]
-    
-    # 8. بناء الـ Prompt حسب اللغة واللهجة
-    if is_eng and dialect in ["iraq", "egypt", "syria", "gulf", "msa"]:
-        # النص إنجليزي والمستخدم يريد شرحاً بالعربية
-        dial_map = {
-            "iraq": "العراقية", "egypt": "المصرية", 
-            "syria": "الشامية", "gulf": "الخليجي", "msa": "الفصحى"
-        }
-        dial_name = dial_map.get(dialect, "العربية")
+    # Phase 1: Gemini
+    for i in range(len(_key_pool)):
+        key_idx = (_current_key_idx + i) % len(_key_pool)
+        key = _key_pool[key_idx]
+        client = _get_client(key)
         
-        prompt = f"""أنت معلم خبير. قم بما يلي:
-1. ترجم النص الإنجليزي التالي إلى العربية.
-2. اشرحه شرحاً مفصلاً باللهجة {dial_name}.
-3. اكتب 20-25 جملة متنوعة لكل قسم.
-4. احتفظ بالمصطلحات الإنجليزية المهمة بين قوسين.
-
-النص:
----
-{preview}
----
-
-الكلمات المفتاحية: {', '.join(keywords[:15])}
-
-أرجع JSON فقط:
-{{"title": "عنوان المحاضرة", "sections": [{{"title": "عنوان القسم", "keywords": ["م1", "م2", "م3", "م4"], "narration": "نص الشرح"}}], "summary": "ملخص"}}"""
-    
-    elif is_eng:
-        # النص إنجليزي والمستخدم يريد شرحاً بالإنجليزية
-        prompt = f"""You are an expert teacher. Explain the following text in clear English.
-Write 20-25 varied sentences per section.
-
-Text:
----
-{preview}
----
-
-Keywords: {', '.join(keywords[:15])}
-
-Return JSON only:
-{{"title": "Lecture Title", "sections": [{{"title": "Section Title", "keywords": ["k1","k2","k3","k4"], "narration": "Full explanation"}}], "summary": "Summary"}}"""
-    
-    else:
-        # النص عربي
-        dial_map = {
-            "iraq": "بالعراقي", "egypt": "بالمصري", 
-            "syria": "بالشامي", "gulf": "بالخليجي", "msa": "بالفصحى"
-        }
-        dial = dial_map.get(dialect, "بالفصحى")
-        
-        prompt = f"""أنت معلم خبير. اشرح النص التالي {dial}.
-اكتب 20-25 جملة متنوعة لكل قسم.
-
-النص:
----
-{preview}
----
-
-الكلمات المفتاحية: {', '.join(keywords[:15])}
-
-أرجع JSON فقط:
-{{"title": "عنوان المحاضرة", "sections": [{{"title": "عنوان القسم", "keywords": ["ك1","ك2","ك3","ك4"], "narration": "نص الشرح"}}], "summary": "ملخص"}}"""
-    
-    # 9. محاولة توليد الشرح باستخدام AI
-    ai_secs = []
-    title = keywords[0] if keywords else ("Lecture" if is_eng else "محاضرة")
-    summary = ""
-    
-    for attempt in range(3):
-        try:
-            print(f"[AI] محاولة توليد الشرح ({attempt+1}/3)...")
-            content = await _call_ai_with_fallback(prompt, 8192)
-            
-            # تنظيف JSON
-            content = re.sub(r'^```json\s*', '', content.strip())
-            content = re.sub(r'\s*```$', '', content)
-            
-            res = json.loads(content)
-            title = clean_text(res.get("title", title))
-            ai_secs = res.get("sections", [])
-            summary = clean_text(res.get("summary", ""))
-            
-            # التحقق من جودة الشرح
-            if len(ai_secs) >= ns - 1 and any(s.get("narration", "") for s in ai_secs):
-                print(f"[AI] ✅ تم توليد {len(ai_secs)} قسم بنجاح")
-                break
-            else:
-                print(f"[AI] ⚠️ جودة الشرح غير كافية، إعادة المحاولة...")
-        except Exception as e:
-            print(f"[AI] ❌ فشل المحاولة {attempt+1}: {str(e)[:100]}")
-    
-    # 10. بناء الأقسام النهائية
-    sections = []
-    for i in range(ns):
-        if i < len(ai_secs) and ai_secs[i].get("narration"):
-            s = ai_secs[i]
-            kw = [clean_text(k) for k in s.get("keywords", [])[:4]]
-            st = clean_text(s.get("title", f"Section {i+1}" if is_eng else f"القسم {i+1}"))
-            nar = clean_text(s.get("narration", ""))
-        else:
-            # استخدام الخطة الاحتياطية
-            idx = (i * 4) % len(keywords)
-            kw = [keywords[(idx + j) % len(keywords)] for j in range(4)]
-            st = kw[0] if kw else (f"Section {i+1}" if is_eng else f"القسم {i+1}")
-            nar = _generate_fallback_narration(kw, ltype, is_eng)
-        
-        # التأكد من وجود 4 كلمات مفتاحية
-        while len(kw) < 4:
-            kw.append("concept" if is_eng else "مفهوم")
-        
-        # التأكد من طول الشرح
-        if len(nar.split()) < 20:
-            nar = nar + " " + _generate_fallback_narration(kw, ltype, is_eng)
-        
-        sections.append({
-            "title": st,
-            "keywords": kw[:4],
-            "narration": nar,
-            "duration_estimate": max(45, len(nar.split()) // 3),
-            "_image_bytes": None
-        })
-    
-    # 11. توليد الصور لكل قسم
-    print(f"[IMG] ========== توليد {len(sections)} صورة ==========")
-    for i, s in enumerate(sections):
-        q = " ".join(s["keywords"][:4])
-        
-        for attempt in range(3):
+        for model in gemini_models:
             try:
-                print(f"[IMG] القسم {i+1}: محاولة {attempt+1}...")
-                s["_image_bytes"] = await fetch_image_for_keyword(q, s["title"], ltype, is_eng)
-                if s["_image_bytes"] and len(s["_image_bytes"]) > 1000:
-                    print(f"[IMG] ✅ القسم {i+1} تم بنجاح")
-                    break
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=model,
+                    contents=prompt,
+                    config=genai_types.GenerateContentConfig(
+                        temperature=0.3,
+                        max_output_tokens=max_output_tokens
+                    ),
+                )
+                _current_key_idx = key_idx
+                print(f"✅ Gemini success: {model} with key {key_idx+1}")
+                return response.text.strip()
             except Exception as e:
-                print(f"[IMG] ❌ القسم {i+1} فشل: {e}")
-        
-        if not s["_image_bytes"]:
-            print(f"[IMG] ⚠️ القسم {i+1}: استخدام صورة احتياطية")
-            s["_image_bytes"] = _make_colored_image(q, (155, 89, 182), is_eng)
+                err = str(e)
+                if "429" in err or "quota" in err.lower() or "exhausted" in err.lower():
+                    print(f"⚠️ Gemini key {key_idx+1} quota exhausted")
+                    continue
+                else:
+                    print(f"⚠️ Gemini error: {err[:50]}")
+                    continue
     
-    print("[AI] ========== اكتمل التحليل ==========")
+    # Phase 2: Groq
+    if _groq_pool:
+        print("🔄 Switching to Groq...")
+        try:
+            return await _generate_with_groq(prompt, max_output_tokens)
+        except QuotaExhaustedError:
+            pass
     
-    return {
-        "lecture_type": ltype,
-        "title": title,
-        "sections": sections,
-        "summary": summary,
-        "all_keywords": keywords,
-        "is_english": is_eng
-    }
+    # Phase 3: OpenRouter
+    if _or_pool:
+        print("🔄 Switching to OpenRouter...")
+        try:
+            return await _generate_with_openrouter(prompt, max_output_tokens)
+        except QuotaExhaustedError:
+            pass
+    
+    raise QuotaExhaustedError("QUOTA_EXHAUSTED: جميع المفاتيح منتهية")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 10. توليد الصور (4 مصادر)
-# ═══════════════════════════════════════════════════════════════════════════════
+# ============================================================
+# حساب حجم المحاضرة وعدد الأقسام
+# ============================================================
+def _compute_lecture_scale(text: str) -> tuple:
+    """حساب عدد الأقسام بناءً على عدد الكلمات"""
+    word_count = len(text.split())
+    if word_count < 300:
+        return 3, "6-8", 3000
+    elif word_count < 800:
+        return 4, "8-10", 5000
+    elif word_count < 1500:
+        return 5, "10-12", 6000
+    elif word_count < 3000:
+        return 6, "12-15", 7000
+    else:
+        return 7, "15-18", 8000
 
-_TYPE_COLORS = {
-    'medicine': (231, 76, 126), 'math': (52, 152, 219), 'physics': (52, 152, 219),
-    'chemistry': (46, 204, 113), 'biology': (46, 204, 113), 'history': (230, 126, 34),
-    'islamic': (46, 134, 89), 'other': (155, 89, 182)
+
+# ============================================================
+# توجيهات التحليل حسب نوع المادة
+# ============================================================
+SUBJECT_INSTRUCTIONS = {
+    # الطب
+    "medicine": """
+    - ركز على الجانب الطبي والتشريحي والوظائف الحيوية
+    - استخدم مصطلحات طبية دقيقة
+    - اشرح الأمراض والأعراض والعلاجات
+    - اذكر آليات عمل الأدوية
+    """,
+    "surgery": """
+    - ركز على الإجراءات الجراحية والتقنيات المستخدمة
+    - اشرح خطوات العملية بالتفصيل
+    - اذكر الأدوات الجراحية المستخدمة
+    - نبه إلى المضاعفات المحتملة
+    """,
+    "pediatrics": """
+    - استخدم أسلوباً لطيفاً مناسباً للأطفال
+    - ركز على النمو والتطور
+    - اشرح أمراض الأطفال الشائعة
+    - اذكر التطعيمات وجداولها
+    """,
+    "dentistry": """
+    - ركز على صحة الفم والأسنان
+    - اشرح التركيبات السنية والإجراءات
+    - اذكر أمراض اللثة والتسوس
+    - تحدث عن العناية اليومية بالأسنان
+    """,
+    "pharmacy": """
+    - ركز على الأدوية وتأثيراتها وآليات عملها
+    - اشرح الجرعات والتفاعلات الدوائية
+    - اذكر الآثار الجانبية والتحذيرات
+    - تحدث عن طرق التخزين والاستخدام
+    """,
+    "cardiology": """
+    - ركز على أمراض القلب والأوعية الدموية
+    - اشرح وظائف القلب والدورة الدموية
+    - اذكر أعراض أمراض القلب وعلاجاتها
+    """,
+    "neurology": """
+    - ركز على الجهاز العصبي والدماغ
+    - اشرح الأمراض العصبية الشائعة
+    - اذكر أعراض السكتة الدماغية والصرع
+    """,
+    
+    # الهندسة
+    "engineering": """
+    - ركز على الجانب الهندسي والتطبيقي
+    - استخدم مصطلحات هندسية دقيقة
+    - اشرح المبادئ الهندسية الأساسية
+    - قدم أمثلة تطبيقية
+    """,
+    "civil": """
+    - ركز على المنشآت والبنية التحتية
+    - اشرح مواد البناء والتصميم الإنشائي
+    - تحدث عن أساسات المباني والجسور
+    - اذكر معايير السلامة
+    """,
+    "electrical": """
+    - ركز على الدوائر الكهربائية والإلكترونية
+    - اشرح التيار والجهد والمقاومة
+    - تحدث عن المحولات والمحركات
+    - اذكر أنظمة الطاقة
+    """,
+    "mechanical": """
+    - ركز على الآلات والحركة والقوى
+    - اشرح المبادئ الميكانيكية الأساسية
+    - تحدث عن المحركات والتروس
+    - اذكر الديناميكا الحرارية
+    """,
+    "aerospace": """
+    - ركز على الطيران والفضاء
+    - اشرح الديناميكا الهوائية والدفع
+    - تحدث عن تصميم الطائرات والصواريخ
+    - اذكر استكشاف الفضاء
+    """,
+    "software": """
+    - ركز على البرمجة والخوارزميات
+    - اشرح لغات البرمجة وهياكل البيانات
+    - تحدث عن تطوير التطبيقات
+    - اذكر أنظمة التشغيل وقواعد البيانات
+    """,
+    "chemical": """
+    - ركز على العمليات الكيميائية الصناعية
+    - اشرح تصميم المفاعلات والمعدات
+    - تحدث عن تكرير النفط والبتروكيماويات
+    """,
+    
+    # العلوم
+    "science": """
+    - ركز على المنهج العلمي والتجارب
+    - استخدم مصطلحات علمية دقيقة
+    - اشرح الظواهر الطبيعية
+    - قدم أمثلة من الحياة اليومية
+    """,
+    "physics": """
+    - ركز على القوانين الفيزيائية والظواهر الطبيعية
+    - اشرح المعادلات الفيزيائية
+    - تحدث عن الحركة والطاقة والقوى
+    - اذكر النظريات الفيزيائية الحديثة
+    """,
+    "chemistry": """
+    - ركز على التفاعلات الكيميائية والعناصر
+    - اشرح المعادلات الكيميائية
+    - تحدث عن الجدول الدوري والروابط
+    - اذكر الكيمياء العضوية وغير العضوية
+    """,
+    "biology": """
+    - ركز على الكائنات الحية والعمليات الحيوية
+    - اشرح الخلايا والوراثة
+    - تحدث عن التصنيف والتطور
+    - اذكر علم البيئة والتوازن البيئي
+    """,
+    "astronomy": """
+    - ركز على الأجرام السماوية والكون
+    - اشرح حركة الكواكب والنجوم
+    - تحدث عن المجرات والثقوب السوداء
+    - اذكر استكشاف الفضاء
+    """,
+    "mathematics": """
+    - ركز على المعادلات الرياضية والبراهين
+    - اشرح الخطوات بالتفصيل
+    - تحدث عن الجبر والهندسة والتفاضل
+    - قدم أمثلة محلولة
+    """,
+    
+    # العلوم الإنسانية
+    "literature": """
+    - ركز على النصوص الأدبية والتحليل
+    - استخدم لغة أدبية جميلة
+    - تحدث عن الأساليب الأدبية والبلاغة
+    - اذكر الشعراء والأدباء المشهورين
+    """,
+    "history": """
+    - ركز على الأحداث التاريخية والتسلسل الزمني
+    - اشرح الأسباب والنتائج
+    - تحدث عن الشخصيات التاريخية
+    - اذكر الحضارات القديمة
+    """,
+    "geography": """
+    - ركز على الظواهر الجغرافية والمواقع
+    - اشرح الخرائط والتضاريس
+    - تحدث عن المناخ والطقس
+    - اذكر الدول والعواصم
+    """,
+    "philosophy": """
+    - ركز على الأفكار الفلسفية والنظريات
+    - اشرح المذاهب الفلسفية
+    - تحدث عن الفلاسفة المشهورين
+    - اذكر مفاهيم الوجود والمعرفة
+    """,
+    "psychology": """
+    - ركز على السلوك البشري والعمليات العقلية
+    - اشرح النظريات النفسية
+    - تحدث عن الشخصية والاضطرابات
+    - اذكر طرق العلاج النفسي
+    """,
+    "economics": """
+    - ركز على النظريات الاقتصادية والأسواق
+    - اشرح العرض والطلب
+    - تحدث عن الناتج المحلي والتضخم
+    - اذكر السياسات المالية والنقدية
+    """,
+    "law": """
+    - ركز على القوانين والأنظمة القانونية
+    - اشرح المواد القانونية
+    - تحدث عن الحقوق والواجبات
+    - اذكر أنواع المحاكم والقضايا
+    """,
+    
+    # العلوم الإسلامية
+    "islamic": """
+    - ركز على التعاليم الإسلامية والأحكام الشرعية
+    - استخدم أسلوباً وقوراً ومحترماً
+    - استشهد بالآيات والأحاديث
+    - اشرح المسائل الفقهية بوضوح
+    """,
+    "quran": """
+    - ركز على تفسير الآيات وأسباب النزول
+    - استخدم أسلوباً قرآنياً
+    - اشرح معاني الكلمات والبلاغة القرآنية
+    - اذكر القراءات والتجويد
+    """,
+    "hadith": """
+    - ركز على شرح الأحاديث النبوية
+    - اذكر الرواة والمصادر
+    - اشرح درجة الحديث وصحته
+    - استخلص الفوائد والأحكام
+    """,
+    "fiqh": """
+    - ركز على الأحكام الفقهية وأدلتها
+    - اشرح المسائل بتفصيل
+    - اذكر آراء المذاهب الفقهية
+    - بين الراجح من الأقوال
+    """,
+    "aqeedah": """
+    - ركز على العقيدة الإسلامية وأركان الإيمان
+    - اشرح مسائل التوحيد
+    - رد على الشبهات
+    - استشهد بالأدلة من الكتاب والسنة
+    """,
+    "tafseer": """
+    - ركز على تفسير القرآن الكريم
+    - اشرح معاني الآيات ودلالاتها
+    - اذكر أسباب النزول والمناسبات
+    - استخلص الهدايات القرآنية
+    """,
+    "seerah": """
+    - ركز على سيرة النبي محمد ﷺ
+    - اذكر الأحداث التاريخية والدروس المستفادة
+    - تحدث عن غزواته وصفاته
+    - استخلص العبر والمواعظ
+    """,
+    
+    # المراحل الدراسية
+    "primary": """
+    - استخدم أسلوباً بسيطاً مناسباً للأطفال
+    - كرر المعلومات الأساسية
+    - استخدم أمثلة من الحياة اليومية
+    - اجعل الشرح ممتعاً ومشوقاً
+    """,
+    "middle": """
+    - استخدم أسلوباً متوسط الصعوبة
+    - اشرح المفاهيم بوضوح
+    - قدم أمثلة توضيحية
+    - شجع على التفكير والاستنتاج
+    """,
+    "high": """
+    - استخدم أسلوباً أكاديمياً متقدماً
+    - تعمق في التفاصيل
+    - اشرح النظريات والمفاهيم المعقدة
+    - قدم أمثلة تطبيقية متقدمة
+    """,
+    "university": """
+    - استخدم أسلوباً أكاديمياً عالي المستوى
+    - تعمق في النظريات والأبحاث
+    - استخدم المصطلحات المتخصصة
+    - قدم تحليلات نقدية
+    """,
+    
+    # افتراضي
+    "other": """
+    - استخدم أسلوباً تعليمياً واضحاً
+    - اشرح المفاهيم الأساسية
+    - قدم أمثلة توضيحية
+    - لخص المعلومات المهمة
+    """
 }
 
 
-def _get_font(size: int):
-    paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    ]
-    for p in paths:
-        if os.path.exists(p):
+# ============================================================
+# تحليل المحاضرة الرئيسي
+# ============================================================
+async def analyze_lecture(text: str, dialect: str = "msa", subject_hint: str = "other") -> dict:
+    """
+    تحليل المحاضرة واستخراج الأقسام والمحتوى.
+    
+    Args:
+        text: نص المحاضرة
+        dialect: اللهجة المطلوبة
+        subject_hint: نوع المادة (لتوجيه التحليل)
+    
+    Returns:
+        dict: بيانات المحاضرة المحللة
+    """
+    # إعدادات اللهجة
+    dialect_instructions = {
+        "iraq": "استخدم اللهجة العراقية في الشرح، مع كلمات عراقية أصيلة مثل (هواية، گلت، يعني، بس، هسا، چان، عگب)",
+        "egypt": "استخدم اللهجة المصرية في الشرح، مع كلمات مصرية مثل (أوي، معلش، يعني، بس، كده، إيه، مش)",
+        "syria": "استخدم اللهجة الشامية في الشرح، مع كلمات شامية مثل (هلق، شو، كتير، منيح، هيك، شي، عنجد)",
+        "gulf": "استخدم اللهجة الخليجية في الشرح، مع كلمات خليجية مثل (زين، وايد، عاد، هاذي، أبشر، يمعود)",
+        "msa": "استخدم العربية الفصحى الواضحة والمبسطة",
+        "english": "Use clear, simple English. Explain like a teacher to students.",
+        "british": "Use British English with a professional, clear academic tone."
+    }
+    
+    instruction = dialect_instructions.get(dialect, dialect_instructions["msa"])
+    subject_instruction = SUBJECT_INSTRUCTIONS.get(subject_hint, SUBJECT_INSTRUCTIONS["other"])
+    
+    # حساب عدد الأقسام
+    num_sections, narration_sentences, max_tokens = _compute_lecture_scale(text)
+    text_limit = min(len(text), 5000)
+    is_english = dialect in ("english", "british")
+    
+    # إعدادات الإخراج حسب اللغة
+    if is_english:
+        summary_hint = "A clear, concise summary (4-5 sentences)"
+        key_points_hint = '["Key point 1", "Key point 2", "Key point 3", "Key point 4"]'
+        title_hint = "Lecture title"
+        section_title_hint = "Section title"
+        content_hint = f"Simplified section content ({narration_sentences} sentences)"
+        keywords_hint = '["keyword1", "keyword2", "keyword3", "keyword4"]'
+        narration_hint = f"Full narration ({narration_sentences} sentences)"
+        lang_note = "Write ALL text in English."
+    else:
+        summary_hint = "ملخص المحاضرة بأسلوب مبسط (4-5 جمل)"
+        key_points_hint = '["نقطة رئيسية 1", "نقطة رئيسية 2", "نقطة رئيسية 3", "نقطة رئيسية 4"]'
+        title_hint = "عنوان المحاضرة"
+        section_title_hint = "عنوان القسم"
+        content_hint = f"محتوى القسم المبسط ({narration_sentences} جمل)"
+        keywords_hint = '["مصطلح 1", "مصطلح 2", "مصطلح 3", "مصطلح 4"]'
+        narration_hint = f"نص الشرح الكامل باللهجة المطلوبة ({narration_sentences} جمل)"
+        lang_note = "النص يجب أن يكون باللهجة المطلوبة"
+    
+    # بناء الموجه (Prompt)
+    prompt = f"""أنت معلم خبير ومتخصص في تبسيط المحاضرات التعليمية.
+
+{instruction}
+
+{subject_instruction}
+
+المحاضرة:
+---
+{text[:text_limit]}
+---
+
+قم بتحليل المحاضرة وأرجع JSON فقط بالتنسيق التالي. يجب أن يحتوي على {num_sections} أقسام بالضبط:
+
+{{
+  "lecture_type": "{subject_hint}",
+  "title": "{title_hint}",
+  "sections": [
+    {{
+      "title": "{section_title_hint}",
+      "content": "{content_hint}",
+      "keywords": {keywords_hint},
+      "keyword_images": [
+        "cartoon illustration description for keyword1 - 3-5 English words",
+        "cartoon illustration description for keyword2 - 3-5 English words",
+        "cartoon illustration description for keyword3 - 3-5 English words",
+        "cartoon illustration description for keyword4 - 3-5 English words"
+      ],
+      "narration": "{narration_hint}",
+      "duration_estimate": 45
+    }}
+  ],
+  "summary": "{summary_hint}",
+  "key_points": {key_points_hint}
+}}
+
+مهم جداً:
+- {lang_note}
+- يجب أن يكون عدد الأقسام {num_sections} بالضبط
+- كل قسم يجب أن يحتوي على 4 كلمات مفتاحية
+- keyword_images: وصف إنجليزي قصير (3-5 كلمات) لصورة كرتونية تعبر عن الكلمة
+- narration: نص كامل للشرح الصوتي ({narration_sentences} جمل)
+- أرجع JSON فقط بدون أي نص إضافي أو علامات ```json
+"""
+    
+    # إرسال الطلب
+    content = await _generate_with_rotation(prompt, max_output_tokens=max_tokens)
+    content = content.strip()
+    content = re.sub(r'^```json\s*', '', content)
+    content = re.sub(r'\s*```$', '', content)
+    content = content.strip()
+    
+    # محاولة تحليل JSON
+    try:
+        result = json.loads(content)
+        
+        # التأكد من عدد الأقسام
+        sections = result.get("sections", [])
+        if len(sections) != num_sections:
+            if len(sections) > num_sections:
+                result["sections"] = sections[:num_sections]
+        
+        return result
+        
+    except json.JSONDecodeError:
+        # محاولة استخراج JSON من النص
+        json_match = re.search(r'\{[\s\S]*\}', content)
+        if json_match:
             try:
-                return ImageFont.truetype(p, size)
+                return json.loads(json_match.group())
             except:
                 pass
-    return ImageFont.load_default()
+        raise ValueError(f"Failed to parse JSON: {content[:300]}")
 
 
-def _make_colored_image(keywords: str, color: tuple, is_english: bool = False) -> bytes:
-    """صورة احتياطية ملونة"""
-    keywords = clean_text(keywords) or ("Concept" if is_english else "مفهوم")
-    W, H = 500, 350
-    img = Image.new("RGB", (W, H), (255, 255, 255))
+# ============================================================
+# استخراج النص من PDF
+# ============================================================
+async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
+    """استخراج النص من PDF (من الذاكرة)"""
+    import PyPDF2
+    
+    def _extract():
+        try:
+            reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
+            texts = []
+            for page in reader.pages[:100]:
+                try:
+                    txt = page.extract_text()
+                    if txt and txt.strip():
+                        texts.append(txt.strip())
+                except:
+                    pass
+            return "\n\n".join(texts)
+        except Exception as e:
+            print(f"PDF error: {e}")
+            return ""
+    
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _extract)
+
+
+async def extract_full_text_from_pdf_path(pdf_path: str) -> str:
+    """استخراج النص من PDF (من ملف) - أسرع وأفضل للذاكرة"""
+    import PyPDF2
+    
+    def _extract():
+        try:
+            reader = PyPDF2.PdfReader(pdf_path)
+            texts = []
+            for page in reader.pages[:100]:
+                try:
+                    txt = page.extract_text()
+                    if txt and txt.strip():
+                        texts.append(txt.strip())
+                except:
+                    pass
+            return "\n\n".join(texts)
+        except Exception as e:
+            print(f"PDF error: {e}")
+            return ""
+    
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _extract)
+
+
+async def extract_text_from_pdf(pdf_bytes: bytes) -> str:
+    """نسخة مختصرة للتوافق"""
+    return await extract_full_text_from_pdf(pdf_bytes)
+
+
+# ============================================================
+# توليد الصور
+# ============================================================
+def _make_placeholder_image(keywords: list, lecture_type: str = "other") -> bytes:
+    """إنشاء صورة بديلة احترافية"""
+    W, H = 1280, 720
+    
+    # اختيار اللون حسب التخصص
+    color = SUBJECT_COLORS.get(lecture_type, SUBJECT_COLORS.get("other", (100, 116, 139)))
+    
+    img = PILImage.new("RGB", (W, H), (245, 248, 250))
     draw = ImageDraw.Draw(img)
     
     # خلفية متدرجة
     for y in range(H):
         t = y / H
-        r = int(255 * (1 - t) + color[0] * t * 0.3)
-        g = int(255 * (1 - t) + color[1] * t * 0.3)
-        b = int(255 * (1 - t) + color[2] * t * 0.3)
+        r = int(255 * (1 - t) + color[0] * 0.2 * t)
+        g = int(255 * (1 - t) + color[1] * 0.2 * t)
+        b = int(255 * (1 - t) + color[2] * 0.2 * t)
         draw.line([(0, y), (W, y)], fill=(r, g, b))
     
-    # إطار مزدوج
-    draw.rounded_rectangle([(8, 8), (W-8, H-8)], radius=20, outline=color, width=6)
-    draw.rounded_rectangle([(15, 15), (W-15, H-15)], radius=15, outline=(*color, 100), width=2)
+    # إطار
+    draw.rounded_rectangle([(20, 20), (W-20, H-20)], radius=30, outline=color, width=6)
     
-    # دائرة زخرفية
-    draw.ellipse([(W//2-60, H//2-60), (W//2+60, H//2+60)], fill=(*color, 30))
+    # أيقونة التخصص
+    icons = {
+        "medicine": "🩺", "surgery": "🔪", "pediatrics": "👶", "dentistry": "🦷",
+        "engineering": "⚙️", "civil": "🏗️", "electrical": "⚡", "software": "💻",
+        "science": "🔬", "physics": "⚛️", "chemistry": "🧪", "biology": "🧬",
+        "math": "📐", "literature": "📖", "history": "🏛️", "geography": "🌍",
+        "islamic": "🕌", "quran": "📖", "hadith": "📜", "fiqh": "📚",
+        "primary": "🎒", "middle": "📚", "high": "🎓", "other": "📚"
+    }
+    icon = icons.get(lecture_type, "📚")
     
-    # النص
-    font = _get_font(32 if not is_english else 28)
-    if not is_english:
+    try:
+        font = ImageFont.truetype("/app/fonts/Amiri-Bold.ttf", 80)
+    except:
+        font = ImageFont.load_default()
+    
+    bbox = draw.textbbox((0, 0), icon, font=font)
+    iw = bbox[2] - bbox[0]
+    draw.text(((W - iw)//2, 150), icon, fill=color, font=font)
+    
+    # الكلمة المفتاحية
+    if keywords:
         try:
             import arabic_reshaper
             from bidi.algorithm import get_display
-            keywords = get_display(arabic_reshaper.reshape(keywords[:50]))
+            kw = get_display(arabic_reshaper.reshape(keywords[0][:30]))
         except:
-            pass
-    
-    words = keywords.split()
-    lines = []
-    cur = []
-    for w in words:
-        cur.append(w)
-        line = ' '.join(cur)
+            kw = keywords[0][:30]
+        
         try:
-            if font.getbbox(line)[2] - font.getbbox(line)[0] > W - 60:
-                cur.pop()
-                lines.append(' '.join(cur))
-                cur = [w]
+            font_kw = ImageFont.truetype("/app/fonts/Amiri-Bold.ttf", 48)
         except:
-            pass
-    if cur:
-        lines.append(' '.join(cur))
+            font_kw = ImageFont.load_default()
+        
+        bbox = draw.textbbox((0, 0), kw, font=font_kw)
+        kw_w = bbox[2] - bbox[0]
+        draw.text(((W - kw_w)//2 + 3, 300), kw, fill=(0, 0, 0, 100), font=font_kw)
+        draw.text(((W - kw_w)//2, 297), kw, fill=(40, 45, 60), font=font_kw)
     
-    y = H // 2 - (len(lines) * 45) // 2
-    for line in lines:
-        try:
-            tw = font.getbbox(line)[2] - font.getbbox(line)[0]
-        except:
-            tw = len(line) * 18
-        x = (W - tw) // 2
-        draw.text((x+3, y+3), line, fill=(100, 100, 100), font=font)
-        draw.text((x, y), line, fill=color, font=font)
-        y += 45
+    # نص توضيحي
+    hint = "🎨 صورة تعليمية"
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        hint = get_display(arabic_reshaper.reshape(hint))
+    except:
+        pass
+    
+    try:
+        font_hint = ImageFont.truetype("/app/fonts/Amiri-Regular.ttf", 24)
+    except:
+        font_hint = ImageFont.load_default()
+    
+    bbox = draw.textbbox((0, 0), hint, font=font_hint)
+    hw = bbox[2] - bbox[0]
+    draw.text(((W - hw)//2, 450), hint, fill=(120, 120, 140), font=font_hint)
     
     buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=95)
+    img.save(buf, "JPEG", quality=90)
     return buf.getvalue()
 
 
 async def _pollinations_generate(prompt: str) -> bytes | None:
-    """المصدر 1: Pollinations.ai"""
+    """توليد صورة باستخدام Pollinations.ai (مجاني)"""
     import urllib.parse
+    import random
+    
     try:
+        encoded = urllib.parse.quote(prompt[:200])
+        url = f"https://image.pollinations.ai/prompt/{encoded}?width=1280&height=720&seed={random.randint(1,99999)}&model=flux"
+        
         async with aiohttp.ClientSession() as s:
-            url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt[:200])}?width=500&height=350&nologo=true"
-            async with s.get(url, timeout=20) as r:
+            async with s.get(url, timeout=aiohttp.ClientTimeout(total=12)) as r:
                 if r.status == 200:
-                    raw = await r.read()
-                    if len(raw) > 5000:
-                        return raw
-    except:
-        pass
+                    data = await r.read()
+                    if len(data) > 5000:
+                        print(f"✅ Pollinations generated image")
+                        return data
+    except Exception as e:
+        print(f"⚠️ Pollinations failed: {e}")
+    
     return None
 
 
-async def _unsplash_generate(query: str) -> bytes | None:
-    """المصدر 2: Unsplash"""
+async def _dalle_generate(prompt: str) -> bytes | None:
+    """توليد صورة باستخدام DALL-E (إذا توفر المفتاح)"""
+    if not OPENAI_API_KEY:
+        return None
+    
+    import base64
+    
     try:
-        url = f"https://source.unsplash.com/featured/500x350/?{query.replace(' ', '-')[:50]},education"
+        payload = {
+            "model": "dall-e-3",
+            "prompt": f"educational cartoon illustration, {prompt[:200]}, simple colorful style, white background",
+            "size": "1024x1024",
+            "n": 1,
+            "response_format": "b64_json"
+        }
+        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+        
         async with aiohttp.ClientSession() as s:
-            async with s.get(url, timeout=15, allow_redirects=True) as r:
+            async with s.post(
+                "https://api.openai.com/v1/images/generations",
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as r:
                 if r.status == 200:
-                    return await r.read()
-    except:
-        pass
-    return None
-
-
-async def _picsum_generate() -> bytes | None:
-    """المصدر 3: Lorem Picsum"""
-    try:
-        async with aiohttp.ClientSession() as s:
-            url = f"https://picsum.photos/500/350?random={random.randint(1, 1000)}"
-            async with s.get(url, timeout=10) as r:
-                if r.status == 200:
-                    return await r.read()
-    except:
-        pass
+                    data = await r.json()
+                    b64 = data["data"][0].get("b64_json", "")
+                    if b64:
+                        print(f"✅ DALL-E generated image")
+                        return base64.b64decode(b64)
+    except Exception as e:
+        print(f"⚠️ DALL-E failed: {e}")
+    
     return None
 
 
 async def fetch_image_for_keyword(
     keyword: str,
-    section_title: str = "",
-    lecture_type: str = "other",
-    is_english: bool = False
+    section_title: str,
+    lecture_type: str,
+    image_search_en: str = "",
 ) -> bytes:
     """
-    جلب صورة للكلمة المفتاحية باستخدام 4 مصادر.
-    """
-    keyword = clean_text(keyword) or ("concept" if is_english else "مفهوم")
-    color = _TYPE_COLORS.get(lecture_type, _TYPE_COLORS['other'])
+    جلب صورة للكلمة المفتاحية مع نظام بدائل متعدد.
     
-    # 1. Pollinations.ai
-    prompt = f"educational illustration of {keyword}, simple clean style"
+    الترتيب:
+    1. Pollinations.ai (مجاني وسريع)
+    2. DALL-E (إذا توفر مفتاح OpenAI)
+    3. صورة بديلة محلية
+    """
+    subject = (image_search_en or keyword).strip()
+    
+    # 1. Pollinations
+    prompt = f"educational cartoon illustration, {subject}, simple colorful style, clear background"
     img = await _pollinations_generate(prompt)
     if img:
-        print(f"[IMG] ✅ Pollinations: {keyword[:30]}")
         return img
     
-    # 2. Unsplash
-    img = await _unsplash_generate(keyword)
+    # 2. DALL-E
+    img = await _dalle_generate(f"cartoon educational illustration, {subject}, simple style")
     if img:
-        print(f"[IMG] ✅ Unsplash: {keyword[:30]}")
         return img
     
-    # 3. Picsum
-    img = await _picsum_generate()
-    if img:
-        print(f"[IMG] ✅ Picsum")
-        return img
+    # 3. صورة بديلة
+    print(f"🎨 Creating placeholder for: {subject[:30]}")
+    return _make_placeholder_image([keyword, section_title], lecture_type)
+
+
+async def generate_educational_image(
+    prompt: str,
+    lecture_type: str,
+    keywords: list = None,
+    image_search: str = None,
+    image_search_fallbacks: list = None,
+) -> bytes:
+    """دالة مساعدة للتوافق مع الكود القديم"""
+    kw = keywords[0] if keywords else prompt[:30]
+    return await fetch_image_for_keyword(kw, "", lecture_type, image_search or prompt)
+
+
+# ============================================================
+# دوال إضافية
+# ============================================================
+def _is_safe_url(url: str) -> bool:
+    """التحقق من أمان الرابط"""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        return parsed.scheme in ('http', 'https')
+    except:
+        return False
+
+
+async def extract_text_from_url(url: str) -> str:
+    """استخراج النص من رابط"""
+    if not _is_safe_url(url):
+        return ""
     
-    # 4. صورة احتياطية ملونة
-    print(f"[IMG] ⚠️ Using colored placeholder for: {keyword[:30]}")
-    return _make_colored_image(keyword, color, is_english)
+    try:
+        from bs4 import BeautifulSoup
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, headers=headers, timeout=15) as r:
+                if r.status == 200:
+                    html = await r.text()
+                    soup = BeautifulSoup(html, 'html.parser')
+                    for tag in soup(['script', 'style', 'nav', 'footer', 'header']):
+                        tag.decompose()
+                    text = soup.get_text(separator='\n', strip=True)
+                    return '\n'.join([l.strip() for l in text.split('\n') if len(l.strip()) > 20][:200])
+    except:
+        pass
+    
+    return ""
+
+
+async def translate_full_text(text: str, dialect: str) -> str:
+    """ترجمة النص إلى اللهجة المطلوبة (للتطوير المستقبلي)"""
+    return text
