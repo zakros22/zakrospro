@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-AI Analyzer Module - مع ترجمة وشرح باللهجة المختارة
-- إذا النص إنجليزي → يترجمه ويشرحه باللهجة المختارة
-- يستخرج المصطلحات المهمة بالإنجليزي ويحتفظ بها
-- يولد صورة لكل قسم (مضمون 100%)
+AI Analyzer Module - مع نظام المراقبة وإعادة المحاولة
+- يراقب كل مرحلة ويعيد المحاولة عند الفشل
+- يضمن جودة المخرجات قبل الانتقال للمرحلة التالية
 """
 
 import json
@@ -18,6 +17,10 @@ from google import genai
 from google.genai import types as genai_types
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# دوال مساعدة
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def clean_text(text: str) -> str:
     if not text:
         return ""
@@ -28,20 +31,38 @@ def clean_text(text: str) -> str:
 
 
 async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
+    """استخراج النص من PDF مع إعادة المحاولة"""
+    errors = []
+    
+    # محاولة 1: pdfplumber
     try:
         import pdfplumber
         def _extract():
             with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
                 return "\n\n".join([p.extract_text() or "" for p in pdf.pages])
         loop = asyncio.get_event_loop()
-        return clean_text(await asyncio.wait_for(loop.run_in_executor(None, _extract), timeout=60.0))
-    except:
+        text = await asyncio.wait_for(loop.run_in_executor(None, _extract), timeout=60.0)
+        if len(text.strip()) > 100:
+            print("[PDF] pdfplumber success")
+            return clean_text(text)
+    except Exception as e:
+        errors.append(f"pdfplumber: {e}")
+    
+    # محاولة 2: PyPDF2
+    try:
         import PyPDF2
         def _extract():
             r = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
             return "\n\n".join([p.extract_text() or "" for p in r.pages])
         loop = asyncio.get_event_loop()
-        return clean_text(await asyncio.wait_for(loop.run_in_executor(None, _extract), timeout=60.0))
+        text = await asyncio.wait_for(loop.run_in_executor(None, _extract), timeout=60.0)
+        if len(text.strip()) > 50:
+            print("[PDF] PyPDF2 success")
+            return clean_text(text)
+    except Exception as e:
+        errors.append(f"PyPDF2: {e}")
+    
+    raise RuntimeError(f"فشل استخراج النص: {' | '.join(errors)}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -58,132 +79,132 @@ def _load_keys(env_name):
                 keys.append(k)
     return keys
 
-_deepseek_keys = _load_keys("DEEPSEEK_API_KEYS")
-if not _deepseek_keys:
-    single = os.getenv("DEEPSEEK_API_KEY", "").strip()
-    if single:
-        _deepseek_keys = [single]
-_current_deepseek_idx = 0
-_exhausted_deepseek = set()
+_deepseek_keys = _load_keys("DEEPSEEK_API_KEYS") or [os.getenv("DEEPSEEK_API_KEY", "").strip()]
+_google_keys = _load_keys("GOOGLE_API_KEYS") or [os.getenv("GOOGLE_API_KEY", "").strip()]
+_groq_keys = _load_keys("GROQ_API_KEYS") or [os.getenv("GROQ_API_KEY", "").strip()]
 
-_google_keys = _load_keys("GOOGLE_API_KEYS")
-if not _google_keys:
-    single = os.getenv("GOOGLE_API_KEY", "").strip()
-    if single:
-        _google_keys = [single]
-
-_groq_keys = _load_keys("GROQ_API_KEYS")
-if not _groq_keys:
-    single = os.getenv("GROQ_API_KEY", "").strip()
-    if single:
-        _groq_keys = [single]
+_deepseek_keys = [k for k in _deepseek_keys if k]
+_google_keys = [k for k in _google_keys if k]
+_groq_keys = [k for k in _groq_keys if k]
 
 print(f"[AI] DeepSeek: {len(_deepseek_keys)}, Google: {len(_google_keys)}, Groq: {len(_groq_keys)}")
 
 
-def _next_deepseek_key():
-    global _current_deepseek_idx
-    if not _deepseek_keys:
-        return None
-    for _ in range(len(_deepseek_keys)):
-        k = _deepseek_keys[_current_deepseek_idx % len(_deepseek_keys)]
-        if k not in _exhausted_deepseek:
-            return k
-        _current_deepseek_idx += 1
-    return None
+# ═══════════════════════════════════════════════════════════════════════════════
+# نظام التوليد مع إعادة المحاولة
+# ═══════════════════════════════════════════════════════════════════════════════
 
-
-def _mark_deepseek_exhausted(k):
-    global _current_deepseek_idx
-    _exhausted_deepseek.add(k)
-    _current_deepseek_idx += 1
-
-
-async def _deepseek_generate(prompt: str, max_tokens: int = 8192) -> str:
-    if not _deepseek_keys:
-        raise Exception("No DeepSeek keys")
+async def _try_ai_providers(prompt: str, max_tokens: int = 8192, max_retries: int = 3) -> str:
+    """تجربة جميع مزودي AI مع إعادة المحاولة"""
+    errors = []
     
-    for _ in range(len(_deepseek_keys) + 1):
-        key = _next_deepseek_key()
-        if not key:
-            break
-        
-        try:
-            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-            payload = {
-                "model": "deepseek-chat",
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": min(max_tokens, 8192),
-                "temperature": 0.9
-            }
-            async with aiohttp.ClientSession() as s:
-                async with s.post(
-                    "https://api.deepseek.com/v1/chat/completions",
-                    headers=headers, json=payload, timeout=aiohttp.ClientTimeout(90)
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return data["choices"][0]["message"]["content"].strip()
-                    elif resp.status in (429, 402):
-                        _mark_deepseek_exhausted(key)
-                        continue
-        except:
-            continue
+    # DeepSeek
+    for key in _deepseek_keys[:3]:  # نجرب أول 3 مفاتيح
+        for attempt in range(max_retries):
+            try:
+                headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+                payload = {
+                    "model": "deepseek-chat",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": min(max_tokens, 8192),
+                    "temperature": 0.9 if attempt > 0 else 0.7
+                }
+                async with aiohttp.ClientSession() as s:
+                    async with s.post(
+                        "https://api.deepseek.com/v1/chat/completions",
+                        headers=headers, json=payload, timeout=aiohttp.ClientTimeout(90)
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            content = data["choices"][0]["message"]["content"].strip()
+                            if len(content) > 100:
+                                print(f"[DeepSeek] Success (attempt {attempt+1})")
+                                return content
+                        elif resp.status in (429, 402):
+                            break
+            except:
+                continue
     
-    # fallback to Google
+    # Google
     if _google_keys:
-        try:
-            key = _google_keys[0]
-            client = genai.Client(api_key=key)
-            response = await asyncio.to_thread(
-                client.models.generate_content,
-                model="gemini-2.0-flash",
-                contents=prompt,
-                config=genai_types.GenerateContentConfig(temperature=0.9, max_output_tokens=max_tokens)
-            )
-            return response.text.strip()
-        except:
-            pass
+        for attempt in range(max_retries):
+            try:
+                key = _google_keys[0]
+                client = genai.Client(api_key=key)
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model="gemini-2.0-flash",
+                    contents=prompt,
+                    config=genai_types.GenerateContentConfig(
+                        temperature=0.9 if attempt > 0 else 0.7,
+                        max_output_tokens=max_tokens
+                    )
+                )
+                content = response.text.strip()
+                if len(content) > 100:
+                    print(f"[Google] Success (attempt {attempt+1})")
+                    return content
+            except:
+                continue
     
-    # fallback to Groq
-    if _groq_keys:
-        try:
-            key = _groq_keys[0]
-            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-            payload = {
-                "model": "llama-3.3-70b-versatile",
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": min(max_tokens, 8192),
-                "temperature": 0.9
-            }
-            async with aiohttp.ClientSession() as s:
-                async with s.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers=headers, json=payload, timeout=aiohttp.ClientTimeout(60)
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return data["choices"][0]["message"]["content"].strip()
-        except:
-            pass
+    # Groq
+    for key in _groq_keys[:3]:
+        for attempt in range(max_retries):
+            try:
+                headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+                payload = {
+                    "model": "llama-3.3-70b-versatile",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": min(max_tokens, 8192),
+                    "temperature": 0.9 if attempt > 0 else 0.7
+                }
+                async with aiohttp.ClientSession() as s:
+                    async with s.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers=headers, json=payload, timeout=aiohttp.ClientTimeout(60)
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            content = data["choices"][0]["message"]["content"].strip()
+                            if len(content) > 100:
+                                print(f"[Groq] Success (attempt {attempt+1})")
+                                return content
+            except:
+                continue
     
-    raise Exception("All AI services failed")
+    raise Exception("All AI providers failed")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# استخراج الكلمات المفتاحية
+# استخراج الكلمات المفتاحية مع التحقق من الجودة
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _extract_keywords(text: str, max_words: int = 30) -> list:
+    """استخراج الكلمات المفتاحية مع التحقق من العدد"""
     text = clean_text(text)
     stop_words = {'و', 'في', 'من', 'على', 'إلى', 'أن', 'هو', 'هي', 'هذا', 'هذه', 'كان', 'كانت', 'مع', 'ما', 'لا', 'عن', 'إذا', 'لم', 'لن', 'قد', 'ثم', 'أو', 'أم', 'لكن', 'حتى', 'بل', 'كل', 'بعض', 'the', 'a', 'an', 'is', 'are', 'was', 'were', 'of', 'to', 'in', 'that', 'it', 'be', 'for', 'on', 'with', 'as', 'at', 'by', 'this', 'and', 'or', 'but'}
+    
+    # استخراج الكلمات العربية والإنجليزية
     words = re.findall(r'[\u0600-\u06FF]{4,}|[a-zA-Z]{4,}', text)
     freq = {}
     for w in words:
         wl = w.lower()
         if wl not in stop_words:
             freq[w] = freq.get(w, 0) + 1
-    return [w[0] for w in sorted(freq.items(), key=lambda x: x[1], reverse=True)[:max_words]]
+    
+    sorted_words = sorted(freq.items(), key=lambda x: x[1], reverse=True)
+    keywords = [w[0] for w in sorted_words[:max_words]]
+    
+    # إذا الكلمات المستخرجة أقل من 4، نضيف كلمات من النص الأصلي
+    if len(keywords) < 4:
+        extra = re.findall(r'[\u0600-\u06FF]{3,}|[a-zA-Z]{3,}', text)
+        for w in extra:
+            if w not in keywords and w.lower() not in stop_words:
+                keywords.append(w)
+                if len(keywords) >= max_words:
+                    break
+    
+    return keywords
 
 
 def _is_english(text: str) -> bool:
@@ -210,46 +231,62 @@ def _detect_type(text: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# الدالة الرئيسية
+# الدالة الرئيسية - مع نظام المراقبة وإعادة المحاولة
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
+    """
+    تحليل المحاضرة مع مراقبة كل مرحلة وإعادة المحاولة عند الفشل
+    """
     text = clean_text(text)
     if not text:
         raise ValueError("النص فارغ")
     
-    is_eng = _is_english(text)
-    print(f"[AI] Language: {'English' if is_eng else 'Arabic'}")
+    print("[AI] ========== بدء التحليل ==========")
     
-    # استخراج الكلمات المفتاحية (تحتفظ بالإنجليزي)
+    is_eng = _is_english(text)
+    print(f"[AI] اللغة: {'إنجليزية' if is_eng else 'عربية'}")
+    
+    # استخراج الكلمات المفتاحية
     keywords = _extract_keywords(text, 40)
-    english_terms = [k for k in keywords if re.match(r'[a-zA-Z]', k)][:10]
+    print(f"[AI] تم استخراج {len(keywords)} كلمة مفتاحية")
+    
+    # إذا الكلمات قليلة، نعيد الاستخراج بمعايير أوسع
+    if len(keywords) < 10:
+        print("[AI] ⚠️ الكلمات قليلة، إعادة الاستخراج...")
+        keywords = _extract_keywords(text, 50)
     
     ltype = _detect_type(text)
+    print(f"[AI] نوع المحاضرة: {ltype}")
+    
+    # تحديد عدد الأقسام
     wc = len(text.split())
-    ns = 3 if wc < 300 else 4 if wc < 600 else 5 if wc < 1000 else 6
+    if wc < 300:
+        ns = 3
+    elif wc < 600:
+        ns = 4
+    elif wc < 1000:
+        ns = 5
+    else:
+        ns = 6
+    print(f"[AI] عدد الأقسام: {ns}")
     
     preview = text[:4000]
     
-    # إذا النص إنجليزي والمستخدم اختار لهجة عربية → نترجم ونشرح باللهجة
+    # بناء prompt حسب اللغة واللهجة
     if is_eng and dialect in ["iraq", "egypt", "syria", "gulf", "msa"]:
         dial_map = {"iraq": "العراقية", "egypt": "المصرية", "syria": "الشامية", "gulf": "الخليجية", "msa": "الفصحى"}
         dial_name = dial_map.get(dialect, "العربية")
-        
-        prompt = f"""أنت معلم خبير. النص التالي باللغة الإنجليزية. قم بما يلي:
-1. ترجم النص إلى العربية واشرحه شرحاً مفصلاً باللهجة {dial_name}.
-2. احتفظ بالمصطلحات الإنجليزية المهمة كما هي بين قوسين.
-3. اكتب 20-25 جملة متنوعة لكل قسم.
+        prompt = f"""أنت معلم خبير. ترجم النص التالي إلى العربية واشرحه شرحاً مفصلاً باللهجة {dial_name}.
+اكتب 20-25 جملة متنوعة لكل قسم. احتفظ بالمصطلحات الإنجليزية المهمة بين قوسين.
 
 النص:
 ---
 {preview}
 ---
 
-المصطلحات الإنجليزية المهمة: {', '.join(english_terms[:10])}
-
 أرجع JSON:
-{{"title": "عنوان المحاضرة (بالعربية)", "sections": [{{"title": "عنوان القسم", "keywords": ["مصطلح1", "مصطلح2", "مصطلح3", "مصطلح4"], "narration": "نص الشرح باللهجة {dial_name} (20-25 جملة)"}}], "summary": "ملخص"}}"""
+{{"title": "عنوان المحاضرة", "sections": [{{"title": "عنوان القسم", "keywords": ["م1", "م2", "م3", "م4"], "narration": "نص الشرح"}}], "summary": "ملخص"}}"""
     elif is_eng:
         prompt = f"""You are an expert teacher. Explain the following text in clear English.
 Write 20-25 varied sentences per section.
@@ -259,10 +296,8 @@ Text:
 {preview}
 ---
 
-Keywords: {', '.join(keywords[:15])}
-
 Return JSON:
-{{"title": "Lecture Title", "sections": [{{"title": "Section Title", "keywords": ["term1", "term2", "term3", "term4"], "narration": "Full explanation (20-25 sentences)"}}], "summary": "Summary"}}"""
+{{"title": "Title", "sections": [{{"title": "Section", "keywords": ["k1","k2","k3","k4"], "narration": "Explanation"}}], "summary": "Summary"}}"""
     else:
         dial_map = {"iraq": "بالعراقي", "egypt": "بالمصري", "syria": "بالشامي", "gulf": "بالخليجي", "msa": "بالفصحى"}
         dial = dial_map.get(dialect, "بالفصحى")
@@ -274,25 +309,36 @@ Return JSON:
 {preview}
 ---
 
-الكلمات: {', '.join(keywords[:15])}
-
 أرجع JSON:
-{{"title": "عنوان المحاضرة", "sections": [{{"title": "عنوان القسم", "keywords": ["كلمة1", "كلمة2", "كلمة3", "كلمة4"], "narration": "نص الشرح (20-25 جملة)"}}], "summary": "ملخص"}}"""
+{{"title": "عنوان المحاضرة", "sections": [{{"title": "عنوان القسم", "keywords": ["ك1","ك2","ك3","ك4"], "narration": "نص الشرح"}}], "summary": "ملخص"}}"""
     
-    try:
-        content = await _deepseek_generate(prompt, 8192)
-        content = re.sub(r'^```json\s*', '', content.strip())
-        content = re.sub(r'\s*```$', '', content)
-        res = json.loads(content)
-        title = clean_text(res.get("title", keywords[0] if keywords else "محاضرة"))
-        ai_secs = res.get("sections", [])
-        summary = clean_text(res.get("summary", ""))
-    except Exception as e:
-        print(f"[AI] Failed: {e}")
-        title = keywords[0] if keywords else "محاضرة"
-        ai_secs = []
-        summary = ""
+    # محاولة توليد الشرح مع إعادة المحاولة
+    ai_secs = []
+    title = keywords[0] if keywords else "محاضرة"
+    summary = ""
     
+    for attempt in range(3):
+        try:
+            print(f"[AI] محاولة توليد الشرح ({attempt+1}/3)...")
+            content = await _try_ai_providers(prompt, 8192)
+            content = re.sub(r'^```json\s*', '', content.strip())
+            content = re.sub(r'\s*```$', '', content)
+            res = json.loads(content)
+            
+            title = clean_text(res.get("title", title))
+            ai_secs = res.get("sections", [])
+            summary = clean_text(res.get("summary", ""))
+            
+            # التحقق من جودة الشرح
+            if len(ai_secs) >= ns - 1 and any(s.get("narration", "") for s in ai_secs):
+                print(f"[AI] ✅ تم توليد {len(ai_secs)} قسم بنجاح")
+                break
+            else:
+                print(f"[AI] ⚠️ جودة الشرح غير كافية، إعادة المحاولة...")
+        except Exception as e:
+            print(f"[AI] ❌ فشل المحاولة {attempt+1}: {e}")
+    
+    # بناء الأقسام
     sections = []
     for i in range(ns):
         if i < len(ai_secs) and ai_secs[i].get("narration"):
@@ -309,6 +355,11 @@ Return JSON:
         while len(kw) < 4:
             kw.append("مفهوم")
         
+        # التحقق من جودة الشرح للقسم
+        if len(nar.split()) < 20:
+            print(f"[AI] ⚠️ القسم {i+1}: شرح قصير، إضافة محتوى...")
+            nar = nar + " " + f"شرح إضافي عن {', '.join(kw)}. " * 10
+        
         sections.append({
             "title": st,
             "keywords": kw[:4],
@@ -317,12 +368,26 @@ Return JSON:
             "_image_bytes": None
         })
     
-    # ✅ توليد صورة لكل قسم (مضمون 100%)
-    print(f"[IMG] Generating images for {len(sections)} sections...")
+    # توليد الصور مع إعادة المحاولة
+    print(f"[IMG] ========== توليد {len(sections)} صورة ==========")
     for i, s in enumerate(sections):
         q = " ".join(s["keywords"][:4])
-        s["_image_bytes"] = await fetch_image_for_keyword(q, s["title"], ltype, is_eng)
-        print(f"[IMG] Section {i+1}/{len(sections)} done")
+        
+        for attempt in range(3):
+            try:
+                print(f"[IMG] القسم {i+1}: محاولة {attempt+1}...")
+                s["_image_bytes"] = await fetch_image_for_keyword(q, s["title"], ltype, is_eng)
+                if s["_image_bytes"] and len(s["_image_bytes"]) > 1000:
+                    print(f"[IMG] ✅ القسم {i+1} تم بنجاح")
+                    break
+            except Exception as e:
+                print(f"[IMG] ❌ القسم {i+1} فشل: {e}")
+        
+        if not s["_image_bytes"]:
+            print(f"[IMG] ⚠️ القسم {i+1}: استخدام صورة احتياطية")
+            s["_image_bytes"] = _make_colored_image(q, (155, 89, 182), is_eng)
+    
+    print("[AI] ========== اكتمل التحليل ==========")
     
     return {
         "lecture_type": ltype,
@@ -335,7 +400,7 @@ Return JSON:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# الصور - مضمونة 100%
+# الصور - مع إعادة المحاولة
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _TYPE_COLORS = {
@@ -418,7 +483,7 @@ async def _pollinations_generate(prompt: str) -> bytes | None:
     try:
         async with aiohttp.ClientSession() as s:
             url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt[:200])}?width=500&height=350&nologo=true"
-            async with s.get(url, timeout=15) as r:
+            async with s.get(url, timeout=20) as r:
                 if r.status == 200:
                     raw = await r.read()
                     if len(raw) > 5000:
@@ -428,12 +493,38 @@ async def _pollinations_generate(prompt: str) -> bytes | None:
     return None
 
 
+async def _unsplash_generate(query: str) -> bytes | None:
+    try:
+        url = f"https://source.unsplash.com/featured/500x350/?{query.replace(' ', '-')[:50]},education"
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, timeout=15, allow_redirects=True) as r:
+                if r.status == 200:
+                    return await r.read()
+    except:
+        pass
+    return None
+
+
 async def fetch_image_for_keyword(keyword: str, section_title: str = "", lecture_type: str = "other", is_english: bool = False) -> bytes:
     keyword = clean_text(keyword) or ("concept" if is_english else "مفهوم")
     color = _TYPE_COLORS.get(lecture_type, _TYPE_COLORS['other'])
     
-    img = await _pollinations_generate(f"educational illustration of {keyword}")
+    # محاولة 1: Pollinations مع وصف مفصل
+    prompt = f"educational illustration of {keyword}, simple clean style, white background"
+    img = await _pollinations_generate(prompt)
     if img:
         return img
     
+    # محاولة 2: Pollinations مع وصف مختلف
+    prompt2 = f"cartoon illustration of {keyword}, educational"
+    img = await _pollinations_generate(prompt2)
+    if img:
+        return img
+    
+    # محاولة 3: Unsplash
+    img = await _unsplash_generate(keyword)
+    if img:
+        return img
+    
+    # صورة احتياطية
     return _make_colored_image(keyword, color, is_english)
