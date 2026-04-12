@@ -1,5 +1,4 @@
 import json
-import sys
 import json
 import re
 import io
@@ -13,6 +12,242 @@ from config import (
     GOOGLE_API_KEY, GOOGLE_API_KEYS, GROQ_API_KEYS, 
     OPENROUTER_API_KEYS, OPENAI_API_KEY, SUBJECT_COLORS
 )
+
+# ... كل الكود الموجود سابقاً (API pools, DeepSeek, Gemini, Groq, OpenRouter) ...
+
+# ... دالة analyze_lecture ...
+
+# ... دوال استخراج PDF ...
+
+# ⭐═════════════════════════════════════════════════════════════════════════════
+# ⭐ هنا تضع كود الصور الجديد - يحل محل الدوال القديمة
+# ⭐═════════════════════════════════════════════════════════════════════════════
+
+async def _pollinations_generate(prompt: str) -> bytes | None:
+    """توليد صورة باستخدام Pollinations.ai (مجاني)"""
+    import urllib.parse
+    import random
+    
+    try:
+        simple_prompt = f"educational cartoon, {prompt[:100]}"
+        encoded = urllib.parse.quote(simple_prompt)
+        url = f"https://image.pollinations.ai/prompt/{encoded}?width=1280&height=720&seed={random.randint(1,99999)}&model=flux"
+        
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
+                if r.status == 200:
+                    data = await r.read()
+                    if len(data) > 5000:
+                        print(f"✅ Pollinations generated image")
+                        return data
+    except Exception as e:
+        print(f"⚠️ Pollinations failed: {str(e)[:50]}")
+    
+    return None
+
+
+async def _pexels_generate(keyword: str) -> bytes | None:
+    """البحث عن صورة في Pexels"""
+    pexels_key = os.getenv("PEXELS_API_KEY", "")
+    if not pexels_key:
+        return None
+    
+    import urllib.parse
+    
+    try:
+        headers = {"Authorization": pexels_key}
+        query = urllib.parse.quote(f"{keyword}")
+        
+        async with aiohttp.ClientSession() as s:
+            async with s.get(
+                f"https://api.pexels.com/v1/search?query={query}&per_page=3",
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    for photo in data.get("photos", []):
+                        img_url = photo["src"].get("large")
+                        if img_url:
+                            async with s.get(img_url, timeout=15) as ir:
+                                if ir.status == 200:
+                                    print(f"✅ Pexels found image")
+                                    img_data = await ir.read()
+                                    img = PILImage.open(io.BytesIO(img_data)).convert("RGB")
+                                    img = img.resize((1280, 720), PILImage.LANCZOS)
+                                    buf = io.BytesIO()
+                                    img.save(buf, "JPEG", quality=90)
+                                    return buf.getvalue()
+    except Exception as e:
+        print(f"⚠️ Pexels failed: {str(e)[:50]}")
+    
+    return None
+
+
+async def _pixabay_generate(keyword: str) -> bytes | None:
+    """البحث عن صورة في Pixabay"""
+    pixabay_key = os.getenv("PIXABAY_API_KEY", "")
+    if not pixabay_key:
+        return None
+    
+    import urllib.parse
+    
+    try:
+        query = urllib.parse.quote(f"{keyword}")
+        
+        async with aiohttp.ClientSession() as s:
+            async with s.get(
+                f"https://pixabay.com/api/?key={pixabay_key}&q={query}&per_page=3",
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    for hit in data.get("hits", []):
+                        img_url = hit.get("largeImageURL")
+                        if img_url:
+                            async with s.get(img_url, timeout=15) as ir:
+                                if ir.status == 200:
+                                    print(f"✅ Pixabay found image")
+                                    img_data = await ir.read()
+                                    img = PILImage.open(io.BytesIO(img_data)).convert("RGB")
+                                    img = img.resize((1280, 720), PILImage.LANCZOS)
+                                    buf = io.BytesIO()
+                                    img.save(buf, "JPEG", quality=90)
+                                    return buf.getvalue()
+    except Exception as e:
+        print(f"⚠️ Pixabay failed: {str(e)[:50]}")
+    
+    return None
+
+
+def _make_placeholder_image(keywords: list, lecture_type: str = "other") -> bytes:
+    """إنشاء صورة بديلة احترافية - دائماً تعمل"""
+    W, H = 1280, 720
+    
+    colors = {
+        "medicine": (21, 128, 61), "surgery": (185, 28, 28), "pediatrics": (255, 159, 67),
+        "dentistry": (13, 71, 161), "pharmacy": (46, 125, 50), "engineering": (230, 126, 34),
+        "science": (46, 204, 113), "physics": (155, 89, 182), "chemistry": (231, 76, 60),
+        "biology": (241, 196, 15), "math": (52, 73, 94), "literature": (192, 57, 43),
+        "history": (230, 126, 34), "islamic": (21, 101, 192), "quran": (46, 134, 222),
+        "primary": (255, 107, 107), "high": (255, 209, 102), "other": (100, 116, 139)
+    }
+    color = colors.get(lecture_type, colors["other"])
+    
+    img = PILImage.new("RGB", (W, H), (245, 248, 250))
+    draw = ImageDraw.Draw(img)
+    
+    for y in range(H):
+        t = y / H
+        r = int(255 * (1 - t) + color[0] * 0.2 * t)
+        g = int(255 * (1 - t) + color[1] * 0.2 * t)
+        b = int(255 * (1 - t) + color[2] * 0.2 * t)
+        draw.line([(0, y), (W, y)], fill=(r, g, b))
+    
+    draw.rounded_rectangle([(20, 20), (W-20, H-20)], radius=30, outline=color, width=6)
+    
+    icons = {
+        "medicine": "🩺", "surgery": "🔪", "engineering": "⚙️", "science": "🔬",
+        "math": "📐", "islamic": "🕌", "primary": "🎒", "other": "📚"
+    }
+    icon = icons.get(lecture_type, "📚")
+    
+    try:
+        font = ImageFont.truetype("/app/fonts/Amiri-Bold.ttf", 80)
+    except:
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 80)
+        except:
+            font = ImageFont.load_default()
+    
+    bbox = draw.textbbox((0, 0), icon, font=font)
+    iw = bbox[2] - bbox[0]
+    draw.text(((W - iw)//2, 150), icon, fill=color, font=font)
+    
+    if keywords and keywords[0]:
+        kw = keywords[0][:30]
+        try:
+            import arabic_reshaper
+            from bidi.algorithm import get_display
+            kw = get_display(arabic_reshaper.reshape(kw))
+        except:
+            pass
+        
+        try:
+            font_kw = ImageFont.truetype("/app/fonts/Amiri-Bold.ttf", 48)
+        except:
+            try:
+                font_kw = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
+            except:
+                font_kw = ImageFont.load_default()
+        
+        bbox = draw.textbbox((0, 0), kw, font=font_kw)
+        kw_w = bbox[2] - bbox[0]
+        draw.text(((W - kw_w)//2 + 3, 300), kw, fill=(0, 0, 0, 100), font=font_kw)
+        draw.text(((W - kw_w)//2, 297), kw, fill=(40, 45, 60), font=font_kw)
+    
+    hint = "🎨 صورة تعليمية"
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        hint = get_display(arabic_reshaper.reshape(hint))
+    except:
+        pass
+    
+    try:
+        font_hint = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 24)
+    except:
+        font_hint = ImageFont.load_default()
+    
+    bbox = draw.textbbox((0, 0), hint, font=font_hint)
+    hw = bbox[2] - bbox[0]
+    draw.text(((W - hw)//2, 450), hint, fill=(120, 120, 140), font=font_hint)
+    
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=90)
+    return buf.getvalue()
+
+
+# ⭐═════════════════════════════════════════════════════════════════════════════
+# ⭐ هذه الدالة الرئيسية لجلب الصور - تستخدم النظام الجديد
+# ⭐═════════════════════════════════════════════════════════════════════════════
+async def fetch_image_for_keyword(
+    keyword: str,
+    section_title: str,
+    lecture_type: str,
+    image_search_en: str = "",
+) -> bytes:
+    """
+    جلب صورة للكلمة المفتاحية مع نظام بدائل متعدد يضمن عدم الفشل.
+    """
+    subject = (image_search_en or keyword).strip()
+    
+    print(f"🎨 Fetching image for: {subject[:30]}")
+    
+    # 1. Pollinations.ai
+    img = await _pollinations_generate(subject)
+    if img:
+        return img
+    
+    # 2. Pexels
+    img = await _pexels_generate(subject)
+    if img:
+        return img
+    
+    # 3. Pixabay
+    img = await _pixabay_generate(subject)
+    if img:
+        return img
+    
+    # 4. صورة بديلة - دائماً تعمل
+    print(f"🎨 Creating placeholder for: {subject[:30]}")
+   
+  
+  
+    return _make_placeholder_image([keyword, section_title], lecture_type)
+
+
+# ⭐═════════════════════════════════════════════════════════════════════════════
 
 # ============================================================
 # API Key Pools
