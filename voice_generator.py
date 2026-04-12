@@ -14,7 +14,7 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-GTTS_LANG_MAP = {
+GTTS_LANG = {
     "iraq": "ar", "egypt": "ar", "syria": "ar", "gulf": "ar", "msa": "ar",
     "english": "en", "british": "en"
 }
@@ -22,7 +22,19 @@ GTTS_LANG_MAP = {
 
 async def generate_voice(text: str, dialect: str = "msa") -> tuple:
     text = clean_text(text) or "محاضرة"
-    lang = GTTS_LANG_MAP.get(dialect, "ar")
+    lang = GTTS_LANG.get(dialect, "ar")
+    
+    # ✅ منع التكرار: إزالة الجمل المكررة
+    sentences = text.split('.')
+    unique_sentences = []
+    seen = set()
+    for s in sentences:
+        s = s.strip()
+        if s and s not in seen:
+            seen.add(s)
+            unique_sentences.append(s)
+    
+    text = '. '.join(unique_sentences)
     
     def _synth():
         buf = io.BytesIO()
@@ -39,8 +51,7 @@ async def generate_voice(text: str, dialect: str = "msa") -> tuple:
 async def get_audio_duration(audio: bytes) -> float:
     try:
         from pydub import AudioSegment
-        seg = AudioSegment.from_mp3(io.BytesIO(audio))
-        return len(seg) / 1000.0
+        return len(AudioSegment.from_mp3(io.BytesIO(audio))) / 1000.0
     except:
         return max(5.0, len(audio) / 16000)
 
