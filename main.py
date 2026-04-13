@@ -1,144 +1,93 @@
-# main.py
-# -*- coding: utf-8 -*-
-"""
-نقطة بدء تشغيل البوت مع خادم الويب وإعادة التشغيل التلقائي
-"""
+# ai_analyzer.py - تعديل جزء الصور
 
-import os
-import sys
-import asyncio
-import logging
-import signal
-import time
-from pathlib import Path
+import requests
+from PIL import Image
+from io import BytesIO
+import uuid
 
-# إضافة المسار الرئيسي
-sys.path.insert(0, str(Path(__file__).parent))
-
-from config import config, logger
-from database import init_db
-from web_server import run_web_server
-
-# استيراد bot بعد التأكد من التهيئة
-import bot
-
-shutdown_flag = False
-
-def handle_shutdown(signum, frame):
-    """معالجة إشارات الإيقاف"""
-    global shutdown_flag
-    logger.info(f"Received signal {signum}, shutting down gracefully...")
-    shutdown_flag = True
-
-async def run_bot_with_webhook():
-    """تشغيل البوت في وضع Webhook (لـ Heroku)"""
-    # تهيئة قاعدة البيانات
+def _fetch_pollinations_image_sync(keyword: str, specialty: str = None) -> Optional[Path]:
+    """جلب صورة من Pollinations.ai (متزامن)"""
     try:
-        init_db()
-        logger.info("✅ Database initialized")
+        if specialty:
+            prompt = f"medical illustration of {keyword} for {specialty} education, clean professional style"
+        else:
+            prompt = f"medical illustration of {keyword}, educational diagram, clean style"
+        
+        url = f"https://image.pollinations.ai/prompt/{prompt.replace(' ', '%20')}"
+        url += "?width=640&height=480&nologo=true"
+        
+        response = requests.get(url, timeout=30)
+        if response.status_code == 200:
+            img = Image.open(BytesIO(response.content))
+            file_path = config.IMAGES_TMP / f"pollinations_{uuid.uuid4().hex[:8]}.png"
+            img.save(file_path, "PNG")
+            logger.info(f"✅ تم جلب صورة من Pollinations: {keyword}")
+            return file_path
     except Exception as e:
-        logger.error(f"❌ Database initialization failed: {e}")
-        # نستمر حتى بدون قاعدة بيانات (بعض الوظائف ستفشل)
+        logger.debug(f"Pollinations فشل: {e}")
+    return None
 
-    # بناء تطبيق البوت
-    if bot.application is None:
-        # نعيد بناء التطبيق إذا لم يكن موجوداً
-        from telegram.ext import Application
-        builder = Application.builder().token(config.BOT_TOKEN)
-        bot.application = builder.build()
-        # إضافة المعالجات (نفس ما في bot.main)
-        from bot import (
-            start, help_command, balance_command, referral_command,
-            subscribe_command, admin_command, cancel_command,
-            handle_document, handle_text, handle_receipt_photo,
-            button_callback, handle_payment_callback, admin_callback,
-            handle_broadcast_message, error_handler
-        )
-        from telegram.ext import CommandHandler, MessageHandler, CallbackQueryHandler, filters
-
-        app = bot.application
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("help", help_command))
-        app.add_handler(CommandHandler("balance", balance_command))
-        app.add_handler(CommandHandler("referral", referral_command))
-        app.add_handler(CommandHandler("subscribe", subscribe_command))
-        app.add_handler(CommandHandler("admin", admin_command))
-        app.add_handler(CommandHandler("cancel", cancel_command))
-        app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-        app.add_handler(MessageHandler(filters.PHOTO, handle_receipt_photo))
-        app.add_handler(MessageHandler(
-            filters.User(user_id=config.OWNER_ID) & (filters.TEXT | filters.PHOTO | filters.VIDEO),
-            handle_broadcast_message
-        ), group=1)
-        app.add_handler(CallbackQueryHandler(button_callback, pattern="^(spec_|dialect_|level_|back_)"))
-        app.add_handler(CallbackQueryHandler(handle_payment_callback, pattern="^pay_"))
-        app.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_"))
-        app.add_error_handler(error_handler)
-
-    # تهيئة التطبيق
-    await bot.application.initialize()
-    await bot.application.start()
-
-    # إعداد Webhook
-    webhook_url = config.WEBHOOK_URL
-    if webhook_url:
-        webhook_path = f"/webhook/{config.BOT_TOKEN}"
-        full_url = f"{webhook_url.rstrip('/')}{webhook_path}"
-        await bot.application.bot.set_webhook(url=full_url)
-        logger.info(f"🔗 Webhook set to {full_url}")
-
-    # تشغيل خادم الويب
-    runner = await run_web_server(host='0.0.0.0', port=config.PORT, bot_app=bot.application)
-
-    # انتظار إشارة الإيقاف
-    while not shutdown_flag:
-        await asyncio.sleep(1)
-
-    # تنظيف
-    logger.info("Shutting down...")
-    await bot.application.stop()
-    await runner.cleanup()
-
-async def run_bot_polling():
-    """تشغيل البوت في وضع Polling (للتطوير المحلي)"""
-    # تهيئة قاعدة البيانات
+def _fetch_unsplash_image_sync(keyword: str) -> Optional[Path]:
+    """جلب صورة من Unsplash (متزامن)"""
+    if not config.UNSPLASH_ACCESS_KEY:
+        return None
     try:
-        init_db()
+        headers = {"Authorization": f"Client-ID {config.UNSPLASH_ACCESS_KEY}"}
+        params = {
+            "query": f"{keyword} medical",
+            "orientation": "landscape",
+            "per_page": 1
+        }
+        response = requests.get("https://api.unsplash.com/search/photos",
+                                headers=headers, params=params, timeout=20)
+        if response.status_code == 200:
+            data = response.json()
+            if data["results"]:
+                img_url = data["results"][0]["urls"]["regular"]
+                img_response = requests.get(img_url, timeout=20)
+                img = Image.open(BytesIO(img_response.content))
+                img = img.resize((640, 480), Image.Resampling.LANCZOS)
+                file_path = config.IMAGES_TMP / f"unsplash_{uuid.uuid4().hex[:8]}.jpg"
+                img.save(file_path, "JPEG")
+                logger.info(f"✅ تم جلب صورة من Unsplash: {keyword}")
+                return file_path
     except Exception as e:
-        logger.error(f"Database init error: {e}")
+        logger.debug(f"Unsplash فشل: {e}")
+    return None
 
-    # بناء التطبيق وتشغيله مباشرة
-    # نستدعي main من bot.py بعد تعديله ليكون async
-    from bot import main as bot_main
-    # بما أن bot.main() يحتوي على run_polling متزامن، نحتاج لتشغيله في thread
-    import threading
-    bot_thread = threading.Thread(target=bot_main)
-    bot_thread.start()
+def _fetch_picsum_image_sync() -> Optional[Path]:
+    """جلب صورة عشوائية من Lorem Picsum (متزامن)"""
+    try:
+        response = requests.get("https://picsum.photos/640/480", timeout=15)
+        if response.status_code == 200:
+            img = Image.open(BytesIO(response.content))
+            file_path = config.IMAGES_TMP / f"picsum_{uuid.uuid4().hex[:8]}.jpg"
+            img.save(file_path, "JPEG")
+            logger.info(f"✅ تم جلب صورة من Picsum")
+            return file_path
+    except Exception as e:
+        logger.debug(f"Picsum فشل: {e}")
+    return None
 
-    # انتظار الإيقاف
-    while not shutdown_flag:
-        await asyncio.sleep(1)
+def fetch_image_for_keyword(keyword: str, specialty: str = None) -> Path:
+    """
+    الدالة الرئيسية لجلب صورة لقسم معين (متزامنة بالكامل).
+    تجرب Pollinations -> Unsplash -> Picsum -> صورة مولدة.
+    """
+    # محاولة Pollinations
+    img = _fetch_pollinations_image_sync(keyword, specialty)
+    if img:
+        return img
 
-def main():
-    """الدالة الرئيسية مع إعادة التشغيل التلقائي"""
-    # تسجيل معالجات الإشارات
-    signal.signal(signal.SIGINT, handle_shutdown)
-    signal.signal(signal.SIGTERM, handle_shutdown)
+    # محاولة Unsplash
+    img = _fetch_unsplash_image_sync(keyword)
+    if img:
+        return img
 
-    while not shutdown_flag:
-        try:
-            if config.WEBHOOK_URL:
-                asyncio.run(run_bot_with_webhook())
-            else:
-                asyncio.run(run_bot_polling())
-        except Exception as e:
-            logger.error(f"Bot crashed: {e}", exc_info=True)
-            if not shutdown_flag:
-                logger.info("Restarting in 5 seconds...")
-                time.sleep(5)
-            else:
-                break
+    # محاولة Picsum
+    img = _fetch_picsum_image_sync()
+    if img:
+        return img
 
-if __name__ == "__main__":
-    main()
+    # الصورة الاحتياطية
+    return _make_medical_image(keyword, specialty)
