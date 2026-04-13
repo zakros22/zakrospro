@@ -1,947 +1,910 @@
-import sys
-import asyncio
-import io
+# video_creator.py
+# -*- coding: utf-8 -*-
+"""
+مصنع الفيديو التعليمي بأسلوب Osmosis (السبورة البيضاء)
+مسؤول عن إنشاء فيديو تعليمي احترافي مع شخصية كرتونية طبية
+"""
+
 import os
+import re
+import json
 import subprocess
-import tempfile
-import textwrap
-import random
-from typing import Callable, Awaitable, Optional, List
-from PIL import Image as PILImage, ImageDraw, ImageFont, ImageFilter
-from avatar_generator import generate_avatar
-from config import SUBJECT_COLORS
+import logging
+import uuid
+import math
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Any, Union
+from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ============================================================
-# الإعدادات الأساسية للفيديو
-# ============================================================
-TARGET_W, TARGET_H = 1280, 720  # جودة HD
-WATERMARK = "@zakros_probot"
-FPS = 24
+# مكتبات الصور والرسوم
+try:
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps, ImageColor
+except ImportError:
+    Image = None
+    logging.error("Pillow غير مثبتة - مطلوبة لإنشاء الفيديو")
 
-# ============================================================
-# الخطوط
-# ============================================================
-FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-_FONTS_DIR = os.path.join(os.path.dirname(__file__), "fonts")
-FONT_AR_BOLD = os.path.join(_FONTS_DIR, "Amiri-Bold.ttf")
-FONT_AR_REG = os.path.join(_FONTS_DIR, "Amiri-Regular.ttf")
+# مكتبات دعم العربية
+try:
+    import arabic_reshaper
+    from bidi.algorithm import get_display
+    ARABIC_SUPPORT = True
+except ImportError:
+    ARABIC_SUPPORT = False
+    logging.warning("arabic_reshaper أو python-bidi غير مثبتين. دعم العربية محدود.")
 
-# ============================================================
-# المدد الزمنية للفيديو
-# ============================================================
-INTRO_DURATION = 8.0          # مدة المقدمة
-SECTION_TITLE_DURATION = 3.0  # مدة بطاقة عنوان القسم
-SUMMARY_DURATION = 8.0        # مدة الملخص
+from config import config
 
-# ============================================================
-# الألوان الافتراضية
-# ============================================================
-DEFAULT_ACCENT_COLORS = [
-    (41, 128, 185),   # أزرق
-    (39, 174, 96),    # أخضر
-    (230, 126, 34),   # برتقالي
-    (155, 89, 182),   # بنفسجي
-    (231, 76, 60),    # أحمر
-    (52, 152, 219),   # أزرق فاتح
-    (241, 196, 15),   # أصفر
-    (142, 68, 173),   # بنفسجي غامق
-    (26, 188, 156),   # فيروزي
-]
+logger = logging.getLogger(__name__)
 
-# ============================================================
-# دوال مساعدة
-# ============================================================
-def estimate_encoding_seconds(total_video_seconds: float) -> float:
-    """تقدير وقت التشفير"""
-    return max(15.0, total_video_seconds * 0.5)
+# ==================== الثوابت والألوان ====================
 
+# أبعاد الفيديو (16:9 مصغر)
+VIDEO_WIDTH = config.VIDEO_WIDTH
+VIDEO_HEIGHT = config.VIDEO_HEIGHT
+FPS = config.VIDEO_FPS
 
-def _get_font(size: int, bold: bool = False, arabic: bool = False) -> ImageFont.FreeTypeFont:
-    """تحميل الخط المناسب"""
-    if arabic:
-        path = FONT_AR_BOLD if bold else FONT_AR_REG
+# الألوان المستخدمة في التصميم (أسلوب طبي حديث)
+COLORS = {
+    "primary": "#E84A7A",      # وردي طبي
+    "secondary": "#4A90E2",    # أزرق
+    "accent1": "#50E3C2",      # أخضر نعناعي
+    "accent2": "#9B59B6",      # بنفسجي
+    "accent3": "#F5A623",      # برتقالي
+    "dark": "#2C3E50",         # أزرق داكن للنصوص
+    "light": "#F8F9FA",        # خلفية فاتحة
+    "white": "#FFFFFF",
+    "black": "#1A1A1A",
+    "gray": "#95A5A6",
+    "red": "#E74C3C",
+    "success": "#27AE60",
+}
+
+# ألوان الشخصيات حسب التخصص
+TEACHER_OUTFITS = {
+    "cardiology": {"coat": "#E74C3C", "accessory": "stethoscope", "hat": "cap", "bg": "#FDEDEC"},
+    "pulmonology": {"coat": "#3498DB", "accessory": "stethoscope", "hat": "cap", "bg": "#EBF5FB"},
+    "neurology": {"coat": "#9B59B6", "accessory": "hammer", "hat": "cap", "bg": "#F4ECF7"},
+    "gastroenterology": {"coat": "#E67E22", "accessory": "stethoscope", "hat": "cap", "bg": "#FDF2E9"},
+    "nephrology": {"coat": "#1ABC9C", "accessory": "stethoscope", "hat": "cap", "bg": "#E8F8F5"},
+    "endocrinology": {"coat": "#F39C12", "accessory": "stethoscope", "hat": "cap", "bg": "#FEF5E7"},
+    "oncology": {"coat": "#8E44AD", "accessory": "ribbon", "hat": "cap", "bg": "#F4ECF7"},
+    "general": {"coat": "#5D6D7E", "accessory": "stethoscope", "hat": "cap", "bg": "#EAECEE"},
+}
+
+# أسماء المعلمين الافتراضية
+TEACHER_NAMES = {
+    "cardiology": "د. قلب",
+    "pulmonology": "د. رئة",
+    "neurology": "د. أعصاب",
+    "general": "د. عام",
+}
+
+# العلامة المائية
+WATERMARK = config.WATERMARK_TEXT
+
+# ==================== تحميل الخطوط ====================
+
+def _get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
+    """تحميل خط مناسب مع دعم العربية"""
+    font_paths = [
+        # خطوط تدعم العربية
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "C:\\Windows\\Fonts\\arial.ttf",
+        "C:\\Windows\\Fonts\\tahoma.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+    ]
+
+    if bold:
+        font_paths = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+            "C:\\Windows\\Fonts\\arialbd.ttf",
+            "C:\\Windows\\Fonts\\tahomabd.ttf",
+            "/System/Library/Fonts/Helvetica-Bold.ttf",
+        ] + font_paths
+
+    for path in font_paths:
         if os.path.exists(path):
             try:
                 return ImageFont.truetype(path, size)
             except:
-                pass
-    path = FONT_BOLD if bold else FONT_REG
-    try:
-        return ImageFont.truetype(path, size)
-    except:
-        return ImageFont.load_default()
+                continue
+
+    # خط احتياطي
+    return ImageFont.load_default()
 
 
-def _prepare_text(text: str, is_arabic: bool) -> str:
-    """تجهيز النص العربي مع إعادة تشكيل و BiDi"""
-    if not is_arabic or not text:
-        return str(text) if text else ""
-    try:
-        import arabic_reshaper
-        from bidi.algorithm import get_display
-        reshaped = arabic_reshaper.reshape(str(text))
-        return get_display(reshaped)
-    except:
-        return str(text)
+def _arabic(text: str) -> str:
+    """تشكيل وعكس النص العربي للعرض الصحيح في PIL"""
+    if not text:
+        return text
+    if ARABIC_SUPPORT:
+        try:
+            reshaped = arabic_reshaper.reshape(text)
+            return get_display(reshaped)
+        except:
+            pass
+    return text
 
 
-def _draw_text_centered(draw, text: str, y: int, font, color, max_width: int = None):
-    """رسم نص في المنتصف مع دعم التفاف النص"""
+def _draw_text(draw: ImageDraw.Draw, xy: Tuple[int, int], text: str,
+               fill: str = COLORS["dark"], font: ImageFont.FreeTypeFont = None,
+               anchor: str = None, shadow: bool = True, language: str = "ar",
+               max_width: int = None) -> None:
+    """
+    رسم نص مع دعم العربية وظل خفيف.
+    """
     if not text:
         return
-    
-    if max_width:
-        words = text.split()
-        lines = []
-        current = []
-        for w in words:
-            current.append(w)
-            test = ' '.join(current)
-            bbox = draw.textbbox((0, 0), test, font=font)
-            if bbox[2] - bbox[0] > max_width:
-                current.pop()
-                if current:
-                    lines.append(' '.join(current))
-                current = [w]
-        if current:
-            lines.append(' '.join(current))
-        text = '\n'.join(lines)
-    
-    bbox = draw.textbbox((0, 0), text, font=font)
-    tw = bbox[2] - bbox[0]
-    x = max((TARGET_W - tw) // 2, 20)
-    
-    # ظل
-    draw.text((x + 2, y + 2), text, fill=(0, 0, 0, 180), font=font)
-    draw.text((x, y), text, fill=color, font=font)
+
+    if font is None:
+        font = _get_font(24)
+
+    # معالجة النص العربي
+    display_text = _arabic(text) if language == "ar" else text
+
+    # رسم الظل
+    if shadow:
+        shadow_xy = (xy[0] + 1, xy[1] + 1)
+        draw.text(shadow_xy, display_text, fill="#888888", font=font, anchor=anchor)
+
+    # رسم النص الأساسي
+    if max_width and font:
+        # التفاف النص إذا كان أطول من العرض المسموح
+        lines = _wrap_text(display_text, font, max_width)
+        y = xy[1]
+        line_height = font.size + 4
+        for line in lines:
+            draw.text((xy[0], y), line, fill=fill, font=font, anchor=anchor)
+            y += line_height
+    else:
+        draw.text(xy, display_text, fill=fill, font=font, anchor=anchor)
 
 
-def _draw_text_with_shadow(draw, xy: tuple, text: str, font, fill, shadow_fill=(0, 0, 0, 120)):
-    """رسم نص مع ظل"""
-    x, y = xy
-    draw.text((x + 2, y + 2), text, fill=shadow_fill, font=font)
-    draw.text((x, y), text, fill=fill, font=font)
-
-
-def _gradient_bg(color_top=(25, 30, 60), color_bot=(10, 20, 45)) -> PILImage.Image:
-    """إنشاء خلفية متدرجة"""
-    bg = PILImage.new("RGB", (TARGET_W, TARGET_H), color_top)
-    draw = ImageDraw.Draw(bg)
-    for y in range(TARGET_H):
-        t = y / TARGET_H
-        r = int(color_top[0] * (1 - t) + color_bot[0] * t)
-        g = int(color_top[1] * (1 - t) + color_bot[1] * t)
-        b = int(color_top[2] * (1 - t) + color_bot[2] * t)
-        draw.line([(0, y), (TARGET_W, y)], fill=(r, g, b))
-    return bg
-
-
-def _get_accent_colors(subject: str) -> list:
-    """الحصول على الألوان المناسبة حسب التخصص"""
-    base_color = SUBJECT_COLORS.get(subject, (41, 128, 185))
-    
-    # توليد مجموعة ألوان متناسقة من اللون الأساسي
-    r, g, b = base_color
-    colors = [
-        base_color,
-        (min(r + 30, 255), min(g + 30, 255), min(b + 30, 255)),
-        (max(r - 20, 0), max(g - 20, 0), max(b - 20, 0)),
-        (min(r + 50, 255), g, b),
-        (r, min(g + 50, 255), b),
-        (r, g, min(b + 50, 255)),
-        (max(r - 30, 0), g, min(b + 30, 255)),
-        (min(r + 30, 255), max(g - 30, 0), b),
-        (r, min(g + 30, 255), max(b - 30, 0)),
-    ]
-    return colors
-
-
-def _wrap_text(text: str, font, max_width: int) -> List[str]:
-    """تقسيم النص إلى أسطر حسب العرض المحدد"""
+def _wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> List[str]:
+    """تقسيم النص إلى عدة أسطر حسب العرض المحدد"""
     words = text.split()
     lines = []
     current_line = []
-    
+
     for word in words:
-        current_line.append(word)
-        test_line = ' '.join(current_line)
-        bbox = ImageDraw.Draw(PILImage.new("RGB", (1, 1))).textbbox((0, 0), test_line, font=font)
-        if bbox[2] - bbox[0] > max_width:
-            current_line.pop()
+        test_line = ' '.join(current_line + [word])
+        try:
+            bbox = font.getbbox(test_line)
+            width = bbox[2] - bbox[0]
+        except:
+            width = len(test_line) * font.size * 0.6  # تقدير
+
+        if width <= max_width:
+            current_line.append(word)
+        else:
             if current_line:
                 lines.append(' '.join(current_line))
             current_line = [word]
-    
+
     if current_line:
         lines.append(' '.join(current_line))
-    
-    return lines
+
+    return lines or [text]
 
 
-# ============================================================
-# شريحة المقدمة (مع الشخصية الكرتونية)
-# ============================================================
-def _create_intro_slide(lecture_data: dict, sections: list, is_arabic: bool, subject: str) -> bytes:
+def _draw_rounded_rectangle(draw: ImageDraw.Draw, xy: Tuple[int, int, int, int],
+                            radius: int, fill: str = None, outline: str = None, width: int = 1):
+    """رسم مستطيل بزوايا دائرية"""
+    x1, y1, x2, y2 = xy
+    draw.rectangle([x1+radius, y1, x2-radius, y2], fill=fill)
+    draw.rectangle([x1, y1+radius, x2, y2-radius], fill=fill)
+    draw.pieslice([x1, y1, x1+2*radius, y1+2*radius], 180, 270, fill=fill)
+    draw.pieslice([x2-2*radius, y1, x2, y1+2*radius], 270, 360, fill=fill)
+    draw.pieslice([x1, y2-2*radius, x1+2*radius, y2], 90, 180, fill=fill)
+    draw.pieslice([x2-2*radius, y2-2*radius, x2, y2], 0, 90, fill=fill)
+    if outline:
+        draw.arc([x1, y1, x1+2*radius, y1+2*radius], 180, 270, fill=outline, width=width)
+        draw.arc([x2-2*radius, y1, x2, y1+2*radius], 270, 360, fill=outline, width=width)
+        draw.arc([x1, y2-2*radius, x1+2*radius, y2], 90, 180, fill=outline, width=width)
+        draw.arc([x2-2*radius, y2-2*radius, x2, y2], 0, 90, fill=outline, width=width)
+        draw.line([x1+radius, y1, x2-radius, y1], fill=outline, width=width)
+        draw.line([x1+radius, y2, x2-radius, y2], fill=outline, width=width)
+        draw.line([x1, y1+radius, x1, y2-radius], fill=outline, width=width)
+        draw.line([x2, y1+radius, x2, y2-radius], fill=outline, width=width)
+
+
+# ==================== رسم الشخصية الكرتونية ====================
+
+def _draw_teacher_character(draw: ImageDraw.Draw, x: int, y: int,
+                            specialty: str = "general",
+                            name: str = None) -> None:
     """
-    شريحة المقدمة الاحترافية:
-    - شعار وحقوق في الأعلى
-    - عنوان المحاضرة
-    - نوع المحاضرة
-    - الشخصية الكرتونية (الأفاتار) حسب التخصص
-    - خريطة الأقسام
+    رسم شخصية كرتونية (معلم طبي) في الزاوية المحددة.
     """
-    accent_colors = _get_accent_colors(subject)
-    main_color = accent_colors[0]
-    
-    bg = _gradient_bg((20, 30, 60), (10, 20, 45))
-    draw = ImageDraw.Draw(bg)
-    
-    # ============================================================
-    # هيدر - الشعار والحقوق
-    # ============================================================
-    header_h = 70
-    draw.rectangle([(0, 0), (TARGET_W, header_h)], fill=(15, 25, 45))
-    draw.rectangle([(0, header_h - 3), (TARGET_W, header_h)], fill=(255, 200, 50))
-    
-    # شعار البوت
-    logo_font = _get_font(20, bold=True)
-    draw.text((20, 20), "🎓 ZAKROS PRO BOT", fill=(255, 220, 100), font=logo_font)
-    
-    # حقوق النشر
-    rights = "© جميع الحقوق محفوظة - بوت المحاضرات الذكي"
-    rights = _prepare_text(rights, is_arabic)
-    rights_font = _get_font(14)
-    bbox = draw.textbbox((0, 0), rights, font=rights_font)
-    rw = bbox[2] - bbox[0]
-    draw.text((TARGET_W - rw - 20, 25), rights, fill=(200, 200, 220), font=rights_font)
-    
-    # ============================================================
+    outfit = TEACHER_OUTFITS.get(specialty, TEACHER_OUTFITS["general"])
+    coat_color = outfit["coat"]
+    accessory = outfit.get("accessory", "stethoscope")
+    hat = outfit.get("hat", "cap")
+
+    # أبعاد الشخصية
+    body_width = 80
+    body_height = 100
+    head_size = 50
+
+    head_x = x + body_width // 2 - head_size // 2
+    head_y = y
+
+    # رسم الجسم (المعطف)
+    body_rect = [x, y + head_size - 5, x + body_width, y + head_size + body_height]
+    draw.rounded_rectangle(body_rect, radius=10, fill=coat_color, outline=COLORS["dark"], width=2)
+
+    # رسم الوجه (دائرة)
+    face_rect = [head_x, head_y, head_x + head_size, head_y + head_size]
+    draw.ellipse(face_rect, fill="#FDEBD0", outline=COLORS["dark"], width=2)
+
+    # رسم العيون
+    eye_y = head_y + head_size // 3
+    left_eye = (head_x + head_size // 3 - 5, eye_y, head_x + head_size // 3 + 5, eye_y + 8)
+    right_eye = (head_x + 2*head_size//3 - 5, eye_y, head_x + 2*head_size//3 + 5, eye_y + 8)
+    draw.ellipse(left_eye, fill=COLORS["white"], outline=COLORS["dark"], width=1)
+    draw.ellipse(right_eye, fill=COLORS["white"], outline=COLORS["dark"], width=1)
+    # بؤبؤ العين
+    draw.ellipse([left_eye[0]+2, left_eye[1]+2, left_eye[2]-2, left_eye[3]-2], fill=COLORS["dark"])
+    draw.ellipse([right_eye[0]+2, right_eye[1]+2, right_eye[2]-2, right_eye[3]-2], fill=COLORS["dark"])
+
+    # رسم الابتسامة
+    smile_y = head_y + head_size // 2 + 5
+    draw.arc([head_x+15, smile_y-5, head_x+head_size-15, smile_y+10],
+             start=0, end=180, fill=COLORS["dark"], width=2)
+
+    # أحمر الخدود
+    blush_y = head_y + head_size // 2
+    draw.ellipse([head_x+5, blush_y-3, head_x+15, blush_y+7], fill="#FFB6C1", outline=None)
+    draw.ellipse([head_x+head_size-15, blush_y-3, head_x+head_size-5, blush_y+7], fill="#FFB6C1", outline=None)
+
+    # رسم القبعة
+    if hat == "cap":
+        hat_rect = [head_x-5, head_y-5, head_x+head_size+5, head_y+15]
+        draw.rounded_rectangle(hat_rect, radius=8, fill=COLORS["secondary"], outline=COLORS["dark"], width=2)
+        # شريط القبعة
+        draw.rectangle([head_x-5, head_y+5, head_x+head_size+5, head_y+15], fill=COLORS["primary"])
+
+    # رسم الأكسسوار (السماعة الطبية)
+    if accessory == "stethoscope":
+        steth_y = y + head_size + 20
+        draw.arc([x+20, steth_y, x+60, steth_y+30], start=0, end=180, fill=COLORS["gray"], width=3)
+        draw.ellipse([x+30, steth_y+25, x+50, steth_y+45], fill=COLORS["gray"], outline=COLORS["dark"], width=2)
+        draw.line([x+40, steth_y+45, x+40, y+head_size+body_height-20], fill=COLORS["gray"], width=3)
+
+    # رسم اسم المعلم
+    if name is None:
+        name = TEACHER_NAMES.get(specialty, "د. طبيب")
+    name_font = _get_font(14, bold=True)
+    display_name = _arabic(name)
+    name_bbox = draw.textbbox((0,0), display_name, font=name_font)
+    name_width = name_bbox[2] - name_bbox[0]
+    name_x = x + body_width // 2 - name_width // 2
+    name_y = y + head_size + body_height + 5
+    _draw_text(draw, (name_x, name_y), name, fill=COLORS["dark"], font=name_font, shadow=False)
+
+
+# ==================== رسم الشرائح الأساسية ====================
+
+def _create_blank_slide(bg_color: str = COLORS["light"]) -> Image.Image:
+    """إنشاء شريحة فارغة بالخلفية المحددة"""
+    return Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT), bg_color)
+
+
+def _draw_welcome_slide(specialty: str = "general", language: str = "ar") -> Image.Image:
+    """
+    شريحة المقدمة: شعار البوت، رسالة ترحيب، شخصية كرتونية، حقوق.
+    المدة: 3.5 ثانية
+    """
+    img = _create_blank_slide(COLORS["light"])
+    draw = ImageDraw.Draw(img)
+
+    # إطار كبير للشعار
+    logo_rect = [VIDEO_WIDTH//2 - 150, 50, VIDEO_WIDTH//2 + 150, 200]
+    _draw_rounded_rectangle(draw, logo_rect, radius=20, fill=COLORS["white"], outline=COLORS["primary"], width=4)
+
+    # نص الترحيب
+    welcome_text = "أهلاً ومرحباً بكم" if language == "ar" else "Welcome"
+    welcome_font = _get_font(48, bold=True)
+    display_welcome = _arabic(welcome_text) if language == "ar" else welcome_text
+    bbox = draw.textbbox((0,0), display_welcome, font=welcome_font)
+    w = bbox[2] - bbox[0]
+    _draw_text(draw, (VIDEO_WIDTH//2, 130), welcome_text, fill=COLORS["primary"], font=welcome_font, anchor="mm", language=language)
+
+    # اسم البوت
+    bot_name_font = _get_font(32, bold=True)
+    _draw_text(draw, (VIDEO_WIDTH//2, 180), config.BOT_NAME, fill=COLORS["dark"], font=bot_name_font, anchor="mm", language="ar")
+
+    # شخصية كرتونية
+    _draw_teacher_character(draw, 50, VIDEO_HEIGHT-200, specialty=specialty)
+
+    # حقوق البوت
+    rights_font = _get_font(16)
+    _draw_text(draw, (VIDEO_WIDTH//2, VIDEO_HEIGHT-30), WATERMARK, fill=COLORS["gray"], font=rights_font, anchor="mm", language="ar")
+
+    return img
+
+
+def _draw_title_slide(title: str, specialty: str = "general", language: str = "ar") -> Image.Image:
+    """
+    شريحة العنوان: عنوان المحاضرة بخط كبير، شخصية كرتونية.
+    المدة: 4 ثواني
+    """
+    img = _create_blank_slide(COLORS["light"])
+    draw = ImageDraw.Draw(img)
+
+    # خلفية مزخرفة خفيفة
+    for i in range(3):
+        y = 100 + i*100
+        draw.ellipse([VIDEO_WIDTH//2-300, y-50, VIDEO_WIDTH//2+300, y+50], fill=COLORS["primary"]+"20", outline=None)
+
     # عنوان المحاضرة
-    # ============================================================
-    title = lecture_data.get("title", "المحاضرة" if is_arabic else "Lecture")
-    title_txt = _prepare_text(title, is_arabic)
-    title_font = _get_font(32, bold=True, arabic=is_arabic)
-    _draw_text_centered(draw, title_txt, header_h + 30, title_font, (255, 220, 80), TARGET_W - 80)
-    
-    # ============================================================
-    # نوع المحاضرة
-    # ============================================================
-    lt = lecture_data.get("lecture_type", subject)
-    types = {
-        "medicine": "🩺 محاضرة طبية" if is_arabic else "Medical Lecture",
-        "surgery": "🔪 محاضرة جراحية" if is_arabic else "Surgery Lecture",
-        "engineering": "⚙️ محاضرة هندسية" if is_arabic else "Engineering Lecture",
-        "science": "🔬 محاضرة علمية" if is_arabic else "Science Lecture",
-        "math": "📐 رياضيات" if is_arabic else "Mathematics",
-        "literature": "📖 أدب ولغة" if is_arabic else "Literature",
-        "history": "🏛️ تاريخ" if is_arabic else "History",
-        "islamic": "🕌 علوم إسلامية" if is_arabic else "Islamic Studies",
-        "quran": "📖 قرآن كريم" if is_arabic else "Quran",
-        "primary": "🎒 ابتدائي" if is_arabic else "Primary",
-        "middle": "📚 متوسط" if is_arabic else "Middle School",
-        "high": "🎓 إعدادي/ثانوي" if is_arabic else "High School",
-        "other": "📚 محاضرة تعليمية" if is_arabic else "Educational Lecture",
-    }
-    type_txt = _prepare_text(types.get(lt, types["other"]), is_arabic)
-    type_font = _get_font(18, arabic=is_arabic)
-    _draw_text_centered(draw, type_txt, header_h + 75, type_font, (180, 200, 240))
-    
-    # ============================================================
-    # إضافة الشخصية الكرتونية (الأفاتار)
-    # ============================================================
-    try:
-        avatar_bytes = generate_avatar(subject, "male", "adult")
-        avatar_img = PILImage.open(io.BytesIO(avatar_bytes)).convert("RGBA")
-        
-        # تغيير حجم الأفاتار
-        avatar_size = 220
-        avatar_img = avatar_img.resize((avatar_size, avatar_size), PILImage.LANCZOS)
-        
-        # وضع الأفاتار في الزاوية اليمنى
-        avatar_x = TARGET_W - avatar_size - 30
-        avatar_y = header_h + 120
-        
-        # إطار دائري للأفاتار
-        mask = PILImage.new("L", (avatar_size, avatar_size), 0)
-        mask_draw = ImageDraw.Draw(mask)
-        mask_draw.ellipse((0, 0, avatar_size, avatar_size), fill=255)
-        
-        # إطار ملون حول الأفاتار
-        frame = PILImage.new("RGBA", (avatar_size + 20, avatar_size + 20), (0, 0, 0, 0))
-        frame_draw = ImageDraw.Draw(frame)
-        frame_draw.ellipse((0, 0, avatar_size + 20, avatar_size + 20), fill=main_color)
-        
-        bg.paste(frame, (avatar_x - 10, avatar_y - 10), frame)
-        
-        # لصق الأفاتار مع القناع
-        avatar_with_mask = PILImage.new("RGBA", (avatar_size, avatar_size), (0, 0, 0, 0))
-        avatar_with_mask.paste(avatar_img, (0, 0), mask)
-        bg.paste(avatar_with_mask, (avatar_x, avatar_y), avatar_with_mask)
-        
-    except Exception as e:
-        print(f"⚠️ Avatar error: {e}")
-    
-    # ============================================================
-    # خط فاصل
-    # ============================================================
-    draw.rectangle([(80, header_h + 120), (TARGET_W - 280, header_h + 122)], fill=(255, 200, 50))
-    
-    # ============================================================
-    # خريطة الأقسام
-    # ============================================================
-    map_y = header_h + 150
-    map_title = "📋 خريطة المحاضرة" if is_arabic else "📋 Lecture Map"
-    map_title = _prepare_text(map_title, is_arabic)
-    map_font = _get_font(20, bold=True, arabic=is_arabic)
-    draw.text((40, map_y), map_title, fill=(255, 255, 255), font=map_font)
-    
-    map_y += 45
-    sec_font = _get_font(16, arabic=is_arabic)
-    num_font = _get_font(16, bold=True)
-    
-    for i, s in enumerate(sections[:7]):
-        color = accent_colors[i % len(accent_colors)]
-        y = map_y + i * 38
-        
-        # رقم القسم في دائرة
-        draw.ellipse([40, y-5, 65, y+20], fill=color)
-        draw.text((52, y), str(i+1), fill=(255, 255, 255), font=num_font)
-        
-        # عنوان القسم
-        sec_title = s.get("title", f"القسم {i+1}")[:35]
-        sec_txt = _prepare_text(sec_title, is_arabic)
-        draw.text((85, y+2), sec_txt, fill=(220, 230, 255), font=sec_font)
-    
-    # ============================================================
-    # علامة مائية
-    # ============================================================
-    wm_font = _get_font(12)
-    wm = WATERMARK
-    bbox = draw.textbbox((0, 0), wm, font=wm_font)
-    ww = bbox[2] - bbox[0]
-    draw.text(((TARGET_W - ww)//2, TARGET_H - 30), wm, fill=(120, 130, 150), font=wm_font)
-    
-    # حفظ الصورة
-    buf = io.BytesIO()
-    bg.save(buf, "JPEG", quality=95)
-    return buf.getvalue()
+    title_font = _get_font(40, bold=True)
+    lines = _wrap_text(title, title_font, VIDEO_WIDTH-200)
+    y_start = 150
+    for i, line in enumerate(lines):
+        _draw_text(draw, (VIDEO_WIDTH//2, y_start + i*60), line, fill=COLORS["primary"], font=title_font, anchor="mm", language=language)
+
+    # شعار صغير
+    _draw_text(draw, (VIDEO_WIDTH//2, y_start + len(lines)*60 + 20), "Medical Lecture", fill=COLORS["gray"], font=_get_font(20), anchor="mm", language="en")
+
+    # شخصية كرتونية
+    _draw_teacher_character(draw, 50, VIDEO_HEIGHT-200, specialty=specialty)
+
+    # العلامة المائية
+    _draw_text(draw, (VIDEO_WIDTH-20, VIDEO_HEIGHT-20), WATERMARK, fill=COLORS["gray"], font=_get_font(14), anchor="rb", language="ar")
+
+    return img
 
 
-# ============================================================
-# بطاقة عنوان القسم
-# ============================================================
-def _create_section_title_card(section: dict, idx: int, total: int, is_arabic: bool, subject: str) -> bytes:
+def _draw_map_slide(sections: List[Dict], language: str = "ar") -> Image.Image:
     """
-    بطاقة عنوان القسم:
-    - رقم القسم بشكل بارز
-    - "القسم الأول" / "Section 1"
-    - عنوان القسم
-    - شريط تقدم (X/Y)
+    شريحة خريطة الأقسام: تعرض جميع الأقسام مع أرقامها وعناوينها وكلماتها المفتاحية.
+    المدة: 5 ثواني
     """
-    accent_colors = _get_accent_colors(subject)
-    color = accent_colors[idx % len(accent_colors)]
-    
-    bg = _gradient_bg((25, 30, 55), (15, 20, 40))
-    draw = ImageDraw.Draw(bg)
-    
-    # إطار ذهبي
-    draw.rounded_rectangle([(15, 15), (TARGET_W-15, TARGET_H-15)], radius=20, outline=(255, 200, 50), width=4)
-    draw.rounded_rectangle([(22, 22), (TARGET_W-22, TARGET_H-22)], radius=15, outline=color, width=2)
-    
-    center_y = TARGET_H // 2 - 40
-    
-    # رقم القسم (كبير)
-    num_str = str(idx + 1)
-    num_font = _get_font(100, bold=True)
-    bbox = draw.textbbox((0, 0), num_str, font=num_font)
-    nw = bbox[2] - bbox[0]
-    
-    # ظل للرقم
-    draw.text(((TARGET_W - nw)//2 + 4, center_y - 46), num_str, fill=(0, 0, 0, 100), font=num_font)
-    draw.text(((TARGET_W - nw)//2, center_y - 50), num_str, fill=color, font=num_font)
-    
-    # "القسم"
-    sec_label = "القسم" if is_arabic else "Section"
-    if is_arabic:
-        ordinals = ["الأول", "الثاني", "الثالث", "الرابع", "الخامس", "السادس", "السابع", "الثامن", "التاسع"]
-        if idx < 9:
-            sec_label = f"القسم {ordinals[idx]}"
-    else:
-        sec_label = f"Section {idx + 1} of {total}"
-    
-    sec_label = _prepare_text(sec_label, is_arabic)
-    label_font = _get_font(24, arabic=is_arabic)
-    _draw_text_centered(draw, sec_label, center_y + 55, label_font, (220, 220, 240))
-    
-    # عنوان القسم
-    title = section.get("title", f"Section {idx+1}")
-    title_txt = _prepare_text(title, is_arabic)
-    title_font = _get_font(28, bold=True, arabic=is_arabic)
-    _draw_text_centered(draw, title_txt, center_y + 95, title_font, (255, 220, 100), TARGET_W - 100)
-    
-    # شريط التقدم
-    prog = f"{idx+1} / {total}"
-    prog_font = _get_font(16)
-    bbox = draw.textbbox((0, 0), prog, font=prog_font)
-    pw = bbox[2] - bbox[0]
-    draw.text(((TARGET_W - pw)//2, TARGET_H - 50), prog, fill=(150, 160, 180), font=prog_font)
-    
-    # علامة مائية
-    wm_font = _get_font(12)
-    wm = WATERMARK
-    bbox = draw.textbbox((0, 0), wm, font=wm_font)
-    ww = bbox[2] - bbox[0]
-    draw.text(((TARGET_W - ww)//2, TARGET_H - 25), wm, fill=(100, 110, 130), font=wm_font)
-    
-    buf = io.BytesIO()
-    bg.save(buf, "JPEG", quality=95)
-    return buf.getvalue()
+    img = _create_blank_slide(COLORS["light"])
+    draw = ImageDraw.Draw(img)
 
+    # عنوان "خريطة المحاضرة"
+    title_font = _get_font(36, bold=True)
+    _draw_text(draw, (VIDEO_WIDTH//2, 40), "خريطة المحاضرة" if language == "ar" else "Lecture Map",
+               fill=COLORS["primary"], font=title_font, anchor="mm", language=language)
 
-# ============================================================
-# شريحة المحتوى (صورة كبيرة + كلمات مفتاحية)
-# ============================================================
-def _create_content_slide(
-    image_bytes: Optional[bytes],
-    keyword: str,
-    all_keywords: List[str],
-    current_idx: int,
-    is_arabic: bool,
-    section_title: str = "",
-    section_idx: int = 0,
-    subject: str = "other",
-) -> bytes:
-    """
-    شريحة المحتوى الرئيسية:
-    - صورة كبيرة وواضحة في المنتصف مع ظل وإطار
-    - الكلمات المفتاحية أسفل الصورة
-    - تمييز الكلمة الحالية بلون مختلف
-    - علامة ✓ للكلمات المنتهية
-    - علامة ○ للكلمات القادمة
-    """
-    accent_colors = _get_accent_colors(subject)
-    color = accent_colors[section_idx % len(accent_colors)]
-    
-    bg = _gradient_bg((20, 25, 45), (10, 15, 35))
-    draw = ImageDraw.Draw(bg)
-    
-    # ============================================================
-    # هيدر - عنوان القسم
-    # ============================================================
-    header_h = 55
-    draw.rectangle([(0, 0), (TARGET_W, header_h)], fill=(15, 20, 40))
-    draw.rectangle([(0, header_h - 3), (TARGET_W, header_h)], fill=color)
-    
-    title_display = _prepare_text(section_title[:50], is_arabic)
-    title_font = _get_font(18, bold=True, arabic=is_arabic)
-    _draw_text_centered(draw, title_display, 14, title_font, (255, 255, 255))
-    
-    # ============================================================
-    # منطقة الصورة
-    # ============================================================
-    img_top = header_h + 15
-    img_bottom = TARGET_H - 110
-    img_h = img_bottom - img_top
-    img_w = TARGET_W - 80
-    
-    if image_bytes:
-        try:
-            img = PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
-            iw, ih = img.size
-            
-            # تكبير الصورة مع الحفاظ على النسبة
-            scale = min(img_w / iw, img_h / ih)
-            nw, nh = int(iw * scale), int(ih * scale)
-            img = img.resize((nw, nh), PILImage.LANCZOS)
-            
-            # إطار أبيض
-            framed = PILImage.new("RGB", (nw + 20, nh + 20), (255, 255, 255))
-            framed.paste(img, (10, 10))
-            
-            # ظل
-            shadow = PILImage.new("RGBA", (nw + 40, nh + 40), (0, 0, 0, 0))
-            s_draw = ImageDraw.Draw(shadow)
-            s_draw.rectangle([(15, 15), (nw + 25, nh + 25)], fill=(0, 0, 0, 120))
-            shadow = shadow.filter(ImageFilter.GaussianBlur(radius=12))
-            
-            final = PILImage.new("RGB", (nw + 40, nh + 40), (20, 25, 45))
-            if shadow.mode == 'RGBA':
-                final.paste(shadow, (0, 0), shadow.split()[3])
-            final.paste(framed, (10, 10))
-            
-            px = (TARGET_W - (nw + 40)) // 2
-            py = img_top + (img_h - (nh + 40)) // 2
-            bg.paste(final, (px, py))
-            draw = ImageDraw.Draw(bg)
-            
-        except Exception as e:
-            print(f"⚠️ Image error: {e}")
-            # رسم إطار فارغ مع نص توضيحي
-            draw.rectangle(
-                [(50, img_top), (TARGET_W - 50, img_bottom)],
-                outline=(100, 100, 120), width=3
-            )
-            placeholder = "🖼️ الصورة التعليمية" if is_arabic else "🖼️ Educational Image"
-            placeholder = _prepare_text(placeholder, is_arabic)
-            place_font = _get_font(24, arabic=is_arabic)
-            _draw_text_centered(draw, placeholder, TARGET_H // 2, place_font, (150, 160, 180))
-    else:
-        # رسم إطار فارغ
-        draw.rectangle(
-            [(50, img_top), (TARGET_W - 50, img_bottom)],
-            outline=(100, 100, 120), width=3
-        )
-        placeholder = "🖼️ الصورة التعليمية" if is_arabic else "🖼️ Educational Image"
-        placeholder = _prepare_text(placeholder, is_arabic)
-        place_font = _get_font(24, arabic=is_arabic)
-        _draw_text_centered(draw, placeholder, TARGET_H // 2, place_font, (150, 160, 180))
-    
-    # ============================================================
-    # الكلمات المفتاحية
-    # ============================================================
-    kw_y = TARGET_H - 85
-    kw_label = "🔑 الكلمات المفتاحية:" if is_arabic else "🔑 Keywords:"
-    kw_label = _prepare_text(kw_label, is_arabic)
-    label_font = _get_font(14, bold=True, arabic=is_arabic)
-    draw.text((30, kw_y - 30), kw_label, fill=(200, 200, 220), font=label_font)
-    
-    # حساب التباعد بين الكلمات
-    spacing = min(170, TARGET_W // max(len(all_keywords), 1))
-    
-    for i, kw in enumerate(all_keywords[:6]):
-        kw_display = _prepare_text(kw[:22], is_arabic)
-        x = 30 + i * spacing
-        
-        if i == current_idx:
-            # الكلمة الحالية - مميزة بلون القسم
-            kw_font = _get_font(16, bold=True, arabic=is_arabic)
-            bbox = draw.textbbox((0, 0), kw_display, font=kw_font)
-            kw_w = bbox[2] - bbox[0]
-            
-            # خلفية ملونة
-            draw.rounded_rectangle(
-                [(x - 10, kw_y - 8), (x + kw_w + 14, kw_y + 28)],
-                radius=8, fill=color
-            )
-            draw.text((x + 5, kw_y), kw_display, fill=(255, 255, 255), font=kw_font)
-            
-        elif i < current_idx:
-            # كلمات تم شرحها - علامة ✓ خضراء
-            kw_font = _get_font(14, arabic=is_arabic)
-            draw.text((x, kw_y + 2), "✓ " + kw_display, fill=(100, 200, 100), font=kw_font)
-            
-        else:
-            # كلمات قادمة - علامة ○ رمادية
-            kw_font = _get_font(14, arabic=is_arabic)
-            draw.text((x, kw_y + 2), "○ " + kw_display, fill=(140, 150, 170), font=kw_font)
-    
-    # ============================================================
-    # علامة مائية
-    # ============================================================
-    wm_font = _get_font(11)
-    wm = WATERMARK
-    bbox = draw.textbbox((0, 0), wm, font=wm_font)
-    ww = bbox[2] - bbox[0]
-    draw.text(((TARGET_W - ww)//2, TARGET_H - 20), wm, fill=(100, 110, 130), font=wm_font)
-    
-    buf = io.BytesIO()
-    bg.save(buf, "JPEG", quality=95)
-    return buf.getvalue()
+    # رسم الأقسام كبطاقات
+    card_width = 350
+    card_height = 60
+    start_x = 50
+    start_y = 100
 
+    colors_list = [COLORS["primary"], COLORS["secondary"], COLORS["accent1"], COLORS["accent2"], COLORS["accent3"]]
 
-# ============================================================
-# شريحة الملخص
-# ============================================================
-def _create_summary_slide(lecture_data: dict, sections: list, is_arabic: bool, subject: str) -> bytes:
-    """
-    شريحة الملخص النهائية:
-    - عنوان "ملخص المحاضرة"
-    - ملخص نصي
-    - النقاط الرئيسية
-    - صور مصغرة للأقسام مع أرقامها
-    """
-    accent_colors = _get_accent_colors(subject)
-    
-    bg = _gradient_bg((20, 30, 50), (10, 20, 40))
-    draw = ImageDraw.Draw(bg)
-    
-    # ============================================================
-    # هيدر
-    # ============================================================
-    header_h = 60
-    draw.rectangle([(0, 0), (TARGET_W, header_h)], fill=(25, 35, 55))
-    draw.rectangle([(0, header_h - 3), (TARGET_W, header_h)], fill=(255, 200, 50))
-    
-    sum_title = "📋 ملخص المحاضرة" if is_arabic else "📋 Lecture Summary"
-    sum_title = _prepare_text(sum_title, is_arabic)
-    title_font = _get_font(24, bold=True, arabic=is_arabic)
-    _draw_text_centered(draw, sum_title, 15, title_font, (255, 220, 80))
-    
-    y = header_h + 30
-    
-    # ============================================================
-    # ملخص نصي
-    # ============================================================
-    summary = lecture_data.get("summary", "")
-    if summary:
-        sum_txt = _prepare_text(summary[:400], is_arabic)
-        sum_font = _get_font(16, arabic=is_arabic)
-        lines = textwrap.wrap(sum_txt, width=50)
-        for line in lines[:6]:
-            draw.text((40, y), line, fill=(220, 230, 255), font=sum_font)
-            y += 28
-    
-    y += 15
-    
-    # ============================================================
-    # النقاط الرئيسية
-    # ============================================================
-    points = lecture_data.get("key_points", [])[:4]
-    if points:
-        pt_label = "✨ النقاط الرئيسية:" if is_arabic else "✨ Key Points:"
-        pt_label = _prepare_text(pt_label, is_arabic)
-        pt_font = _get_font(16, bold=True, arabic=is_arabic)
-        draw.text((40, y), pt_label, fill=(255, 200, 100), font=pt_font)
-        y += 30
-        
-        point_font = _get_font(14, arabic=is_arabic)
-        for p in points:
-            p_txt = _prepare_text(f"• {p[:60]}", is_arabic)
-            draw.text((60, y), p_txt, fill=(200, 210, 230), font=point_font)
-            y += 26
-    
-    # ============================================================
-    # صور مصغرة للأقسام
-    # ============================================================
-    thumb_y = TARGET_H - 130
-    thumb_w = 150
-    thumb_h = 100
-    spacing = 15
-    n_thumbs = min(len(sections), 4)
-    total_w = n_thumbs * (thumb_w + spacing) - spacing
-    start_x = (TARGET_W - total_w) // 2
-    
-    for i in range(n_thumbs):
-        x = start_x + i * (thumb_w + spacing)
-        color = accent_colors[i % len(accent_colors)]
-        
-        # إطار الصورة المصغرة
-        draw.rounded_rectangle(
-            [(x, thumb_y), (x + thumb_w, thumb_y + thumb_h)],
-            radius=12, fill=(30, 40, 60), outline=color, width=3
-        )
-        
+    for i, section in enumerate(sections):
+        if i >= 5:  # عرض 5 أقسام كحد أقصى في هذه الشريحة
+            break
+
+        col_idx = i % len(colors_list)
+        card_color = colors_list[col_idx]
+
+        x = start_x if i < 3 else VIDEO_WIDTH//2 + 30
+        y = start_y + (i % 3) * (card_height + 15)
+
+        # خلفية البطاقة
+        _draw_rounded_rectangle(draw, [x, y, x+card_width, y+card_height], radius=10, fill=card_color+"30", outline=card_color, width=2)
+
         # رقم القسم
-        draw.text(
-            (x + thumb_w//2 - 10, thumb_y + thumb_h//2 - 15),
-            str(i+1),
-            fill=color,
-            font=_get_font(28, bold=True)
-        )
-        
-        # عنوان مختصر
-        short_title = sections[i].get("title", "")[:12]
-        if short_title:
-            short_txt = _prepare_text(short_title, is_arabic)
-            draw.text(
-                (x + 8, thumb_y + thumb_h - 25),
-                short_txt,
-                fill=(180, 190, 210),
-                font=_get_font(11, arabic=is_arabic)
-            )
-    
-    # ============================================================
-    # علامة مائية
-    # ============================================================
-    wm_font = _get_font(11)
-    wm = WATERMARK
-    bbox = draw.textbbox((0, 0), wm, font=wm_font)
-    ww = bbox[2] - bbox[0]
-    draw.text(((TARGET_W - ww)//2, TARGET_H - 20), wm, fill=(100, 110, 130), font=wm_font)
-    
-    buf = io.BytesIO()
-    bg.save(buf, "JPEG", quality=95)
-    return buf.getvalue()
+        num_font = _get_font(28, bold=True)
+        _draw_text(draw, (x+30, y+card_height//2), str(i+1), fill=card_color, font=num_font, anchor="lm", language="ar")
+
+        # عنوان القسم
+        heading_font = _get_font(18, bold=True)
+        heading = section.get('heading', f'القسم {i+1}')
+        if len(heading) > 25:
+            heading = heading[:25] + "..."
+        _draw_text(draw, (x+60, y+20), heading, fill=COLORS["dark"], font=heading_font, anchor="la", language=language)
+
+        # الكلمات المفتاحية (مصغرة)
+        keywords = section.get('keywords', [])[:3]
+        kw_text = " • ".join(keywords) if keywords else "طبي"
+        kw_font = _get_font(12)
+        _draw_text(draw, (x+60, y+42), kw_text, fill=COLORS["gray"], font=kw_font, anchor="la", language=language)
+
+    # إذا كان هناك أقسام أكثر
+    if len(sections) > 5:
+        more_font = _get_font(20)
+        _draw_text(draw, (VIDEO_WIDTH//2, VIDEO_HEIGHT-50), f"+ {len(sections)-5} أقسام أخرى",
+                   fill=COLORS["gray"], font=more_font, anchor="mm", language="ar")
+
+    # العلامة المائية
+    _draw_text(draw, (VIDEO_WIDTH-20, VIDEO_HEIGHT-20), WATERMARK, fill=COLORS["gray"], font=_get_font(14), anchor="rb", language="ar")
+
+    return img
 
 
-# ============================================================
-# FFmpeg - تشفير مقطع
-# ============================================================
-def _ffmpeg_segment(
-    img_bytes: bytes,
-    duration: float,
-    audio_bytes: Optional[bytes],
-    audio_start: float,
-    out_path: str,
-    gentle_zoom: bool = True
-) -> None:
-    """تشفير مقطع فيديو من صورة وصوت"""
-    
-    # حفظ الصورة
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
-        f.write(img_bytes)
-        img_path = f.name
-    
-    # حفظ الصوت
-    audio_path = None
-    if audio_bytes:
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-            f.write(audio_bytes)
-            audio_path = f.name
-    
-    dur_str = f"{duration:.3f}"
-    
-    if audio_path:
-        if gentle_zoom:
-            # تأثير Zoom بطيء
-            n_frames = max(int(duration * FPS), 2)
-            vf = f"scale=1280:720,zoompan=z='min(zoom+0.00015,1.025)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={n_frames}:s=1280x720:fps={FPS}"
-            cmd = [
-                "ffmpeg", "-y",
-                "-loop", "1", "-t", dur_str, "-i", img_path,
-                "-ss", f"{audio_start:.3f}", "-t", dur_str, "-i", audio_path,
-                "-vf", vf,
-                "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p", "-r", str(FPS),
-                "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                "-shortest", out_path
-            ]
-        else:
-            cmd = [
-                "ffmpeg", "-y",
-                "-loop", "1", "-t", dur_str, "-i", img_path,
-                "-ss", f"{audio_start:.3f}", "-t", dur_str, "-i", audio_path,
-                "-vf", "scale=1280:720",
-                "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "128k",
-                "-shortest", out_path
-            ]
+def _draw_section_title_slide(section_num: int, total_sections: int, heading: str,
+                              specialty: str = "general", language: str = "ar") -> Image.Image:
+    """
+    شريحة عنوان القسم: رقم القسم في دائرة، العنوان، الشخصية الكرتونية.
+    المدة: 3 ثواني
+    """
+    img = _create_blank_slide(COLORS["light"])
+    draw = ImageDraw.Draw(img)
+
+    color = COLORS["primary"]
+
+    # دائرة رقم القسم
+    circle_center = (VIDEO_WIDTH//2, 150)
+    circle_r = 70
+    draw.ellipse([circle_center[0]-circle_r, circle_center[1]-circle_r,
+                  circle_center[0]+circle_r, circle_center[1]+circle_r],
+                 fill=color, outline=COLORS["dark"], width=3)
+
+    # نص "قسم" والرقم
+    num_font = _get_font(64, bold=True)
+    _draw_text(draw, circle_center, str(section_num), fill=COLORS["white"], font=num_font, anchor="mm", shadow=False)
+
+    label_font = _get_font(20)
+    label_text = f"قسم {section_num} من {total_sections}" if language == "ar" else f"Section {section_num} of {total_sections}"
+    _draw_text(draw, (VIDEO_WIDTH//2, circle_center[1]+circle_r+20), label_text,
+               fill=COLORS["gray"], font=label_font, anchor="mm", language=language)
+
+    # عنوان القسم
+    heading_font = _get_font(36, bold=True)
+    lines = _wrap_text(heading, heading_font, VIDEO_WIDTH-200)
+    y_start = 280
+    for i, line in enumerate(lines):
+        _draw_text(draw, (VIDEO_WIDTH//2, y_start + i*50), line, fill=COLORS["dark"], font=heading_font, anchor="mm", language=language)
+
+    # شخصية كرتونية
+    _draw_teacher_character(draw, 50, VIDEO_HEIGHT-200, specialty=specialty)
+
+    # العلامة المائية
+    _draw_text(draw, (VIDEO_WIDTH-20, VIDEO_HEIGHT-20), WATERMARK, fill=COLORS["gray"], font=_get_font(14), anchor="rb", language="ar")
+
+    return img
+
+      # ==================== رسم شريحة المحتوى الرئيسية ====================
+
+def _draw_content_slide(section: Dict, section_index: int, total_sections: int,
+                        progress: float,  # نسبة التقدم من 0.0 إلى 1.0
+                        specialty: str = "general",
+                        language: str = "ar",
+                        image_path: Path = None) -> Image.Image:
+    """
+    الشريحة الرئيسية التي تظهر أثناء شرح القسم.
+    تحتوي على: عنوان القسم، صورة طبية، شخصية كرتونية،
+    كلمات مفتاحية تتراكم مع الوقت، مؤشر تقدم، وحقوق البوت.
+    """
+    img = _create_blank_slide(COLORS["light"])
+    draw = ImageDraw.Draw(img)
+
+    # ----- عنوان القسم (في الأعلى) -----
+    heading = section.get('heading', f'القسم {section_index+1}')
+    heading_font = _get_font(28, bold=True)
+    # خلفية للعنوان
+    header_height = 60
+    draw.rectangle([0, 0, VIDEO_WIDTH, header_height], fill=COLORS["primary"]+"15")
+    _draw_text(draw, (20, header_height//2), heading, fill=COLORS["primary"],
+               font=heading_font, anchor="lm", language=language)
+
+    # رقم القسم صغير
+    section_label = f"{section_index+1}/{total_sections}"
+    _draw_text(draw, (VIDEO_WIDTH-20, header_height//2), section_label,
+               fill=COLORS["gray"], font=_get_font(18), anchor="rm", language="ar")
+
+    # ----- الصورة الطبية (في المنتصف مع إطار) -----
+    img_area_x = 80
+    img_area_y = 80
+    img_area_w = 500
+    img_area_h = 280
+
+    # إطار خارجي مزدوج
+    _draw_rounded_rectangle(draw, [img_area_x-5, img_area_y-5, img_area_x+img_area_w+5, img_area_y+img_area_h+5],
+                            radius=15, outline=COLORS["primary"], width=3)
+    _draw_rounded_rectangle(draw, [img_area_x-10, img_area_y-10, img_area_x+img_area_w+10, img_area_y+img_area_h+10],
+                            radius=18, outline=COLORS["secondary"], width=2)
+
+    # محاولة تحميل الصورة الطبية
+    if image_path and Path(image_path).exists():
+        try:
+            medical_img = Image.open(image_path)
+            medical_img = medical_img.resize((img_area_w, img_area_h), Image.Resampling.LANCZOS)
+            # اقتصاص إذا لزم الأمر للحفاظ على النسبة
+            img.paste(medical_img, (img_area_x, img_area_y))
+        except Exception as e:
+            logger.warning(f"فشل تحميل الصورة {image_path}: {e}")
+            # رسم بديل
+            draw.rectangle([img_area_x, img_area_y, img_area_x+img_area_w, img_area_y+img_area_h],
+                           fill="#E8F4FD")
+            _draw_text(draw, (img_area_x+img_area_w//2, img_area_y+img_area_h//2),
+                       "Medical Illustration", fill=COLORS["gray"], font=_get_font(24), anchor="mm")
     else:
-        cmd = [
-            "ffmpeg", "-y",
-            "-loop", "1", "-t", dur_str, "-i", img_path,
-            "-vf", "scale=1280:720",
-            "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
-            out_path
-        ]
-    
-    result = subprocess.run(cmd, capture_output=True)
-    if result.returncode != 0:
-        error_msg = result.stderr.decode()[-500:] if result.stderr else "Unknown error"
-        raise RuntimeError(f"FFmpeg failed: {error_msg}")
-    
-    # تنظيف
-    os.unlink(img_path)
-    if audio_path:
-        os.unlink(audio_path)
+        # رسم بديل في حال عدم وجود صورة
+        draw.rectangle([img_area_x, img_area_y, img_area_x+img_area_w, img_area_y+img_area_h],
+                       fill="#E8F4FD")
+        _draw_text(draw, (img_area_x+img_area_w//2, img_area_y+img_area_h//2),
+                   "🫀 Medical Image", fill=COLORS["gray"], font=_get_font(28), anchor="mm")
+
+    # ----- الشخصية الكرتونية (في الزاوية اليسرى السفلى) -----
+    _draw_teacher_character(draw, 30, VIDEO_HEIGHT-180, specialty=specialty)
+
+    # ----- الكلمات المفتاحية المتراكمة (حسب نسبة التقدم) -----
+    keywords = section.get('keywords', [])[:6]  # حتى 6 كلمات
+    keywords_to_show = int(len(keywords) * progress)
+
+    if keywords_to_show > 0 and keywords:
+        kw_start_x = 620
+        kw_start_y = 120
+        kw_font = _get_font(22, bold=True)
+
+        for i in range(keywords_to_show):
+            kw = keywords[i]
+            # لون متدرج
+            color_idx = i % len([COLORS["primary"], COLORS["secondary"], COLORS["accent1"],
+                                 COLORS["accent2"], COLORS["accent3"]])
+            kw_color = [COLORS["primary"], COLORS["secondary"], COLORS["accent1"],
+                        COLORS["accent2"], COLORS["accent3"]][color_idx]
+
+            # خلفية دائرية للكلمة
+            y_pos = kw_start_y + i * 50
+            # رسم مربع صغير مع نقطة
+            draw.rectangle([kw_start_x-10, y_pos-5, kw_start_x+180, y_pos+35],
+                           fill=kw_color+"20", outline=kw_color, width=2)
+
+            # كتابة الكلمة
+            _draw_text(draw, (kw_start_x+10, y_pos+15), kw, fill=kw_color,
+                       font=kw_font, anchor="la", language=language)
+
+    # ----- مؤشر التقدم (نقاط في الأسفل) -----
+    dot_count = 10
+    dot_spacing = 30
+    total_width = dot_count * dot_spacing
+    start_x = (VIDEO_WIDTH - total_width) // 2 + 15
+    dot_y = VIDEO_HEIGHT - 30
+
+    filled_dots = int(dot_count * progress)
+    for i in range(dot_count):
+        x = start_x + i * dot_spacing
+        if i < filled_dots:
+            draw.ellipse([x-6, dot_y-6, x+6, dot_y+6], fill=COLORS["primary"])
+        else:
+            draw.ellipse([x-6, dot_y-6, x+6, dot_y+6], fill=COLORS["gray"], outline=COLORS["gray"])
+
+    # ----- حقوق البوت (علامة مائية) -----
+    _draw_text(draw, (VIDEO_WIDTH-20, VIDEO_HEIGHT-20), WATERMARK,
+               fill=COLORS["gray"], font=_get_font(14), anchor="rb", language="ar")
+
+    return img
 
 
-# ============================================================
-# FFmpeg - دمج المقاطع
-# ============================================================
-def _ffmpeg_concat(segment_paths: List[str], output_path: str) -> None:
-    """دمج جميع المقاطع في فيديو واحد"""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-        for p in segment_paths:
-            f.write(f"file '{p}'\n")
-        list_path = f.name
-    
-    cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", output_path]
-    result = subprocess.run(cmd, capture_output=True)
-    
-    os.unlink(list_path)
-    
-    if result.returncode != 0:
-        raise RuntimeError(f"FFmpeg concat failed: {result.stderr.decode()[-400:]}")
-
-
-# ============================================================
-# بناء قائمة المقاطع
-# ============================================================
-def _build_segments(
-    sections: list,
-    audio_results: list,
-    lecture_data: dict,
-    is_arabic: bool,
-    subject: str
-) -> tuple[List[dict], float]:
+def _draw_summary_slide(sections: List[Dict], title: str,
+                        specialty: str = "general", language: str = "ar") -> Image.Image:
     """
-    بناء قائمة المقاطع للفيديو:
-    1. المقدمة (مع الشخصية الكرتونية)
-    2. لكل قسم: بطاقة عنوان + شرائح المحتوى
-    3. الملخص النهائي
+    شريحة الملخص النهائي: عنوان "ملخص المحاضرة"، جميع الكلمات المفتاحية
+    في شبكة ملونة، رسالة شكر، والشخصية الكرتونية.
+    المدة: 6 ثواني
     """
-    segments = []
-    total_secs = 0.0
-    n_sections = len(sections)
-    
-    print(f"🎬 Building video segments for subject: {subject}")
-    
-    # ============================================================
-    # 1. المقدمة
-    # ============================================================
-    intro_bytes = _create_intro_slide(lecture_data, sections, is_arabic, subject)
-    segments.append({
-        "img": intro_bytes,
-        "audio": None,
-        "audio_start": 0,
-        "dur": INTRO_DURATION,
-        "gentle_zoom": False
-    })
-    total_secs += INTRO_DURATION
-    print(f"  ✅ Intro slide created ({INTRO_DURATION}s)")
-    
-    # ============================================================
-    # 2. الأقسام
-    # ============================================================
-    for i, (section, audio_info) in enumerate(zip(sections, audio_results)):
-        # بطاقة عنوان القسم
-        title_bytes = _create_section_title_card(section, i, n_sections, is_arabic, subject)
-        segments.append({
-            "img": title_bytes,
-            "audio": None,
-            "audio_start": 0,
-            "dur": SECTION_TITLE_DURATION,
-            "gentle_zoom": False
-        })
-        total_secs += SECTION_TITLE_DURATION
-        print(f"  ✅ Section {i+1} title card ({SECTION_TITLE_DURATION}s)")
-        
-        # شرائح المحتوى
-        keywords = section.get("keywords", [])
-        if not keywords:
-            keywords = [section.get("title", f"Section {i+1}")]
-        
-        kw_images = section.get("_keyword_images", [])
-        audio_bytes = audio_info.get("audio")
-        total_dur = audio_info.get("duration", len(keywords) * 8.0)
-        kw_dur = total_dur / max(len(keywords), 1)
-        
-        for j, kw in enumerate(keywords):
-            img_bytes = kw_images[j] if j < len(kw_images) else section.get("_image_bytes")
-            
-            slide_bytes = _create_content_slide(
-                img_bytes, kw, keywords, j, is_arabic,
-                section.get("title", ""), i, subject
-            )
-            
-            segments.append({
-                "img": slide_bytes,
-                "audio": audio_bytes,
-                "audio_start": j * kw_dur,
-                "dur": kw_dur,
-                "gentle_zoom": True
-            })
-            total_secs += kw_dur
-        
-        print(f"  ✅ Section {i+1} content: {len(keywords)} slides ({total_dur:.1f}s)")
-    
-    # ============================================================
-    # 3. الملخص
-    # ============================================================
-    summary_bytes = _create_summary_slide(lecture_data, sections, is_arabic, subject)
-    segments.append({
-        "img": summary_bytes,
-        "audio": None,
-        "audio_start": 0,
-        "dur": SUMMARY_DURATION,
-        "gentle_zoom": False
-    })
-    total_secs += SUMMARY_DURATION
-    print(f"  ✅ Summary slide created ({SUMMARY_DURATION}s)")
-    
-    print(f"🎬 Total video duration: {total_secs:.1f}s ({total_secs/60:.1f} min)")
-    
-    return segments, total_secs
+    img = _create_blank_slide(COLORS["light"])
+    draw = ImageDraw.Draw(img)
+
+    # عنوان "ملخص المحاضرة"
+    summary_font = _get_font(40, bold=True)
+    _draw_text(draw, (VIDEO_WIDTH//2, 50), "ملخص المحاضرة" if language == "ar" else "Lecture Summary",
+               fill=COLORS["primary"], font=summary_font, anchor="mm", language=language)
+
+    # جمع كل الكلمات المفتاحية من جميع الأقسام
+    all_keywords = []
+    for section in sections:
+        all_keywords.extend(section.get('keywords', [])[:4])
+    # إزالة التكرار مع الحفاظ على الترتيب
+    seen = set()
+    unique_keywords = []
+    for kw in all_keywords:
+        if kw not in seen:
+            seen.add(kw)
+            unique_keywords.append(kw)
+
+    # رسم شبكة الكلمات المفتاحية
+    cols = 4
+    rows = min(5, (len(unique_keywords) + cols - 1) // cols)
+    cell_width = 150
+    cell_height = 50
+    start_x = (VIDEO_WIDTH - (cols * cell_width)) // 2 + cell_width//2
+    start_y = 120
+
+    colors_list = [COLORS["primary"], COLORS["secondary"], COLORS["accent1"],
+                   COLORS["accent2"], COLORS["accent3"]]
+
+    for idx, kw in enumerate(unique_keywords[:cols*rows]):
+        row = idx // cols
+        col = idx % cols
+        x = start_x + col * cell_width
+        y = start_y + row * cell_height
+
+        color = colors_list[idx % len(colors_list)]
+        _draw_rounded_rectangle(draw, [x-60, y-5, x+60, y+35], radius=10,
+                                fill=color+"20", outline=color, width=2)
+
+        kw_font = _get_font(16, bold=True)
+        _draw_text(draw, (x, y+15), kw, fill=color, font=kw_font, anchor="mm", language=language)
+
+    # رسالة شكر
+    thanks_font = _get_font(28, bold=True)
+    _draw_text(draw, (VIDEO_WIDTH//2, VIDEO_HEIGHT-100),
+               "شكراً لحسن استماعكم" if language == "ar" else "Thank you for listening",
+               fill=COLORS["dark"], font=thanks_font, anchor="mm", language=language)
+
+    # شخصية كرتونية
+    _draw_teacher_character(draw, 50, VIDEO_HEIGHT-200, specialty=specialty)
+
+    # العلامة المائية
+    _draw_text(draw, (VIDEO_WIDTH-20, VIDEO_HEIGHT-20), WATERMARK,
+               fill=COLORS["gray"], font=_get_font(14), anchor="rb", language="ar")
+
+    return img
 
 
-# ============================================================
-# تشفير جميع المقاطع
-# ============================================================
-def _encode_all(segments: List[dict], output_path: str) -> None:
-    """تشفير جميع المقاطع ودمجها"""
-    seg_paths = []
+# ==================== دوال FFmpeg ====================
+
+def _ffmpeg_seg(input_pattern: str, audio_path: Path, output_path: Path,
+                duration: float, fps: int = FPS) -> bool:
+    """
+    تشفير مقطع فيديو واحد من سلسلة صور (input_pattern) مع مسار صوتي.
+    تستخدم ترميز H.264 و AAC مع movflags +faststart.
+    """
+    cmd = [
+        "ffmpeg", "-y", "-framerate", str(fps),
+        "-i", input_pattern,
+        "-i", str(audio_path) if audio_path and audio_path.exists() else "anullsrc=r=44100:cl=mono",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", config.AUDIO_BITRATE,
+        "-t", str(duration),
+        "-movflags", "+faststart",
+        "-shortest",
+        str(output_path)
+    ]
     try:
-        for i, seg in enumerate(segments):
-            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
-                out = f.name
-            seg_paths.append(out)
-            
-            _ffmpeg_segment(
-                seg["img"],
-                seg["dur"],
-                seg.get("audio"),
-                seg.get("audio_start", 0),
-                out,
-                seg.get("gentle_zoom", False)
-            )
-            print(f"  ✅ Segment {i+1}/{len(segments)} encoded ({seg['dur']:.1f}s)")
-        
-        _ffmpeg_concat(seg_paths, output_path)
-        print(f"  ✅ Final video: {output_path}")
-        
-    finally:
-        for p in seg_paths:
-            try:
-                os.unlink(p)
-            except:
-                pass
+        subprocess.run(cmd, check=True, capture_output=True, timeout=120)
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.error(f"FFmpeg seg error: {e.stderr.decode() if e.stderr else str(e)}")
+        return False
 
 
-# ============================================================
-# الدالة الرئيسية - إنشاء الفيديو
-# ============================================================
-async def create_video_from_sections(
-    sections: list,
-    audio_results: list,
-    lecture_data: dict,
-    output_path: str,
-    dialect: str = "msa",
-    progress_cb: Optional[Callable[[float, float], Awaitable[None]]] = None,
-) -> float:
+def _ffmpeg_cat(segment_paths: List[Path], output_path: Path) -> bool:
     """
-    إنشاء الفيديو النهائي من الأقسام والصوت.
-    
-    Args:
-        sections: قائمة الأقسام المحللة
-        audio_results: قائمة الأصوات المولدة
-        lecture_data: بيانات المحاضرة
-        output_path: مسار حفظ الفيديو
-        dialect: اللهجة المستخدمة
-        progress_cb: دالة callback للتقدم
-    
-    Returns:
-        float: مدة الفيديو بالثواني
+    دمج عدة مقاطع فيديو في ملف واحد باستخدام concat demuxer.
     """
-    is_arabic = dialect not in ("english", "british")
-    subject = lecture_data.get("lecture_type", "other")
-    
-    loop = asyncio.get_event_loop()
-    
-    print(f"🎬 Building video segments...")
-    segments, total_secs = await loop.run_in_executor(
-        None, _build_segments, sections, audio_results, lecture_data, is_arabic, subject
-    )
-    
-    if not segments:
-        raise RuntimeError("No segments generated")
-    
-    print(f"🎬 Encoding {len(segments)} segments...")
-    
-    encode_task = loop.run_in_executor(None, _encode_all, segments, output_path)
-    
-    start = loop.time()
-    est = estimate_encoding_seconds(total_secs)
-    
-    while not encode_task.done():
-        await asyncio.sleep(3)
-        if progress_cb:
-            try:
-                await progress_cb(loop.time() - start, est)
-            except:
-                pass
-    
-    await encode_task
-    
-    print(f"✅ Video completed: {total_secs:.1f}s")
-    return total_secs
+    # إنشاء ملف قائمة
+    list_path = output_path.with_suffix('.txt')
+    with open(list_path, 'w') as f:
+        for seg in segment_paths:
+            f.write(f"file '{seg.absolute()}'\n")
+
+    cmd = [
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", str(list_path),
+        "-c", "copy",
+        "-movflags", "+faststart",
+        str(output_path)
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+        list_path.unlink(missing_ok=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.error(f"FFmpeg concat error: {e.stderr.decode() if e.stderr else str(e)}")
+        return False
+
+
+# ==================== بناء الفيديو ====================
+
+def _build_frames_for_slide(slide_func, output_dir: Path, slide_name: str,
+                            total_frames: int, **kwargs) -> List[Path]:
+    """
+    توليد إطارات (frames) لشريحة واحدة وحفظها كملفات PNG.
+    ترجع قائمة بمسارات الصور المولدة.
+    """
+    frames = []
+    for frame_idx in range(total_frames):
+        # يمكن تخصيص معاملات متغيرة مع الوقت (مثل progress)
+        if 'progress' in kwargs:
+            kwargs['progress'] = (frame_idx + 1) / total_frames
+
+        img = slide_func(**kwargs)
+        frame_path = output_dir / f"{slide_name}_{frame_idx:04d}.png"
+        img.save(frame_path, "PNG")
+        frames.append(frame_path)
+    return frames
+
+
+def _build(video_data: Dict, output_dir: Path) -> Tuple[List[Path], float]:
+    """
+    بناء جميع مقاطع الفيديو (شرائح) بالترتيب.
+    ترجع قائمة بمسارات مقاطع الفيديو المؤقتة والمدة الإجمالية.
+    """
+    sections = video_data['sections']
+    specialty = video_data.get('specialty_code', 'general')
+    language = video_data.get('language', 'ar')
+    title = video_data.get('title', 'محاضرة طبية')
+    dialect = video_data.get('dialect', 'fusha')
+
+    segment_paths = []
+    total_duration = 0.0
+
+    # إنشاء مجلد للإطارات المؤقتة
+    frames_dir = output_dir / "frames"
+    frames_dir.mkdir(exist_ok=True)
+
+    # 1. شريحة المقدمة
+    welcome_frames = int(config.WELCOME_DURATION * FPS)
+    _build_frames_for_slide(_draw_welcome_slide, frames_dir, "welcome",
+                            welcome_frames, specialty=specialty, language=language)
+    seg_path = output_dir / "seg_000_welcome.mp4"
+    audio_path = config.AUDIO_TMP / "silence_welcome.mp3"
+    generate_silence(config.WELCOME_DURATION, audio_path)
+    _ffmpeg_seg(str(frames_dir/"welcome_%04d.png"), audio_path, seg_path, config.WELCOME_DURATION)
+    segment_paths.append(seg_path)
+    total_duration += config.WELCOME_DURATION
+
+    # 2. شريحة العنوان
+    title_frames = int(config.TITLE_DURATION * FPS)
+    _build_frames_for_slide(_draw_title_slide, frames_dir, "title",
+                            title_frames, title=title, specialty=specialty, language=language)
+    seg_path = output_dir / "seg_001_title.mp4"
+    audio_path = config.AUDIO_TMP / "silence_title.mp3"
+    generate_silence(config.TITLE_DURATION, audio_path)
+    _ffmpeg_seg(str(frames_dir/"title_%04d.png"), audio_path, seg_path, config.TITLE_DURATION)
+    segment_paths.append(seg_path)
+    total_duration += config.TITLE_DURATION
+
+    # 3. شريحة الخريطة
+    map_frames = int(config.MAP_DURATION * FPS)
+    _build_frames_for_slide(_draw_map_slide, frames_dir, "map",
+                            map_frames, sections=sections, language=language)
+    seg_path = output_dir / "seg_002_map.mp4"
+    audio_path = config.AUDIO_TMP / "silence_map.mp3"
+    generate_silence(config.MAP_DURATION, audio_path)
+    _ffmpeg_seg(str(frames_dir/"map_%04d.png"), audio_path, seg_path, config.MAP_DURATION)
+    segment_paths.append(seg_path)
+    total_duration += config.MAP_DURATION
+
+    # 4. لكل قسم: شريحة عنوان + شريحة محتوى (بالصوت الفعلي)
+    for idx, section in enumerate(sections):
+        section_duration = section.get('duration', 10.0)
+        section_audio = Path(section.get('audio_path')) if section.get('audio_path') else None
+
+        # شريحة عنوان القسم
+        section_title_frames = int(config.SECTION_TITLE_DURATION * FPS)
+        _build_frames_for_slide(_draw_section_title_slide, frames_dir, f"sectitle_{idx}",
+                                section_title_frames,
+                                section_num=idx+1, total_sections=len(sections),
+                                heading=section.get('heading', f'قسم {idx+1}'),
+                                specialty=specialty, language=language)
+        seg_path = output_dir / f"seg_{idx+3:03d}a_title.mp4"
+        audio_path = config.AUDIO_TMP / f"silence_sectitle_{idx}.mp3"
+        generate_silence(config.SECTION_TITLE_DURATION, audio_path)
+        _ffmpeg_seg(str(frames_dir/f"sectitle_{idx}_%04d.png"), audio_path, seg_path, config.SECTION_TITLE_DURATION)
+        segment_paths.append(seg_path)
+        total_duration += config.SECTION_TITLE_DURATION
+
+        # شريحة المحتوى (مع الصوت الفعلي)
+        content_frames = int(section_duration * FPS)
+        image_path = Path(section.get('image_path')) if section.get('image_path') else None
+        _build_frames_for_slide(_draw_content_slide, frames_dir, f"content_{idx}",
+                                content_frames,
+                                section=section, section_index=idx, total_sections=len(sections),
+                                progress=0.0,  # سيتم تحديثه داخل _build_frames_for_slide
+                                specialty=specialty, language=language,
+                                image_path=image_path)
+        seg_path = output_dir / f"seg_{idx+3:03d}b_content.mp4"
+        # استخدام الصوت الفعلي أو صمت
+        if section_audio and section_audio.exists():
+            _ffmpeg_seg(str(frames_dir/f"content_{idx}_%04d.png"), section_audio, seg_path, section_duration)
+        else:
+            audio_path = config.AUDIO_TMP / f"silence_content_{idx}.mp3"
+            generate_silence(section_duration, audio_path)
+            _ffmpeg_seg(str(frames_dir/f"content_{idx}_%04d.png"), audio_path, seg_path, section_duration)
+        segment_paths.append(seg_path)
+        total_duration += section_duration
+
+    # 5. شريحة الملخص
+    summary_frames = int(config.SUMMARY_DURATION * FPS)
+    _build_frames_for_slide(_draw_summary_slide, frames_dir, "summary",
+                            summary_frames, sections=sections, title=title,
+                            specialty=specialty, language=language)
+    seg_path = output_dir / "seg_999_summary.mp4"
+    audio_path = config.AUDIO_TMP / "silence_summary.mp3"
+    generate_silence(config.SUMMARY_DURATION, audio_path)
+    _ffmpeg_seg(str(frames_dir/"summary_%04d.png"), audio_path, seg_path, config.SUMMARY_DURATION)
+    segment_paths.append(seg_path)
+    total_duration += config.SUMMARY_DURATION
+
+    return segment_paths, total_duration
+
+
+def _encode(segment_paths: List[Path], output_path: Path) -> bool:
+    """تجميع المقاطع في فيديو نهائي"""
+    return _ffmpeg_cat(segment_paths, output_path)
+
+
+# ==================== الدالة الرئيسية ====================
+
+def create_video_from_sections(video_data: Dict, output_path: Path = None) -> Tuple[Path, float]:
+    """
+    الدالة الرئيسية لإنشاء الفيديو التعليمي من بيانات المحاضرة.
+
+    المعاملات:
+        video_data: قاموس يحتوي على:
+            - sections: قائمة الأقسام (كل قسم به audio_path, duration, image_path, ...)
+            - title: عنوان المحاضرة
+            - specialty_code: كود التخصص
+            - language: اللغة
+            - dialect: اللهجة
+        output_path: مسار حفظ الفيديو (اختياري)
+
+    ترجع:
+        (مسار الفيديو النهائي, المدة الإجمالية بالثواني)
+    """
+    if not Image:
+        raise RuntimeError("مكتبة Pillow غير متوفرة")
+
+    # التحقق من وجود FFmpeg
+    try:
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
+    except:
+        raise RuntimeError("FFmpeg غير مثبت أو غير متاح في PATH")
+
+    # إنشاء مجلد مؤقت للفيديو
+    job_id = uuid.uuid4().hex[:8]
+    work_dir = config.VIDEO_TMP / job_id
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    if output_path is None:
+        output_path = work_dir / "final_video.mp4"
+    else:
+        output_path = Path(output_path)
+
+    logger.info(f"بدء إنشاء الفيديو في {work_dir}")
+
+    try:
+        # بناء المقاطع
+        segment_paths, total_duration = _build(video_data, work_dir)
+
+        # دمج المقاطع
+        success = _encode(segment_paths, output_path)
+
+        if not success or not output_path.exists():
+            raise RuntimeError("فشل تشفير الفيديو النهائي")
+
+        # تنظيف الملفات المؤقتة (اختياري)
+        # for seg in segment_paths:
+        #     seg.unlink(missing_ok=True)
+        # shutil.rmtree(work_dir / "frames", ignore_errors=True)
+
+        logger.info(f"✅ تم إنشاء الفيديو بنجاح: {output_path} ({total_duration:.1f} ثانية)")
+        return output_path, total_duration
+
+    except Exception as e:
+        logger.error(f"❌ فشل إنشاء الفيديو: {e}")
+        raise
+
+
+# للاختبار
+if __name__ == "__main__":
+    # اختبار بسيط مع بيانات وهمية
+    test_data = {
+        "title": "أساسيات أمراض القلب",
+        "specialty_code": "cardiology",
+        "language": "ar",
+        "dialect": "fusha",
+        "sections": [
+            {"heading": "مقدمة", "keywords": ["قلب", "شرايين", "دورة دموية"], "duration": 8.0},
+            {"heading": "الأعراض", "keywords": ["ألم صدر", "ضيق تنفس"], "duration": 10.0},
+        ]
+    }
+    # يجب توفير audio_path و image_path فعلياً للتشغيل الحقيقي
+    # create_video_from_sections(test_data)
+    print("اكتمل تحميل وحدة video_creator")                            
