@@ -1,1011 +1,1015 @@
-import sys
-import asyncio
-import os
-import logging
-import tempfile
-import time
-from datetime import datetime
+# bot.py
+# -*- coding: utf-8 -*-
+"""
+البوت الرئيسي لتليجرام - بوت المحاضرات الطبية
+يتحكم في كل تفاعلات المستخدم وعملية تحويل النص إلى فيديو
+"""
 
+import os
+import re
+import json
+import asyncio
+import logging
+import uuid
+import shutil
+import tempfile
+from pathlib import Path
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple, Any
+
+# مكتبة تيليجرام
 from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    ReplyKeyboardMarkup,
-    ReplyKeyboardRemove,
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
+    InputFile, BotCommand, MenuButtonCommands
 )
 from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    PreCheckoutQueryHandler,
-    filters,
-    ContextTypes,
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ConversationHandler, ContextTypes, filters
 )
+from telegram.constants import ParseMode, ChatAction
+from telegram.error import TelegramError, RetryAfter
 
-from config import (
-    TELEGRAM_BOT_TOKEN,
-    OWNER_ID,
-    FREE_ATTEMPTS,
-    TEMP_DIR,
-    VOICES,
-    LECTURE_TYPES,
-)
+# استيراد وحدات المشروع
+from config import config, logger
 from database import (
-    init_db,
-    get_user,
-    create_user,
-    is_banned,
-    decrement_attempts,
-    add_attempts,
-    increment_total_videos,
-    save_video_request,
-    update_video_request,
-    record_referral,
-    get_referral_stats,
+    init_db, get_user, create_or_update_user, is_banned,
+    decrement_attempts, add_attempts, get_user_attempts,
+    increment_total_videos, save_video_request, update_video_request,
+    get_referral_code, get_referral_stats, record_referral,
+    create_payment, get_pending_payments, approve_payment,
+    get_stats, get_all_users_paginated, ban_user, unban_user
 )
-from ai_analyzer import (
-    analyze_lecture,
-    extract_full_text_from_pdf_path,
-    fetch_image_for_keyword,
-    QuotaExhaustedError,
-)
-from voice_generator import generate_sections_audio, keys_status
-from video_creator import create_video_from_sections, estimate_encoding_seconds
-from admin_panel import (
-    is_owner,
-    handle_admin_command,
-    handle_admin_callback,
-    handle_admin_text_search,
-    handle_add_attempts,
-    handle_set_attempts,
-    handle_ban,
-    handle_unban,
-    handle_broadcast,
-    handle_approve_payment_command,
-)
-from payment_handler import (
-    get_payment_keyboard,
-    send_payment_required_message,
-    handle_pay_stars,
-    handle_pay_mastercard,
-    handle_pay_crypto,
-    handle_payment_sent,
-    handle_pre_checkout,
-    handle_successful_payment,
-)
+from ai_analyzer import analyze_lecture, extract_text_from_message, clean_text
+from voice_generator import process_lecture_audio
+from video_creator import create_video_from_sections
 
-# ============================================================
-# إعدادات التسجيل
-# ============================================================
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-logger = logging.getLogger(__name__)
+# حالات المحادثة (لـ ConversationHandler إذا استخدمناه)
+(
+    SELECTING_SPECIALTY, SELECTING_SUB_SPECIALTY, SELECTING_LEVEL,
+    SELECTING_DIALECT, WAITING_FOR_CONTENT, WAITING_FOR_PAYMENT_RECEIPT,
+    BROADCAST_MESSAGE,
+) = range(7)
 
-# ============================================================
-# حالة المستخدمين والمهام النشطة
-# ============================================================
-user_states: dict[int, dict] = {}
-_Q_SEM = asyncio.Semaphore(3)  # حد أقصى 3 معالجات متوازية
-_active_jobs: dict[int, str] = {}
-_active_tasks: dict[int, asyncio.Task] = {}
-_cancel_flags: dict[int, asyncio.Event] = {}
+# تخزين حالات المستخدمين المؤقتة (في الذاكرة)
+user_states: Dict[int, Dict[str, Any]] = {}
 
-CANCEL_KB = InlineKeyboardMarkup([[
-    InlineKeyboardButton("❌ إلغاء المعالجة", callback_data="cancel_job")
-]])
+# تتبع المهام النشطة لإمكانية الإلغاء
+active_tasks: Dict[int, asyncio.Task] = {}
+cancel_flags: Dict[int, bool] = {}
 
-# ============================================================
-# لوحات المفاتيح
-# ============================================================
+# ==================== لوحات المفاتيح ====================
 
-def main_keyboard():
+def main_keyboard(language: str = "ar") -> ReplyKeyboardMarkup:
     """لوحة المفاتيح الرئيسية"""
-    return ReplyKeyboardMarkup(
-        [["📤 رفع محاضرة", "📊 رصيدي"], ["🔗 رابط الإحالة", "❓ مساعدة"]],
-        resize_keyboard=True,
-    )
+    if language == "ar":
+        buttons = [
+            [KeyboardButton("📤 رفع محاضرة"), KeyboardButton("📊 رصيدي")],
+            [KeyboardButton("🔗 إحالة"), KeyboardButton("❓ مساعدة")],
+            [KeyboardButton("💰 الاشتراك")],
+        ]
+    else:
+        buttons = [
+            [KeyboardButton("📤 Upload Lecture"), KeyboardButton("📊 My Balance")],
+            [KeyboardButton("🔗 Referral"), KeyboardButton("❓ Help")],
+            [KeyboardButton("💰 Subscribe")],
+        ]
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
+def specialty_keyboard() -> InlineKeyboardMarkup:
+    """لوحة اختيار التخصص الطبي"""
+    specialties = list(config.MEDICAL_SPECIALTIES.items())
+    buttons = []
+    for i in range(0, len(specialties), 3):
+        row = []
+        for code, name in specialties[i:i+3]:
+            row.append(InlineKeyboardButton(name, callback_data=f"spec_{code}"))
+        buttons.append(row)
+    buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_to_main")])
+    return InlineKeyboardMarkup(buttons)
 
-# لوحة مفاتيح اختيار اللهجة
-DIALECT_KEYBOARD = InlineKeyboardMarkup([
-    [
-        InlineKeyboardButton("🇮🇶 عراقي", callback_data="dial_iraq"),
-        InlineKeyboardButton("🇪🇬 مصري", callback_data="dial_egypt"),
-    ],
-    [
-        InlineKeyboardButton("🇸🇾 شامي", callback_data="dial_syria"),
-        InlineKeyboardButton("🇸🇦 خليجي", callback_data="dial_gulf"),
-    ],
-    [
-        InlineKeyboardButton("📚 فصحى", callback_data="dial_msa"),
-    ],
-    [
-        InlineKeyboardButton("🇺🇸 English", callback_data="dial_english"),
-        InlineKeyboardButton("🇬🇧 British", callback_data="dial_british"),
-    ],
-])
+def dialect_keyboard() -> InlineKeyboardMarkup:
+    """لوحة اختيار اللهجة"""
+    buttons = []
+    for code, name in config.DIALECTS.items():
+        buttons.append([InlineKeyboardButton(name, callback_data=f"dialect_{code}")])
+    buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_to_specialty")])
+    return InlineKeyboardMarkup(buttons)
 
-DIALECT_NAMES = {
-    "iraq": "🇮🇶 عراقي",
-    "egypt": "🇪🇬 مصري",
-    "syria": "🇸🇾 شامي",
-    "gulf": "🇸🇦 خليجي",
-    "msa": "📚 فصحى",
-    "english": "🇺🇸 English",
-    "british": "🇬🇧 British",
-}
+def education_level_keyboard() -> InlineKeyboardMarkup:
+    """لوحة اختيار المرحلة الدراسية"""
+    buttons = []
+    for code, name in config.EDUCATION_LEVELS.items():
+        buttons.append([InlineKeyboardButton(name, callback_data=f"level_{code}")])
+    buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_to_dialect")])
+    return InlineKeyboardMarkup(buttons)
 
+def payment_methods_keyboard() -> InlineKeyboardMarkup:
+    """لوحة اختيار طريقة الدفع"""
+    buttons = [
+        [InlineKeyboardButton("⭐ نجوم تيليجرام", callback_data="pay_stars_1m")],
+        [InlineKeyboardButton("💳 ماستر كارد", callback_data="pay_card")],
+        [InlineKeyboardButton("💰 TON/USDT", callback_data="pay_crypto")],
+        [InlineKeyboardButton("🔗 رابط الإحالة (مجاني)", callback_data="pay_referral")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="back_to_main_menu")],
+    ]
+    return InlineKeyboardMarkup(buttons)
 
-def get_subject_keyboard() -> InlineKeyboardMarkup:
-    """لوحة مفاتيح اختيار نوع المحاضرة"""
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🩺 طب", callback_data="subject_medicine"),
-            InlineKeyboardButton("⚙️ هندسة", callback_data="subject_engineering"),
-            InlineKeyboardButton("🔬 علوم", callback_data="subject_science"),
-        ],
-        [
-            InlineKeyboardButton("📐 رياضيات", callback_data="subject_math"),
-            InlineKeyboardButton("📖 أدب", callback_data="subject_literature"),
-            InlineKeyboardButton("🏛️ تاريخ", callback_data="subject_history"),
-        ],
-        [
-            InlineKeyboardButton("🕌 إسلامي", callback_data="subject_islamic"),
-            InlineKeyboardButton("🎒 ابتدائي", callback_data="subject_primary"),
-            InlineKeyboardButton("🎓 إعدادي", callback_data="subject_high"),
-        ],
-        [
-            InlineKeyboardButton("📚 عام", callback_data="subject_other"),
-        ],
-    ])
+# ==================== دوال مساعدة ====================
 
+async def get_user_language(user_id: int) -> str:
+    """استرجاع لغة المستخدم المفضلة من قاعدة البيانات"""
+    user = get_user(user_id)
+    return user.get('language', 'ar') if user else 'ar'
 
-SUBJECT_NAMES = {
-    "medicine": "🩺 طب",
-    "surgery": "🔪 جراحة",
-    "pediatrics": "👶 أطفال",
-    "dentistry": "🦷 أسنان",
-    "pharmacy": "💊 صيدلة",
-    "cardiology": "❤️ قلب",
-    "neurology": "🧠 أعصاب",
-    "engineering": "⚙️ هندسة",
-    "civil": "🏗️ مدنية",
-    "electrical": "⚡ كهربائية",
-    "mechanical": "🔧 ميكانيكية",
-    "aerospace": "🚀 فضاء",
-    "software": "💻 برمجيات",
-    "chemical": "🧪 كيميائية",
-    "science": "🔬 علوم",
-    "physics": "⚛️ فيزياء",
-    "chemistry": "🧪 كيمياء",
-    "biology": "🧬 أحياء",
-    "astronomy": "🌌 فلك",
-    "math": "📐 رياضيات",
-    "literature": "📖 أدب",
-    "history": "🏛️ تاريخ",
-    "geography": "🌍 جغرافيا",
-    "philosophy": "🤔 فلسفة",
-    "psychology": "🧠 علم نفس",
-    "economics": "📊 اقتصاد",
-    "law": "⚖️ قانون",
-    "islamic": "🕌 إسلامي",
-    "quran": "📖 قرآن",
-    "hadith": "📜 حديث",
-    "fiqh": "📚 فقه",
-    "aqeedah": "🕋 عقيدة",
-    "tafseer": "📝 تفسير",
-    "seerah": "🌟 سيرة",
-    "primary": "🎒 ابتدائي",
-    "middle": "📚 متوسط",
-    "high": "🎓 إعدادي",
-    "university": "🏛️ جامعي",
-    "other": "📚 عام",
-}
+async def check_user_access(update: Update, user_id: int) -> Tuple[bool, str]:
+    """التحقق من إمكانية استخدام المستخدم للبوت (غير محظور ولديه محاولات)"""
+    banned, reason = is_banned(user_id)
+    if banned:
+        return False, f"⛔ عذراً، حسابك محظور.\nالسبب: {reason or 'غير محدد'}"
 
+    attempts = get_user_attempts(user_id)
+    if attempts <= 0:
+        # التحقق من وجود اشتراك غير محدود
+        user = get_user(user_id)
+        if user and user.get('subscription_type') == 'unlimited':
+            return True, ""
+        return False, "❌ رصيد المحاولات لديك غير كافٍ. يرجى شراء محاولات جديدة أو استخدام رابط الإحالة."
 
-def get_detailed_subject_keyboard(main_subject: str) -> InlineKeyboardMarkup:
-    """لوحة مفاتيح التخصصات التفصيلية"""
-    keyboards = {
-        "medicine": [
-            [InlineKeyboardButton("🩺 طب عام", callback_data="subject_medicine")],
-            [InlineKeyboardButton("🔪 جراحة", callback_data="subject_surgery")],
-            [InlineKeyboardButton("👶 طب أطفال", callback_data="subject_pediatrics")],
-            [InlineKeyboardButton("🦷 طب أسنان", callback_data="subject_dentistry")],
-            [InlineKeyboardButton("💊 صيدلة", callback_data="subject_pharmacy")],
-            [InlineKeyboardButton("❤️ قلب", callback_data="subject_cardiology")],
-            [InlineKeyboardButton("🧠 أعصاب", callback_data="subject_neurology")],
-            [InlineKeyboardButton("◀️ رجوع", callback_data="back_to_main")],
-        ],
-        "engineering": [
-            [InlineKeyboardButton("⚙️ هندسة عامة", callback_data="subject_engineering")],
-            [InlineKeyboardButton("🏗️ مدنية", callback_data="subject_civil")],
-            [InlineKeyboardButton("⚡ كهربائية", callback_data="subject_electrical")],
-            [InlineKeyboardButton("🔧 ميكانيكية", callback_data="subject_mechanical")],
-            [InlineKeyboardButton("🚀 فضاء", callback_data="subject_aerospace")],
-            [InlineKeyboardButton("💻 برمجيات", callback_data="subject_software")],
-            [InlineKeyboardButton("🧪 كيميائية", callback_data="subject_chemical")],
-            [InlineKeyboardButton("◀️ رجوع", callback_data="back_to_main")],
-        ],
-        "science": [
-            [InlineKeyboardButton("🔬 علوم عامة", callback_data="subject_science")],
-            [InlineKeyboardButton("⚛️ فيزياء", callback_data="subject_physics")],
-            [InlineKeyboardButton("🧪 كيمياء", callback_data="subject_chemistry")],
-            [InlineKeyboardButton("🧬 أحياء", callback_data="subject_biology")],
-            [InlineKeyboardButton("🌌 فلك", callback_data="subject_astronomy")],
-            [InlineKeyboardButton("◀️ رجوع", callback_data="back_to_main")],
-        ],
-        "islamic": [
-            [InlineKeyboardButton("🕌 إسلامي عام", callback_data="subject_islamic")],
-            [InlineKeyboardButton("📖 قرآن كريم", callback_data="subject_quran")],
-            [InlineKeyboardButton("📜 حديث شريف", callback_data="subject_hadith")],
-            [InlineKeyboardButton("📚 فقه", callback_data="subject_fiqh")],
-            [InlineKeyboardButton("🕋 عقيدة", callback_data="subject_aqeedah")],
-            [InlineKeyboardButton("📝 تفسير", callback_data="subject_tafseer")],
-            [InlineKeyboardButton("🌟 سيرة", callback_data="subject_seerah")],
-            [InlineKeyboardButton("◀️ رجوع", callback_data="back_to_main")],
-        ],
-    }
-    
-    if main_subject in keyboards:
-        return InlineKeyboardMarkup(keyboards[main_subject])
-    return get_subject_keyboard()
+    return True, ""
 
+async def send_progress_update(chat_id: int, message_id: int, text: str, progress: int = None):
+    """تحديث رسالة التقدم مع شريط تقدم بصري"""
+    bar_length = 10
+    if progress is not None:
+        filled = int(bar_length * progress / 100)
+        bar = "█" * filled + "░" * (bar_length - filled)
+        full_text = f"{text}\n\n[{bar}] {progress}%"
+    else:
+        full_text = text
 
-# ============================================================
-# دوال مساعدة
-# ============================================================
-def _pbar(pct: int, width: int = 12) -> str:
-    """شريط تقدم نصي"""
-    filled = int(width * pct / 100)
-    return "▓" * filled + "░" * (width - filled)
-
-
-def _fmt_elapsed(sec: float) -> str:
-    """تنسيق الوقت المنقضي"""
-    if sec < 60:
-        return f"{int(sec)} ثانية"
-    return f"{int(sec // 60)} دقيقة {int(sec % 60)} ثانية"
-
-
-async def _safe_edit(msg, text: str, parse_mode: str = "Markdown", reply_markup=None):
-    """تعديل رسالة بأمان"""
     try:
-        await msg.edit_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
-    except Exception:
-        pass
+        # استخدام application.bot مباشرة (سيتم تعيينه لاحقاً)
+        from bot import application
+        if application and application.bot:
+            await application.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=full_text
+            )
+    except Exception as e:
+        logger.debug(f"فشل تحديث رسالة التقدم: {e}")
 
+# ==================== معالجات الأوامر الأساسية ====================
 
-async def _run_or_cancel(uid: int, coro) -> object:
-    """تنفيذ مهمة مع إمكانية الإلغاء"""
-    ev = _cancel_flags.get(uid)
-    if ev is None or ev.is_set():
-        raise asyncio.CancelledError("Already cancelled")
-
-    coro_task = asyncio.ensure_future(coro)
-    cancel_task = asyncio.ensure_future(ev.wait())
-    try:
-        done, pending = await asyncio.wait(
-            [coro_task, cancel_task],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for p in pending:
-            p.cancel()
-            try:
-                await p
-            except BaseException:
-                pass
-        if cancel_task in done:
-            coro_task.cancel()
-            raise asyncio.CancelledError("User cancelled")
-        return coro_task.result()
-    except asyncio.CancelledError:
-        coro_task.cancel()
-        raise
-
-
-async def ensure_user(update: Update) -> dict | None:
-    """التأكد من وجود المستخدم في قاعدة البيانات"""
-    tg = update.effective_user
-    user = get_user(tg.id)
-    if not user:
-        ref_by = user_states.get(tg.id, {}).get("ref_by")
-        user = create_user(tg.id, tg.username or "", tg.full_name or "", ref_by)
-        if ref_by and ref_by != tg.id:
-            res = record_referral(ref_by, tg.id)
-            if not res.get("already_referred"):
-                try:
-                    ref_user = get_user(ref_by)
-                    name = ref_user.get("full_name", "صديق") if ref_user else "صديق"
-                    await update.effective_message.reply_text(f"✅ انضممت عبر رابط إحالة {name}!")
-                except Exception:
-                    pass
-    if user.get("is_banned"):
-        await update.effective_message.reply_text("⛔ أنت محظور من استخدام البوت.")
-        return None
-    return user
-
-
-# ============================================================
-# أوامر البوت الأساسية
-# ============================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر /start"""
-    args = context.args
-    uid = update.effective_user.id
+    """أمر /start - ترحيب وتسجيل المستخدم"""
+    user = update.effective_user
+    args = context.args  # للتعامل مع روابط الإحالة
 
-    # معالجة رابط الإحالة
+    # استخراج معرف المُحيل إذا وجد (من رابط start)
+    referrer_id = None
     if args and args[0].startswith("ref_"):
         try:
-            ref_id = int(args[0][4:])
-            if ref_id != uid:
-                user_states.setdefault(uid, {})["ref_by"] = ref_id
-        except ValueError:
+            referrer_id = int(args[0].replace("ref_", ""))
+        except:
             pass
 
-    user = await ensure_user(update)
-    if not user:
-        return
-
-    user_states.pop(uid, None)
-    name = update.effective_user.first_name
-
-    await update.message.reply_text(
-        f"👋 أهلاً *{name}*!\n\n"
-        "🎓 أنا *بوت المحاضرات الذكي* — أحوّل محاضرتك إلى فيديو تعليمي احترافي!\n\n"
-        "📥 *ما يمكنك إرساله:*\n"
-        "• ملف PDF 📄 (حتى 50MB)\n"
-        "• ملف TXT 📃\n"
-        "• نص المحاضرة مباشرة ✍️\n\n"
-        "📚 *اختر نوع المحاضرة* (طب، هندسة، علوم...)\n"
-        "🌍 *اختر لهجة الشرح* (عراقي، مصري، خليجي...)\n"
-        "🎬 *استلم فيديو* مع شخصية كرتونية مخصصة وصور وصوت\n\n"
-        f"🎁 لديك *{user['attempts_left']}* محاولة مجانية\n\n"
-        "⬇️ ابدأ الآن — أرسل المحاضرة!",
-        parse_mode="Markdown",
-        reply_markup=main_keyboard(),
+    # إنشاء أو تحديث المستخدم
+    user_data = create_or_update_user(
+        user_id=user.id,
+        username=user.username,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        referred_by=referrer_id
     )
 
+    # تسجيل الإحالة تلقائياً تم في create_or_update_user
 
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر /help"""
+    # رسالة ترحيبية
+    lang = user_data.get('language', 'ar')
+    attempts = user_data.get('attempts', config.FREE_ATTEMPTS)
+
+    welcome_text = f"""
+🩺 *مرحباً بك في {config.BOT_NAME}* 🩺
+
+أهلاً {user.first_name or 'بك'}!
+
+يمكنك تحويل المحاضرات الطبية (PDF أو TXT أو نص) إلى فيديوهات تعليمية احترافية بأسلوب Osmosis.
+
+📊 *رصيدك الحالي:* {attempts} محاولات
+🔗 *رابط الإحالة الخاص بك:* `{user_data.get('referral_code', '')}`
+
+استخدم الأزرار أدناه للبدء:
+    """
+
     await update.message.reply_text(
-        "📖 *كيفية الاستخدام*\n\n"
-        "1️⃣ أرسل ملف PDF أو TXT أو نص مباشر\n"
-        "2️⃣ اختر نوع المحاضرة (طب، هندسة، علوم...)\n"
-        "3️⃣ اختر التخصص الدقيق (اختياري)\n"
-        "4️⃣ اختر لهجة الشرح\n"
-        "5️⃣ انتظر — البوت سيحلل ويصنع الفيديو\n"
-        "6️⃣ استلم الفيديو التعليمي الكامل\n\n"
-        "📊 *محتوى الفيديو:*\n"
-        "• مقدمة مع شخصية كرتونية مخصصة\n"
-        "• بطاقة لكل قسم\n"
-        "• صور تعليمية كبيرة\n"
-        "• كلمات مفتاحية واضحة\n"
-        "• صوت بشري طبيعي\n"
-        "• ملخص نهائي\n\n"
-        "🔗 */referral* — رابط إحالة لكسب محاولات مجانية\n"
-        "/cancel — إلغاء العملية",
-        parse_mode="Markdown",
-        reply_markup=main_keyboard(),
+        welcome_text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=main_keyboard(lang)
     )
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر /help - شرح استخدام البوت"""
+    help_text = """
+📚 *دليل استخدام البوت* 📚
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر /cancel - إلغاء المعالجة"""
-    uid = update.effective_user.id
-    user_states.pop(uid, None)
-    ev = _cancel_flags.get(uid)
-    if ev and not ev.is_set():
-        ev.set()
-        await update.message.reply_text("⛔ تم إلغاء المعالجة.", reply_markup=main_keyboard())
-    else:
-        await update.message.reply_text("✅ لا توجد عملية جارية.", reply_markup=main_keyboard())
+1️⃣ اضغط على *رفع محاضرة* وأرسل ملف PDF أو TXT أو انسخ النص مباشرة.
+2️⃣ اختر التخصص الطبي (أو اتركه للبوت ليحدده تلقائياً).
+3️⃣ اختر اللهجة المفضلة للشرح (عراقي، مصري، فصحى...).
+4️⃣ انتظر قليلاً... سنقوم بتحليل المحاضرة وإنتاج فيديو تعليمي مميز!
 
+🎥 *مميزات الفيديو:*
+- شخصية كرتونية طبية تشرح المحتوى.
+- صور توضيحية طبية.
+- كلمات مفتاحية تظهر تدريجياً.
+- ملخص في نهاية الفيديو.
 
-async def my_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+💰 *الأسعار:*
+- لديك {free} محاولات مجانية.
+- يمكنك الحصول على محاولات إضافية عبر الإحالات أو الاشتراك.
+
+للاستفسار أو الدعم: @MedicalBotSupport
+""".format(free=config.FREE_ATTEMPTS)
+
+    await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
+
+async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """عرض رصيد المستخدم"""
-    user = await ensure_user(update)
-    if not user:
-        return
-    await update.message.reply_text(
-        f"💳 *رصيدك*\n\n"
-        f"🎬 المحاولات المتبقية: *{user['attempts_left']}*\n"
-        f"📊 إجمالي الفيديوهات: {user['total_videos']}\n\n"
-        "للحصول على محاولات إضافية:",
-        parse_mode="Markdown",
-        reply_markup=get_payment_keyboard(user["user_id"]),
-    )
-
-
-async def referral_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر /referral - عرض رابط الإحالة"""
-    user = await ensure_user(update)
-    if not user:
-        return
-    uid = update.effective_user.id
-    stats = get_referral_stats(uid)
-    bot_info = await context.bot.get_me()
-    bot_username = bot_info.username
-    ref_link = f"https://t.me/{bot_username}?start=ref_{uid}"
-
-    await update.message.reply_text(
-        f"🔗 *رابط الإحالة الخاص بك*\n\n"
-        f"`{ref_link}`\n\n"
-        f"👥 أصدقاء دعوتهم: *{stats['total_referrals']}*\n"
-        f"⭐ نقاطك: *{stats['current_points']}*\n\n"
-        "كل 10 أشخاص = محاولة مجانية!\n"
-        "شارك الرابط مع أصدقائك 🎉",
-        parse_mode="Markdown",
-    )
-
-
-# ============================================================
-# استقبال المحتوى (نصوص وملفات)
-# ============================================================
-async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """استقبال المحتوى من المستخدم (PDF, TXT, نص)"""
-    user = await ensure_user(update)
-    if not user:
+    user = update.effective_user
+    user_data = get_user(user.id)
+    if not user_data:
+        await update.message.reply_text("حدث خطأ، الرجاء إعادة التشغيل /start")
         return
 
-    uid = update.effective_user.id
-    msg = update.message
+    attempts = user_data['attempts']
+    total_videos = user_data['total_videos']
+    ref_stats = get_referral_stats(user.id)
+    sub_type = user_data.get('subscription_type', 'free')
+    expiry = user_data.get('subscription_expiry')
 
-    # معالجة أوامر الأدمن
-    if is_owner(uid):
-        consumed = await handle_admin_text_search(update, context)
-        if consumed:
-            return
+    balance_text = f"""
+📊 *رصيدك الحالي* 📊
 
-    # أزرار القائمة الرئيسية
-    if msg.text:
-        text = msg.text.strip()
-        if text == "📤 رفع محاضرة":
-            await msg.reply_text(
-                "📤 *أرسل المحاضرة*\n\n"
-                "• ملف PDF 📄 (حتى 50MB)\n"
-                "• ملف TXT 📃\n"
-                "• أو اكتب النص مباشرة (200 حرف على الأقل)",
-                parse_mode="Markdown",
-                reply_markup=ReplyKeyboardRemove(),
-            )
-            return
-        if text == "📊 رصيدي":
-            await my_balance(update, context)
-            return
-        if text == "🔗 رابط الإحالة":
-            await referral_cmd(update, context)
-            return
-        if text == "❓ مساعدة":
-            await help_cmd(update, context)
-            return
+🎬 المحاولات المتبقية: *{attempts}*
+📹 عدد الفيديوهات المنتجة: *{total_videos}*
+💎 الاشتراك: *{sub_type}*
+{f"⏳ ينتهي في: {expiry.strftime('%Y-%m-%d')}" if expiry else ""}
 
-    # هل يوجد معالجة جارية؟
-    if uid in _active_jobs:
-        await msg.reply_text("⏳ محاضرتك قيد المعالجة...")
+🔗 *الإحالات:*
+👥 عدد من دعوتهم: *{ref_stats['total_referrals']}*
+🎁 نقاط الإحالة: *{ref_stats['current_points']}* (تحتاج {ref_stats['points_needed_for_reward']} نقطة لمحاولة مجانية)
+
+رابط الإحالة الخاص بك:
+`https://t.me/{context.bot.username}?start=ref_{user.id}`
+"""
+    await update.message.reply_text(balance_text, parse_mode=ParseMode.MARKDOWN)
+
+async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عرض معلومات الإحالة"""
+    await balance_command(update, context)
+
+# ==================== استقبال المحتوى (ملف أو نص) ====================
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """استقبال ملف PDF أو TXT"""
+    user = update.effective_user
+    document = update.message.document
+
+    # التحقق من الحظر والمحاولات
+    has_access, error_msg = await check_user_access(update, user.id)
+    if not has_access:
+        await update.message.reply_text(error_msg)
         return
 
-    # التحقق من المحاولات
-    if user["attempts_left"] <= 0:
-        await send_payment_required_message(update, context)
+    # التحقق من نوع الملف وحجمه
+    file_name = document.file_name.lower()
+    if not (file_name.endswith('.pdf') or file_name.endswith('.txt')):
+        await update.message.reply_text("❌ نوع الملف غير مدعوم. الرجاء إرسال PDF أو TXT.")
         return
 
-    lecture_text = None
-    filename = "lecture"
+    file_size_mb = document.file_size / (1024 * 1024)
+    if file_size_mb > config.MAX_PDF_SIZE_MB:
+        await update.message.reply_text(f"❌ حجم الملف كبير جداً ({file_size_mb:.1f} MB). الحد الأقصى {config.MAX_PDF_SIZE_MB} MB.")
+        return
 
-    # ============================================================
-    # معالجة الملفات (PDF, TXT)
-    # ============================================================
-    if msg.document:
-        doc = msg.document
-        fname = doc.file_name or "file"
-        file_size = doc.file_size or 0
-        ext = fname.lower().split(".")[-1] if "." in fname else ""
+    # تنزيل الملف
+    processing_msg = await update.message.reply_text("📥 جاري تنزيل الملف...")
+    file = await context.bot.get_file(document.file_id)
 
-        if ext not in ("pdf", "txt"):
-            await msg.reply_text("⚠️ الملف غير مدعوم. أرسل PDF أو TXT فقط.")
-            return
+    # حفظ مؤقت
+    tmp_path = config.PDF_TMP / f"{user.id}_{uuid.uuid4().hex}.{file_name.split('.')[-1]}"
+    await file.download_to_drive(tmp_path)
 
-        if file_size > 50 * 1024 * 1024:  # 50MB
-            await msg.reply_text(f"⚠️ حجم الملف كبير جداً. الحد الأقصى 50MB")
-            return
-
-        # رد فوري
-        wait = await msg.reply_text(
-            f"📥 *جاري تحميل الملف...*\n📄 `{fname}`\n📦 {file_size // 1024}KB",
-            parse_mode="Markdown",
-        )
-
-        try:
-            # تحميل الملف
-            file = await context.bot.get_file(doc.file_id)
-            
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
-                tmp_path = tmp.name
-            
-            await file.download_to_drive(tmp_path)
-            await wait.edit_text(f"📥 *تم التحميل!*\n🔍 جاري استخراج النص...", parse_mode="Markdown")
-
-            # استخراج النص
-            if ext == "pdf":
-                lecture_text = await extract_full_text_from_pdf_path(tmp_path)
-                filename = fname.replace(".pdf", "")
-            else:
-                with open(tmp_path, "r", encoding="utf-8", errors="ignore") as f:
-                    lecture_text = f.read()
-                filename = fname.replace(".txt", "")
-
-            # حذف الملف المؤقت
-            try:
-                os.unlink(tmp_path)
-            except:
-                pass
-
-            await wait.delete()
-
-        except Exception as e:
-            await wait.edit_text(f"❌ خطأ في قراءة الملف: {str(e)[:100]}")
-            return
-
-    # ============================================================
-    # معالجة النص المباشر
-    # ============================================================
-    elif msg.text:
-        text = msg.text.strip()
-        if len(text) >= 200:
-            lecture_text = text
-            words = len(text.split())
-            await msg.reply_text(f"✅ *تم استلام النص!* ({words:,} كلمة)", parse_mode="Markdown")
+    # استخراج النص
+    try:
+        from ai_analyzer import extract_full_text_from_pdf, clean_text
+        if file_name.endswith('.pdf'):
+            text, pages = extract_full_text_from_pdf(tmp_path)
+            await processing_msg.edit_text(f"📄 تم استخراج النص من {pages} صفحة. جاري التحليل...")
         else:
-            await msg.reply_text(
-                "⚠️ النص قصير جداً.\n\n"
-                "• أرسل 200 حرف على الأقل\n"
-                "• أو أرسل ملف PDF/TXT"
-            )
-            return
-    else:
-        await msg.reply_text("⚠️ أرسل ملف PDF، TXT، أو نص مباشر.")
+            with open(tmp_path, 'r', encoding='utf-8') as f:
+                text = f.read()
+            text = clean_text(text)
+    except Exception as e:
+        await processing_msg.edit_text(f"❌ فشل قراءة الملف: {e}")
+        tmp_path.unlink(missing_ok=True)
         return
 
-    # ============================================================
-    # التحقق من النص المستخرج
-    # ============================================================
-    if not lecture_text or len(lecture_text.strip()) < 50:
-        await msg.reply_text("❌ لم أتمكن من استخراج نص كافٍ. تأكد من محتوى الملف.")
-        return
+    tmp_path.unlink(missing_ok=True)
 
-    # ============================================================
-    # حفظ الحالة وعرض خيارات نوع المحاضرة
-    # ============================================================
-    user_states[uid] = {
-        "state": "awaiting_subject",
-        "text": lecture_text,
-        "filename": filename,
+    # تخزين النص في حالة المستخدم والانتقال لاختيار التخصص
+    user_states[user.id] = {
+        'text': text,
+        'file_name': file_name,
+        'step': 'specialty',
+        'message_id': processing_msg.message_id,
+        'chat_id': update.effective_chat.id
     }
 
-    words = len(lecture_text.split())
-    if words < 500:
-        est_time = "2-3 دقائق"
-    elif words < 1500:
-        est_time = "3-5 دقائق"
-    elif words < 3000:
-        est_time = "5-7 دقائق"
-    else:
-        est_time = "7-10 دقائق"
-
-    await msg.reply_text(
-        f"✅ *تم استلام المحاضرة!*\n\n"
-        f"📝 عدد الكلمات: *{words:,}*\n"
-        f"⏱️ الوقت المتوقع: *{est_time}*\n\n"
-        f"📚 *اختر نوع المحاضرة:*",
-        parse_mode="Markdown",
-        reply_markup=get_subject_keyboard(),
+    await processing_msg.edit_text(
+        "✅ تم استلام المحتوى!\nالرجاء اختيار التخصص الطبي (أو تخطي للاكتشاف التلقائي):",
+        reply_markup=specialty_keyboard()
     )
 
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """استقبال نص مباشر (بدلاً من ملف)"""
+    user = update.effective_user
+    text = update.message.text
 
-# ============================================================
-# معالجة الكول باك (أزرار القوائم)
-# ============================================================
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة جميع أزرار القوائم"""
-    q = update.callback_query
-    data = q.data
-    uid = q.from_user.id
-
-    # أزرار الأدمن
-    if data.startswith("admin_"):
-        await handle_admin_callback(update, context)
+    # تجاهل أوامر البوت
+    if text.startswith('/'):
         return
 
-    await q.answer()
-
-    # ============================================================
-    # أزرار الدفع
-    # ============================================================
-    if data == "pay_stars":
-        await handle_pay_stars(update, context)
-        return
-    if data == "pay_mastercard":
-        await handle_pay_mastercard(update, context)
-        return
-    if data == "pay_crypto":
-        await handle_pay_crypto(update, context)
-        return
-    if data == "pay_sent":
-        await handle_payment_sent(update, context)
+    # التحقق من الحظر والمحاولات
+    has_access, error_msg = await check_user_access(update, user.id)
+    if not has_access:
+        await update.message.reply_text(error_msg)
         return
 
-    # ============================================================
-    # زر الإلغاء
-    # ============================================================
-    if data == "cancel_job":
-        ev = _cancel_flags.get(uid)
-        if ev and not ev.is_set():
-            ev.set()
-            try:
-                await q.edit_message_text("⛔ تم إلغاء المعالجة.")
-            except:
-                pass
-            await context.bot.send_message(uid, "⛔ تم الإلغاء.", reply_markup=main_keyboard())
+    # التحقق من طول النص
+    if len(text) < config.MIN_TEXT_LENGTH:
+        await update.message.reply_text(f"❌ النص قصير جداً ({len(text)} حرف). الحد الأدنى {config.MIN_TEXT_LENGTH} حرف.")
         return
 
-    # ============================================================
-    # زر الإحالة
-    # ============================================================
-    if data == "show_referral":
-        stats = get_referral_stats(uid)
-        bot_info = await context.bot.get_me()
-        ref_link = f"https://t.me/{bot_info.username}?start=ref_{uid}"
-        await q.message.reply_text(
-            f"🔗 *رابط الإحالة*\n\n`{ref_link}`\n\n"
-            f"👥 المدعوين: *{stats['total_referrals']}*\n"
-            f"⭐ النقاط: *{stats['current_points']}*",
-            parse_mode="Markdown",
-        )
-        return
+    # تنظيف النص
+    text = clean_text(text)
 
-    # ============================================================
-    # الرجوع للقائمة الرئيسية للتخصصات
-    # ============================================================
-    if data == "back_to_main":
-        await q.edit_message_text(
-            "📚 *اختر نوع المحاضرة:*",
-            parse_mode="Markdown",
-            reply_markup=get_subject_keyboard(),
-        )
-        return
+    # تخزين النص
+    processing_msg = await update.message.reply_text("📝 جاري معالجة النص...")
+    user_states[user.id] = {
+        'text': text,
+        'file_name': None,
+        'step': 'specialty',
+        'message_id': processing_msg.message_id,
+        'chat_id': update.effective_chat.id
+    }
 
-    # ============================================================
-    # اختيار نوع المحاضرة (رئيسي أو تفصيلي)
-    # ============================================================
-    if data.startswith("subject_"):
-        subject = data[8:]
-        state = user_states.get(uid, {})
-
-        if state.get("state") != "awaiting_subject":
-            await q.edit_message_text("⚠️ أرسل المحاضرة أولاً.")
-            return
-
-        # إذا كان النوع من القائمة الرئيسية، نعرض التخصصات التفصيلية
-        if subject in ["medicine", "engineering", "science", "islamic"]:
-            user_states[uid]["temp_subject"] = subject
-            await q.edit_message_text(
-                f"📚 *اختر التخصص الدقيق:*",
-                parse_mode="Markdown",
-                reply_markup=get_detailed_subject_keyboard(subject),
-            )
-            return
-
-        # حفظ النوع النهائي
-        user_states[uid]["subject"] = subject
-        user_states[uid]["state"] = "awaiting_dialect"
-
-        subject_name = SUBJECT_NAMES.get(subject, subject)
-        await q.edit_message_text(
-            f"✅ نوع المحاضرة: *{subject_name}*\n\n"
-            f"🌍 *اختر لهجة الشرح:*",
-            parse_mode="Markdown",
-            reply_markup=DIALECT_KEYBOARD,
-        )
-        return
-
-    # ============================================================
-    # اختيار اللهجة
-    # ============================================================
-    if data.startswith("dial_"):
-        dialect = data[5:]
-        state = user_states.get(uid, {})
-
-        if state.get("state") != "awaiting_dialect":
-            await q.edit_message_text("⚠️ اختر نوع المحاضرة أولاً.")
-            return
-
-        user = get_user(uid)
-        if not user or user["attempts_left"] <= 0:
-            await q.edit_message_text("❌ لا تملك محاولات كافية.")
-            return
-
-        dial_name = DIALECT_NAMES.get(dialect, dialect)
-        subject = state.get("subject", "other")
-        subject_name = SUBJECT_NAMES.get(subject, subject)
-
-        await q.edit_message_text(
-            f"🎬 *بدأت المعالجة!*\n"
-            f"📚 النوع: {subject_name}\n"
-            f"🌍 اللهجة: {dial_name}\n\n"
-            f"{_pbar(0)} 0%\n"
-            f"🔍 جاري التحليل...",
-            parse_mode="Markdown",
-            reply_markup=CANCEL_KB,
-        )
-
-        text = state["text"]
-        filename = state.get("filename", "lecture")
-        user_states.pop(uid, None)
-
-        task = asyncio.create_task(
-            _process_lecture(uid, text, filename, dialect, subject, q.message, context)
-        )
-        _active_tasks[uid] = task
-        return
-
-
-# ============================================================
-# معالجة المحاضرة الرئيسية (إنشاء الفيديو)
-# ============================================================
-async def _process_lecture(
-    uid: int,
-    text: str,
-    filename: str,
-    dialect: str,
-    subject: str,
-    status_msg,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    """المعالجة الكاملة للمحاضرة وإنشاء الفيديو"""
-    _active_jobs[uid] = "processing"
-    cancel_ev = asyncio.Event()
-    _cancel_flags[uid] = cancel_ev
-    req_id = save_video_request(uid, "text", dialect, subject)
-    t_start = time.time()
-    video_path = None
-
-    def _check():
-        if cancel_ev.is_set():
-            raise asyncio.CancelledError()
-
-    async def upd(pct: int, label: str):
-        elapsed = time.time() - t_start
-        await _safe_edit(
-            status_msg,
-            f"⏳ *المعالجة*\n\n{_pbar(pct)} *{pct}%*\n{label}\n\n⏱️ {_fmt_elapsed(elapsed)}",
-            reply_markup=CANCEL_KB,
-        )
-
-    async with _Q_SEM:
-        try:
-            # ============================================================
-            # المرحلة 1: تحليل المحاضرة (DeepSeek أولاً)
-            # ============================================================
-            _check()
-            await upd(5, "🔍 تحليل المحتوى باستخدام DeepSeek...")
-
-            lecture_data = await _run_or_cancel(uid, analyze_lecture(text, dialect, subject))
-            sections = lecture_data.get("sections", [])
-
-            if not sections:
-                raise RuntimeError("لم يتم استخراج أي أقسام من المحاضرة")
-
-            n_sections = len(sections)
-            await upd(25, f"✅ تم التحليل — {n_sections} أقسام")
-
-            # ============================================================
-            # المرحلة 2: جلب الصور
-            # ============================================================
-            _check()
-            await upd(30, "🎨 جلب الصور التعليمية...")
-
-            async def fetch_images(section):
-                keywords = section.get("keywords", [])[:4]
-                kw_descs = section.get("keyword_images", [])
-                tasks = [
-                    fetch_image_for_keyword(
-                        keyword=kw,
-                        section_title=section.get("title", ""),
-                        lecture_type=subject,
-                        image_search_en=kw_descs[i] if i < len(kw_descs) else kw,
-                    )
-                    for i, kw in enumerate(keywords)
-                ]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                section["_keyword_images"] = [r if not isinstance(r, Exception) else None for r in results]
-                section["_image_bytes"] = next((r for r in results if r and not isinstance(r, Exception)), None)
-                return section
-
-            sections = await asyncio.gather(*[fetch_images(s) for s in sections])
-            await upd(50, "✅ تم جلب الصور")
-
-            # ============================================================
-            # المرحلة 3: توليد الصوت (gTTS مجاني)
-            # ============================================================
-            _check()
-            await upd(55, "🎤 توليد الصوت (مجاني)...")
-
-            voice_res = await _run_or_cancel(uid, generate_sections_audio(sections, dialect))
-            audio_results = voice_res["results"]
-            await upd(70, "✅ تم توليد الصوت")
-
-            # ============================================================
-            # المرحلة 4: إنشاء الفيديو
-            # ============================================================
-            _check()
-            await upd(75, "🎬 إنتاج الفيديو...")
-
-            fd, video_path = tempfile.mkstemp(prefix=f"vid_{uid}_", suffix=".mp4", dir=TEMP_DIR)
-            os.close(fd)
-
-            async def v_progress(elapsed, est):
-                pct = int(75 + min(elapsed / max(est, 1), 0.95) * 23)
-                await upd(pct, "🎬 تشفير الفيديو...")
-
-            total_secs = await create_video_from_sections(
-                sections=sections,
-                audio_results=audio_results,
-                lecture_data=lecture_data,
-                output_path=video_path,
-                dialect=dialect,
-                progress_cb=v_progress,
-            )
-
-            await upd(99, "✅ اكتمل! جاري الإرسال...")
-
-            # ============================================================
-            # المرحلة 5: خصم محاولة وإرسال الفيديو
-            # ============================================================
-            decrement_attempts(uid)
-            increment_total_videos(uid)
-            update_video_request(req_id, "done", video_path)
-
-            elapsed = time.time() - t_start
-            title = lecture_data.get("title", filename)
-            mins, secs = int(total_secs // 60), int(total_secs % 60)
-            remaining = get_user(uid)["attempts_left"]
-
-            caption = (
-                f"🎬 *{title}*\n\n"
-                f"📚 {SUBJECT_NAMES.get(subject, subject)}\n"
-                f"🌍 {DIALECT_NAMES.get(dialect, dialect)}\n"
-                f"📖 {n_sections} أقسام\n"
-                f"⏱️ {mins}:{secs:02d}\n"
-                f"⚡ {_fmt_elapsed(elapsed)}\n\n"
-                f"💳 المتبقي: {remaining}"
-            )
-
-            with open(video_path, "rb") as vf:
-                await context.bot.send_video(
-                    chat_id=uid,
-                    video=vf,
-                    caption=caption,
-                    parse_mode="Markdown",
-                    supports_streaming=True,
-                )
-
-            await status_msg.delete()
-            await context.bot.send_message(
-                uid,
-                "✅ *تم بنجاح!*\nشارك الفيديو مع أصدقائك 🎓",
-                parse_mode="Markdown",
-                reply_markup=main_keyboard(),
-            )
-
-        except asyncio.CancelledError:
-            update_video_request(req_id, "cancelled")
-            await status_msg.edit_text("⛔ تم الإلغاء.")
-
-        except QuotaExhaustedError:
-            update_video_request(req_id, "quota_error")
-            await status_msg.edit_text("⏳ الخدمة مشغولة... حاول بعد قليل.")
-
-        except Exception as e:
-            update_video_request(req_id, "failed")
-            logger.error(f"Error: {e}")
-            await status_msg.edit_text(f"❌ خطأ: {str(e)[:200]}")
-
-        finally:
-            _active_jobs.pop(uid, None)
-            _active_tasks.pop(uid, None)
-            _cancel_flags.pop(uid, None)
-            if video_path and os.path.exists(video_path):
-                try:
-                    os.remove(video_path)
-                except:
-                    pass
-
-
-# ============================================================
-# أوامر الإدارة
-# ============================================================
-async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر /admin - لوحة التحكم"""
-    if is_owner(update.effective_user.id):
-        await handle_admin_command(update, context)
-
-
-# ============================================================
-# الدالة الرئيسية - تشغيل البوت
-# ============================================================
-async def main():
-    """تشغيل البوت"""
-    init_db()
-    logger.info("🤖 ZAKROS PRO Bot starting...")
-
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
-    # تسجيل الأوامر
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("cancel", cancel))
-    app.add_handler(CommandHandler("referral", referral_cmd))
-    app.add_handler(CommandHandler("admin", admin_cmd))
-    app.add_handler(CommandHandler("add", handle_add_attempts))
-    app.add_handler(CommandHandler("set", handle_set_attempts))
-    app.add_handler(CommandHandler("ban", handle_ban))
-    app.add_handler(CommandHandler("unban", handle_unban))
-    app.add_handler(CommandHandler("broadcast", handle_broadcast))
-    app.add_handler(CommandHandler("approve", handle_approve_payment_command))
-
-    # تسجيل معالجات الدفع
-    app.add_handler(PreCheckoutQueryHandler(handle_pre_checkout))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, handle_successful_payment))
-    
-    # تسجيل معالج الأزرار
-    app.add_handler(CallbackQueryHandler(callback_handler))
-    
-    # تسجيل معالج الرسائل والملفات
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT | filters.Document.ALL,
-            receive_content,
-        )
+    await processing_msg.edit_text(
+        "✅ تم استلام النص!\nالرجاء اختيار التخصص الطبي:",
+        reply_markup=specialty_keyboard()
     )
 
-    logger.info("✅ Bot ready")
+# ==================== معالجات الأزرار (Callbacks) ====================
 
-    # ============================================================
-    # إعداد Webhook لـ Heroku
-    # ============================================================
-    app_url = os.getenv("HEROKU_APP_NAME", "")
-    webhook_url = f"https://{app_url}.herokuapp.com/telegram" if app_url else os.getenv("WEBHOOK_URL", "").rstrip("/")
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالج عام لأزرار Inline"""
+    query = update.callback_query
+    await query.answer()
+    user = update.effective_user
+    data = query.data
 
-    async with app:
-        await app.start()
+    # الرجوع للقائمة الرئيسية
+    if data == "back_to_main" or data == "back_to_main_menu":
+        await query.edit_message_text("العودة للقائمة الرئيسية. استخدم الأزرار أدناه.")
+        await query.message.reply_text("اختر من القائمة:", reply_markup=main_keyboard())
+        if user.id in user_states:
+            del user_states[user.id]
+        return
 
-        if webhook_url:
-            await app.bot.set_webhook(
-                url=webhook_url,
-                drop_pending_updates=True,
-                allowed_updates=["message", "callback_query", "pre_checkout_query", "successful_payment"],
-            )
-            logger.info(f"✅ Webhook set to: {webhook_url}")
-
-            try:
-                import web_server as _ws
-                _ws.set_bot_app(app)
-            except:
-                pass
-
-            await asyncio.Event().wait()
+    # اختيار تخصص
+    if data.startswith("spec_"):
+        specialty = data.replace("spec_", "")
+        if user.id in user_states:
+            user_states[user.id]['specialty'] = specialty
+            user_states[user.id]['step'] = 'dialect'
         else:
-            logger.info("🔄 Polling mode active")
-            await app.updater.start_polling(drop_pending_updates=True)
-            await asyncio.Event().wait()
-            await app.updater.stop()
+            # إذا لم تكن هناك حالة، ربما بدأ من جديد
+            await query.edit_message_text("لم يتم العثور على محتوى. الرجاء إرسال محاضرة أولاً.")
+            return
 
-        await app.stop()
+        await query.edit_message_text(
+            f"التخصص المختار: {config.MEDICAL_SPECIALTIES.get(specialty, specialty)}\n\nاختر اللهجة المفضلة للشرح:",
+            reply_markup=dialect_keyboard()
+        )
+        return
 
+    # اختيار لهجة
+    if data.startswith("dialect_"):
+        dialect = data.replace("dialect_", "")
+        if user.id in user_states:
+            user_states[user.id]['dialect'] = dialect
+            user_states[user.id]['step'] = 'level'
+        else:
+            await query.edit_message_text("انتهت الجلسة. الرجاء البدء من جديد.")
+            return
+
+        await query.edit_message_text(
+            f"اللهجة المختارة: {config.DIALECTS.get(dialect, dialect)}\n\nاختر المرحلة الدراسية (اختياري):",
+            reply_markup=education_level_keyboard()
+        )
+        return
+
+    # اختيار مستوى تعليمي (يمكن تخطيه)
+    if data.startswith("level_"):
+        level = data.replace("level_", "")
+        if user.id in user_states:
+            user_states[user.id]['level'] = level
+
+        # بدء المعالجة
+        await query.edit_message_text("🚀 جاري بدء معالجة المحاضرة... يرجى الانتظار.")
+        await start_processing(update, context, user.id)
+        return
+
+    # معالجة الدفع (سيتم تفصيلها لاحقاً)
+    if data.startswith("pay_"):
+        await handle_payment_callback(update, context)
+        return
+
+    await query.edit_message_text("عذراً، هذا الزر غير متاح حالياً.")
+
+async def start_processing(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """بدء مهمة معالجة المحاضرة في الخلفية"""
+    state = user_states.get(user_id)
+    if not state:
+        await update.effective_message.edit_text("❌ انتهت الجلسة. الرجاء إرسال المحاضرة مرة أخرى.")
+        return
+
+    # إنشاء مهمة غير متزامنة
+    task = asyncio.create_task(process_lecture_task(
+        user_id=user_id,
+        chat_id=state['chat_id'],
+        message_id=state['message_id'],
+        text=state['text'],
+        file_name=state.get('file_name'),
+        specialty=state.get('specialty'),
+        dialect=state.get('dialect', 'fusha'),
+        level=state.get('level')
+    ))
+    active_tasks[user_id] = task
+
+    # تنظيف الحالة (سنحتفظ بها حتى تنتهي المهمة أو نفشل)
+    # user_states.pop(user_id, None)
+
+async def process_lecture_task(user_id: int, chat_id: int, message_id: int,
+                               text: str, file_name: str = None,
+                               specialty: str = None, dialect: str = 'fusha',
+                               level: str = None):
+    """
+    المهمة الرئيسية لمعالجة المحاضرة: تحليل، صوت، فيديو، إرسال.
+    تعمل في الخلفية وتقوم بتحديث رسالة التقدم.
+    """
+    from bot import application  # استيراد متأخر لتجنب circular import
+    bot = application.bot
+
+    progress_msg_id = message_id
+    request_id = None
+
+    try:
+        # خصم محاولة مبدئياً (سنعيدها إذا فشلت)
+        user = get_user(user_id)
+        if user and user.get('subscription_type') != 'unlimited':
+            if not decrement_attempts(user_id, 1):
+                await bot.edit_message_text("❌ رصيد المحاولات غير كافٍ.", chat_id=chat_id, message_id=progress_msg_id)
+                return
+
+        # حفظ طلب الفيديو في قاعدة البيانات
+        request_id = save_video_request(user_id, text, file_name, specialty, None, dialect, level)
+
+        # تحديثات التقدم حسب النسب المطلوبة
+        async def update_status(percent: int, message: str):
+            await send_progress_update(chat_id, progress_msg_id, message, percent)
+
+        await update_status(5, "🔍 جاري قراءة النص وتنظيفه...")
+        # التحليل باستخدام الذكاء الاصطناعي
+        await update_status(8, "📊 تحليل نوع المحاضرة وتحديد التخصص...")
+        await update_status(12, "🔑 استخراج المصطلحات الطبية من النص...")
+        await update_status(15, "🧠 جاري الاتصال بالذكاء الاصطناعي لتحليل المحاضرة...")
+
+        # استدعاء ai_analyzer
+        language = 'ar'  # يمكن اكتشافها تلقائياً
+        analysis_result = analyze_lecture(text, language=language, dialect=dialect, force_specialty=specialty)
+
+        await update_status(25, "✅ تم تحليل المحاضرة بنجاح!")
+        sections = analysis_result['sections']
+        title = analysis_result['title']
+        await update_status(28, f"📚 تم تقسيم المحاضرة إلى {len(sections)} أقسام تعليمية")
+        await update_status(30, f"📝 العنوان: {title}")
+
+        # جلب الصور (تم ضمن analyze_lecture)
+        for i, sec in enumerate(sections):
+            percent = 33 + int((i+1)/len(sections)*22)
+            await update_status(percent, f"🖼️ جاري جلب الصورة للقسم {i+1}/{len(sections)}: {sec.get('heading', '')[:20]}...")
+            # الصورة موجودة في sec['image_path']
+
+        # توليد الصوت
+        await update_status(58, "🎤 جاري الاتصال بخدمة تحويل النص إلى صوت...")
+        await update_status(62, "🎙️ جاري توليد الصوت للقسم الأول...")
+        audio_result = await process_lecture_audio(sections, language, dialect)
+        if not audio_result['success']:
+            raise Exception("فشل توليد الصوت")
+        sections_with_audio = audio_result['sections']
+        total_audio_duration = audio_result['total_duration']
+        await update_status(72, "✅ تم توليد الصوت لجميع الأقسام!")
+        await update_status(75, f"⏱️ المدة الإجمالية للصوت: {int(total_audio_duration//60)}:{int(total_audio_duration%60):02d}")
+
+        # إنشاء الفيديو
+        await update_status(78, "🎬 جاري إنتاج الفيديو...")
+        await update_status(82, "🎨 إنشاء شرائح المقدمة والعنوان...")
+        await update_status(86, "📝 بناء شرائح الأقسام وإضافة الصور...")
+        await update_status(90, "🎬 جاري تشفير الفيديو (قد يستغرق دقيقة)...")
+
+        video_data = {
+            'title': title,
+            'specialty_code': specialty or analysis_result.get('specialty_code', 'general'),
+            'language': language,
+            'dialect': dialect,
+            'sections': sections_with_audio,
+        }
+        video_path, video_duration = create_video_from_sections(video_data)
+
+        await update_status(95, f"✅ اكتمل الفيديو! المدة: {int(video_duration//60)}:{int(video_duration%60):02d}")
+        await update_status(97, "📤 جاري إرسال الفيديو...")
+
+        # إرسال الفيديو
+        caption = f"""
+🎬 *{title}*
+
+📊 عدد الأقسام: {len(sections)}
+⏱ المدة: {int(video_duration//60)}:{int(video_duration%60):02d}
+🏥 التخصص: {analysis_result.get('specialty', 'عام')}
+🤖 النموذج: {analysis_result.get('ai_model_used', 'AI')}
+
+📌 لإنتاج فيديوهات أخرى، اضغط على "رفع محاضرة"
+"""
+        with open(video_path, 'rb') as f:
+            await bot.send_video(
+                chat_id=chat_id,
+                video=InputFile(f),
+                caption=caption,
+                parse_mode=ParseMode.MARKDOWN,
+                supports_streaming=True
+            )
+
+        await update_status(100, "✅ تم الإرسال بنجاح!")
+
+        # تحديث قاعدة البيانات
+        increment_total_videos(user_id)
+        update_video_request(
+            request_id,
+            status='completed',
+            title=title,
+            sections_count=len(sections),
+            total_duration=int(video_duration),
+            video_file_path=str(video_path),
+            ai_model_used=analysis_result.get('ai_model_used')
+        )
+
+        # تنظيف
+        if user_id in user_states:
+            del user_states[user_id]
+        # حذف الملفات المؤقتة بعد فترة أو فوراً
+
+    except Exception as e:
+        logger.error(f"فشل معالجة المحاضرة للمستخدم {user_id}: {e}", exc_info=True)
+        error_msg = f"❌ عذراً، حدث خطأ أثناء المعالجة:\n`{str(e)[:200]}`\n\nتم إعادة المحاولة إلى رصيدك."
+        try:
+            await bot.edit_message_text(error_msg, chat_id=chat_id, message_id=progress_msg_id, parse_mode=ParseMode.MARKDOWN)
+        except:
+            await bot.send_message(chat_id, error_msg, parse_mode=ParseMode.MARKDOWN)
+
+        # إعادة المحاولة
+        add_attempts(user_id, 1, "فشل المعالجة")
+        if request_id:
+            update_video_request(request_id, status='failed', error_message=str(e))
+
+        if user_id in user_states:
+            del user_states[user_id]
+    finally:
+        if user_id in active_tasks:
+            del active_tasks[user_id]
+        # إعادة لوحة المفاتيح الرئيسية
+        await bot.send_message(chat_id, "يمكنك متابعة استخدام البوت:", reply_markup=main_keyboard())
+
+async def handle_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة أزرار الدفع - سيتم تفصيلها لاحقاً"""
+    query = update.callback_query
+
+    # ... تابع bot.py
+
+# ==================== معالجات الدفع والإحالات ====================
+
+async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عرض خطط الاشتراك وخيارات الدفع"""
+    user = update.effective_user
+    lang = await get_user_language(user.id)
+    
+    plans_text = f"""
+💰 *خطط الاشتراك* 💰
+
+اختر الخطة المناسبة لك:
+
+1️⃣ *شهر واحد* - {config.SUBSCRIPTION_PRICES['1_month']} $ (أو {config.STARS_PRICE_1M} ⭐ نجوم)
+   🎬 {config.ATTEMPTS_PER_PLAN['1_month']} محاولة
+
+3️⃣ *3 شهور* - {config.SUBSCRIPTION_PRICES['3_months']} $ (أو {config.STARS_PRICE_3M} ⭐)
+   🎬 {config.ATTEMPTS_PER_PLAN['3_months']} محاولة
+
+1️⃣2️⃣ *12 شهر* - {config.SUBSCRIPTION_PRICES['12_months']} $ (أو {config.STARS_PRICE_12M} ⭐)
+   🎬 {config.ATTEMPTS_PER_PLAN['12_months']} محاولة
+
+♾️ *غير محدود* - {config.SUBSCRIPTION_PRICES['unlimited']} $ (أو {config.STARS_PRICE_UNLIMITED} ⭐)
+   🎬 محاولات لا نهائية
+
+طرق الدفع المتاحة:
+- ⭐ نجوم تيليجرام
+- 💳 ماستر كارد (تحويل)
+- 💰 TON / USDT
+
+اختر الخطة وطريقة الدفع:
+"""
+    await update.message.reply_text(
+        plans_text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=payment_plans_keyboard()
+    )
+
+def payment_plans_keyboard() -> InlineKeyboardMarkup:
+    """لوحة خطط الدفع"""
+    buttons = [
+        [InlineKeyboardButton("⭐ شهر - نجوم", callback_data="pay_stars_1m")],
+        [InlineKeyboardButton("⭐ 3 شهور - نجوم", callback_data="pay_stars_3m")],
+        [InlineKeyboardButton("⭐ 12 شهر - نجوم", callback_data="pay_stars_12m")],
+        [InlineKeyboardButton("⭐ غير محدود - نجوم", callback_data="pay_stars_unlim")],
+        [InlineKeyboardButton("💳 ماستر كارد", callback_data="pay_card_menu")],
+        [InlineKeyboardButton("💰 TON/USDT", callback_data="pay_crypto_menu")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="back_to_main_menu")],
+    ]
+    return InlineKeyboardMarkup(buttons)
+
+async def handle_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة جميع أزرار الدفع"""
+    query = update.callback_query
+    user = update.effective_user
+    data = query.data
+    
+    if data.startswith("pay_stars_"):
+        plan = data.replace("pay_stars_", "")
+        plan_name = {"1m": "شهر", "3m": "3 شهور", "12m": "12 شهر", "unlim": "غير محدود"}.get(plan, plan)
+        stars_price = config.get_subscription_price_stars(
+            "1_month" if plan == "1m" else 
+            "3_months" if plan == "3m" else 
+            "12_months" if plan == "12m" else 
+            "unlimited"
+        )
+        # إنشاء فاتورة نجوم تيليجرام
+        try:
+            # ملاحظة: نجوم تيليجرام تحتاج إعداد خاص في BotFather وواجهة خاصة
+            await query.edit_message_text(
+                f"⭐ للاشتراك بـ *{plan_name}* بواسطة نجوم تيليجرام:\n\n"
+                f"السعر: *{stars_price}* نجمة\n\n"
+                f"⚠️ حالياً الدفع بالنجوم قيد التفعيل. يمكنك استخدام طرق الدفع الأخرى.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except:
+            await query.edit_message_text("حدث خطأ في إنشاء الفاتورة.")
+    
+    elif data == "pay_card_menu":
+        await query.edit_message_text(
+            "💳 *الدفع عن طريق ماستر كارد*\n\n"
+            "قم بتحويل المبلغ إلى الحساب التالي:\n\n"
+            f"`{config.PAYMENT_METHODS.get('mastercard', 'غير متوفر')}`\n\n"
+            "بعد التحويل، أرسل صورة الإيصال هنا.\n"
+            "سنقوم بتفعيل اشتراكك خلال 24 ساعة.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        user_states[user.id] = {'step': 'waiting_receipt', 'method': 'card'}
+    
+    elif data == "pay_crypto_menu":
+        await query.edit_message_text(
+            "💰 *الدفع عن طريق العملات الرقمية*\n\n"
+            "عنوان USDT (TON):\n"
+            f"`{config.PAYMENT_METHODS.get('ton_usdt', 'غير متوفر')}`\n\n"
+            "بعد التحويل، أرسل صورة الإيصال أو رابط المعاملة.\n"
+            "سنقوم بتفعيل اشتراكك خلال 24 ساعة.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        user_states[user.id] = {'step': 'waiting_receipt', 'method': 'crypto'}
+
+async def handle_receipt_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """استقبال صورة إيصال الدفع"""
+    user = update.effective_user
+    state = user_states.get(user.id, {})
+    
+    if state.get('step') != 'waiting_receipt':
+        return  # ليس في وضع انتظار إيصال
+    
+    photo = update.message.photo[-1]  # أعلى جودة
+    file_id = photo.file_id
+    
+    # إنشاء طلب دفع في قاعدة البيانات
+    payment_id = create_payment(
+        user_id=user.id,
+        amount=0,  # سيتم تحديده لاحقاً من قبل المالك
+        payment_method=state.get('method', 'manual'),
+        receipt_file_id=file_id
+    )
+    
+    await update.message.reply_text(
+        "✅ *تم استلام إيصالك بنجاح!*\n\n"
+        "رقم الطلب: `{payment_id}`\n"
+        "سيقوم فريق الدعم بمراجعة طلبك وتفعيل الاشتراك خلال 24 ساعة.\n"
+        "شكراً لصبرك!".format(payment_id=str(payment_id)[:8]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    
+    # إشعار المالك
+    owner_id = config.OWNER_ID
+    if owner_id:
+        try:
+            await context.bot.send_message(
+                owner_id,
+                f"🆕 *طلب دفع جديد*\n\n"
+                f"المستخدم: {user.full_name} (@{user.username})\n"
+                f"ID: `{user.id}`\n"
+                f"طريقة الدفع: {state.get('method')}\n"
+                f"رقم الطلب: `{payment_id}`\n\n"
+                f"استخدم /admin للمراجعة.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            # إعادة توجيه الإيصال
+            await context.bot.forward_message(owner_id, user.id, update.message.message_id)
+        except Exception as e:
+            logger.error(f"فشل إرسال إشعار للمالك: {e}")
+    
+    # تنظيف الحالة
+    del user_states[user.id]
+
+# ==================== لوحة تحكم المالك ====================
+
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """لوحة تحكم المالك - تعرض الإحصائيات وخيارات الإدارة"""
+    user = update.effective_user
+    if user.id != config.OWNER_ID:
+        await update.message.reply_text("⛔ غير مصرح لك.")
+        return
+    
+    stats = get_stats()
+    
+    admin_text = f"""
+🔐 *لوحة تحكم المالك* 🔐
+
+📊 *إحصائيات عامة:*
+👥 إجمالي المستخدمين: *{stats['total_users']}*
+🆕 مستخدمين جدد اليوم: *{stats['new_users_today']}*
+🎬 إجمالي الفيديوهات: *{stats['total_videos']}*
+💰 إجمالي الإيرادات: *${stats['total_revenue']:.2f}*
+⏳ طلبات دفع معلقة: *{stats['pending_payments']}*
+🚫 محظورين: *{stats['banned_users']}*
+🔗 إجمالي الإحالات: *{stats['total_referrals']}*
+
+استخدم الأزرار أدناه:
+"""
+    keyboard = [
+        [InlineKeyboardButton("👥 عرض المستخدمين", callback_data="admin_users_1")],
+        [InlineKeyboardButton("💰 طلبات الدفع المعلقة", callback_data="admin_payments")],
+        [InlineKeyboardButton("📨 إرسال رسالة جماعية", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("🔄 تحديث الإحصائيات", callback_data="admin_refresh")],
+    ]
+    await update.message.reply_text(admin_text, parse_mode=ParseMode.MARKDOWN,
+                                   reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة أزرار لوحة التحكم"""
+    query = update.callback_query
+    user = update.effective_user
+    if user.id != config.OWNER_ID:
+        await query.answer("غير مصرح", show_alert=True)
+        return
+    
+    data = query.data
+    await query.answer()
+    
+    if data.startswith("admin_users_"):
+        page = int(data.split("_")[-1])
+        users, total = get_all_users_paginated(page, 10)
+        total_pages = (total + 9) // 10
+        
+        text = f"👥 *قائمة المستخدمين* (صفحة {page}/{total_pages}):\n\n"
+        for u in users:
+            banned_icon = "🚫" if u['is_banned'] else "✅"
+            text += f"{banned_icon} `{u['user_id']}` - {u.get('full_name', '---')} | محاولات: {u['attempts']}\n"
+        
+        buttons = []
+        row = []
+        if page > 1:
+            row.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"admin_users_{page-1}"))
+        if page < total_pages:
+            row.append(InlineKeyboardButton("التالي ➡️", callback_data=f"admin_users_{page+1}"))
+        if row:
+            buttons.append(row)
+        buttons.append([InlineKeyboardButton("🔙 رجوع للوحة التحكم", callback_data="admin_back")])
+        
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN,
+                                      reply_markup=InlineKeyboardMarkup(buttons))
+    
+    elif data == "admin_payments":
+        pending = get_pending_payments()
+        if not pending:
+            await query.edit_message_text("✅ لا توجد طلبات دفع معلقة حالياً.")
+            return
+        text = "💰 *طلبات الدفع المعلقة:*\n\n"
+        for p in pending[:10]:
+            text += f"🔹 `{p['payment_id']}` - {p.get('full_name', '---')} - {p['payment_method']} - ${p['amount']}\n"
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
+    
+    elif data == "admin_broadcast":
+        user_states[user.id] = {'step': 'broadcast'}
+        await query.edit_message_text(
+            "📨 *إرسال رسالة جماعية*\n\n"
+            "أرسل النص الذي تريد إرساله لجميع المستخدمين.\n"
+            "يمكنك إرفاق صورة أو فيديو (اختياري).\n"
+            "اكتب /cancel للإلغاء.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    
+    elif data == "admin_refresh":
+        await admin_command(update, context)
+        await query.message.delete()
+    
+    elif data == "admin_back":
+        await admin_command(update, context)
+        await query.message.delete()
+
+async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """استقبال رسالة البث من المالك وإرسالها للجميع"""
+    user = update.effective_user
+    if user.id != config.OWNER_ID:
+        return
+    state = user_states.get(user.id, {})
+    if state.get('step') != 'broadcast':
+        return
+    
+    # تنظيف الحالة
+    del user_states[user.id]
+    
+    # جلب جميع المستخدمين (بشكل تدريجي لتجنب التهيئة الزائدة)
+    users, _ = get_all_users_paginated(1, 1000)  # تبسيط، يمكن عمل تكرار للجميع
+    
+    success = 0
+    failed = 0
+    
+    progress_msg = await update.message.reply_text(f"📤 جاري الإرسال إلى {len(users)} مستخدم...")
+    
+    for u in users:
+        try:
+            if update.message.text:
+                await context.bot.send_message(u['user_id'], update.message.text)
+            elif update.message.photo:
+                await context.bot.send_photo(u['user_id'], update.message.photo[-1].file_id,
+                                           caption=update.message.caption)
+            elif update.message.video:
+                await context.bot.send_video(u['user_id'], update.message.video.file_id,
+                                           caption=update.message.caption)
+            success += 1
+        except Exception as e:
+            logger.warning(f"فشل إرسال البث إلى {u['user_id']}: {e}")
+            failed += 1
+        await asyncio.sleep(0.05)  # تجنب flood limits
+    
+    await progress_msg.edit_text(
+        f"✅ *اكتمل البث!*\n\n"
+        f"✅ تم الإرسال: {success}\n"
+        f"❌ فشل: {failed}",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+# ==================== معالجات إضافية ====================
+
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """إلغاء العملية الحالية"""
+    user = update.effective_user
+    if user.id in user_states:
+        del user_states[user.id]
+    if user.id in cancel_flags:
+        cancel_flags[user.id] = True
+    await update.message.reply_text("✅ تم إلغاء العملية.", reply_markup=main_keyboard())
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالج الأخطاء العام"""
+    logger.error(f"حدث خطأ: {context.error}", exc_info=context.error)
+    try:
+        if update and update.effective_message:
+            await update.effective_message.reply_text(
+                "⚠️ حدث خطأ غير متوقع. الرجاء المحاولة لاحقاً أو التواصل مع الدعم."
+            )
+    except:
+        pass
+
+# ==================== دالة التشغيل الرئيسية ====================
+
+# متغير عام للتطبيق (لتتمكن الدوال الأخرى من الوصول إليه)
+application = None
+
+async def setup_bot_commands(app: Application):
+    """إعداد أوامر البوت في القائمة"""
+    commands = [
+        BotCommand("start", "بدء البوت والترحيب"),
+        BotCommand("help", "شرح طريقة الاستخدام"),
+        BotCommand("balance", "عرض رصيد المحاولات"),
+        BotCommand("subscribe", "الاشتراك المدفوع"),
+        BotCommand("referral", "رابط الإحالة"),
+        BotCommand("cancel", "إلغاء العملية الحالية"),
+    ]
+    await app.bot.set_my_commands(commands)
+    
+    # لقائمة خاصة للمالك
+    if config.OWNER_ID:
+        admin_commands = [
+            BotCommand("admin", "لوحة تحكم المالك"),
+        ]
+        await app.bot.set_my_commands(commands + admin_commands, scope={"type": "chat", "chat_id": config.OWNER_ID})
+
+async def post_init(app: Application):
+    """بعد تهيئة التطبيق"""
+    await setup_bot_commands(app)
+    logger.info("✅ تم تهيئة البوت وتعيين الأوامر")
+
+def main() -> None:
+    """نقطة بدء تشغيل البوت"""
+    global application
+    
+    # تهيئة قاعدة البيانات
+    try:
+        init_db()
+        logger.info("✅ تم الاتصال بقاعدة البيانات")
+    except Exception as e:
+        logger.error(f"❌ فشل الاتصال بقاعدة البيانات: {e}")
+        # استمرار التشغيل بوظائف محدودة
+    
+    # إنشاء التطبيق
+    builder = Application.builder()
+    builder.token(config.BOT_TOKEN)
+    builder.post_init(post_init)
+    application = builder.build()
+    
+    # إضافة المعالجات
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("balance", balance_command))
+    application.add_handler(CommandHandler("referral", referral_command))
+    application.add_handler(CommandHandler("subscribe", subscribe_command))
+    application.add_handler(CommandHandler("admin", admin_command))
+    application.add_handler(CommandHandler("cancel", cancel_command))
+    
+    # استقبال الملفات والنصوص
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_receipt_photo))
+    
+    # حالة البث (للمالك فقط)
+    application.add_handler(MessageHandler(
+        filters.User(user_id=config.OWNER_ID) & (filters.TEXT | filters.PHOTO | filters.VIDEO),
+        handle_broadcast_message
+    ), group=1)
+    
+    # أزرار الكول باك
+    application.add_handler(CallbackQueryHandler(button_callback, pattern="^(spec_|dialect_|level_|back_)"))
+    application.add_handler(CallbackQueryHandler(handle_payment_callback, pattern="^pay_"))
+    application.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_"))
+    
+    # معالج الأخطاء
+    application.add_error_handler(error_handler)
+    
+    # بدء البوت (webhook أو polling)
+    webhook_url = config.WEBHOOK_URL
+    if webhook_url:
+        # وضع Webhook لـ Heroku
+        app_name = webhook_url.rstrip('/')
+        webhook_path = f"/webhook/{config.BOT_TOKEN}"
+        full_url = f"{app_name}{webhook_path}"
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=config.PORT,
+            url_path=webhook_path,
+            webhook_url=full_url
+        )
+        logger.info(f"🚀 البوت يعمل عبر Webhook: {full_url}")
+    else:
+        # وضع Polling للتطوير المحلي
+        logger.info("🚀 البوت يعمل عبر Polling...")
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
+    await query.edit_message_text("نظام الدفع قيد التطوير حالياً.")
