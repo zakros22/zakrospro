@@ -1,142 +1,313 @@
-import sys
+# config.py
+# -*- coding: utf-8 -*-
+"""
+ملف الإعدادات المركزي لبوت المحاضرات الطبية
+يقوم بتحميل المتغيرات من ملف .env ومن بيئة النظام، ويوفر كائن Config موحد
+"""
+
 import os
-import sys  # ⭐ تأكد من وجود هذا السطر
+import sys
+import logging
+from pathlib import Path
+from typing import Dict, Optional
+
+# محاولة تحميل مكتبة dotenv، إذا لم تكن موجودة نستمر بدونها
+try:
+    from dotenv import load_dotenv
+    # تحميل المتغيرات من ملف .env إذا كان موجوداً
+    env_path = Path(__file__).parent / '.env'
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path)
+        print(f"✅ تم تحميل الإعدادات من: {env_path}")
+    else:
+        load_dotenv()  # يحاول تحميل .env من المسار الحالي
+        print("ℹ️ لم يتم العثور على ملف .env، استخدام متغيرات بيئة النظام فقط")
+except ImportError:
+    print("⚠️ مكتبة python-dotenv غير مثبتة. يرجى تثبيتها: pip install python-dotenv")
+    # نستمر بدون تحميل .env
+
+class Config:
+    """فئة تحوي جميع إعدادات البوت"""
+
+    # ========== إعدادات البوت الأساسية ==========
+    BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
+    OWNER_ID: int = int(os.getenv("OWNER_ID", "7021542402"))  # معرف المالك
+
+    # ========== مفاتيح الذكاء الاصطناعي ==========
+    DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", "")
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+
+    # للتعامل مع مفاتيح متعددة مفصولة بفواصل (للاحتياط)
+    DEEPSEEK_KEYS: list = [k.strip() for k in DEEPSEEK_API_KEY.split(",") if k.strip()]
+    GEMINI_KEYS: list = [k.strip() for k in GEMINI_API_KEY.split(",") if k.strip()]
+    GROQ_KEYS: list = [k.strip() for k in GROQ_API_KEY.split(",") if k.strip()]
+
+    # ========== إعدادات قاعدة البيانات ==========
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+    # إذا كان الرابط يبدأ بـ postgres:// نستبدلها بـ postgresql:// ليتوافق مع بعض المكتبات
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+    # ========== إعدادات Webhook (لـ Heroku) ==========
+    WEBHOOK_URL: str = os.getenv("WEBHOOK_URL", "")
+    PORT: int = int(os.getenv("PORT", "5000"))
+    WEBHOOK_PATH: str = f"/webhook/{BOT_TOKEN}" if BOT_TOKEN else "/webhook"
+
+    # ========== حدود الاستخدام والخطط ==========
+    FREE_ATTEMPTS: int = int(os.getenv("FREE_ATTEMPTS", "3"))
+    REFERRAL_POINTS_REQUIRED: int = int(os.getenv("REFERRAL_POINTS_REQUIRED", "10"))
+    REFERRAL_POINTS_PER_REFERRAL: int = int(os.getenv("REFERRAL_POINTS_PER_REFERRAL", "1"))
+
+    # أسعار الاشتراكات (بالدولار)
+    SUBSCRIPTION_PRICES: Dict[str, float] = {
+        "1_month": float(os.getenv("PRICE_1M", "9.99")),
+        "3_months": float(os.getenv("PRICE_3M", "24.99")),
+        "12_months": float(os.getenv("PRICE_12M", "79.99")),
+        "unlimited": float(os.getenv("PRICE_UNLIMITED", "149.99"))
+    }
+
+    # عدد المحاولات لكل خطة
+    ATTEMPTS_PER_PLAN: Dict[str, int] = {
+        "1_month": int(os.getenv("ATTEMPTS_1M", "30")),
+        "3_months": int(os.getenv("ATTEMPTS_3M", "100")),
+        "12_months": int(os.getenv("ATTEMPTS_12M", "500")),
+        "unlimited": int(os.getenv("ATTEMPTS_UNLIMITED", "999999"))
+    }
+
+    # ========== معلومات الدفع ==========
+    PAYMENT_METHODS: Dict[str, str] = {
+        "mastercard": os.getenv("MASTERCARD_ACCOUNT", ""),
+        "ton_usdt": os.getenv("TON_USDT_WALLET", ""),
+        "btc": os.getenv("BTC_WALLET", ""),
+    }
+
+    # دعم نجوم تيليجرام
+    TELEGRAM_STARS_ENABLED: bool = os.getenv("TELEGRAM_STARS_ENABLED", "true").lower() == "true"
+    STARS_PRICE_1M: int = int(os.getenv("STARS_PRICE_1M", "100"))
+    STARS_PRICE_3M: int = int(os.getenv("STARS_PRICE_3M", "250"))
+    STARS_PRICE_12M: int = int(os.getenv("STARS_PRICE_12M", "800"))
+    STARS_PRICE_UNLIMITED: int = int(os.getenv("STARS_PRICE_UNLIMITED", "1500"))
+
+    # ========== العلامة المائية والإعدادات البصرية ==========
+    WATERMARK_TEXT: str = os.getenv("WATERMARK_TEXT", "© Medical Lecture Bot - جميع الحقوق محفوظة")
+    BOT_NAME: str = os.getenv("BOT_NAME", "Medical Lecture Bot")
+    BOT_LOGO_URL: str = os.getenv("BOT_LOGO_URL", "")
+
+    # ========== إعدادات الملفات المؤقتة ==========
+    TMP_DIR: Path = Path("tmp/telegram_bot")
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
+    # مجلدات فرعية للتنظيم
+    PDF_TMP: Path = TMP_DIR / "pdf"
+    IMAGES_TMP: Path = TMP_DIR / "images"
+    AUDIO_TMP: Path = TMP_DIR / "audio"
+    VIDEO_TMP: Path = TMP_DIR / "video"
+    for d in [PDF_TMP, IMAGES_TMP, AUDIO_TMP, VIDEO_TMP]:
+        d.mkdir(parents=True, exist_ok=True)
+
+    # ========== حدود المحتوى ==========
+    MAX_TEXT_LENGTH: int = int(os.getenv("MAX_TEXT_LENGTH", "50000"))
+    MIN_TEXT_LENGTH: int = int(os.getenv("MIN_TEXT_LENGTH", "100"))
+    MAX_PDF_SIZE_MB: int = int(os.getenv("MAX_PDF_SIZE_MB", "20"))
+    MAX_PDF_PAGES: int = int(os.getenv("MAX_PDF_PAGES", "100"))
+
+    # ========== إعدادات الفيديو ==========
+    VIDEO_WIDTH: int = int(os.getenv("VIDEO_WIDTH", "854"))
+    VIDEO_HEIGHT: int = int(os.getenv("VIDEO_HEIGHT", "480"))
+    VIDEO_FPS: int = int(os.getenv("VIDEO_FPS", "24"))
+    VIDEO_BITRATE: str = os.getenv("VIDEO_BITRATE", "1000k")
+    AUDIO_BITRATE: str = os.getenv("AUDIO_BITRATE", "128k")
+
+    # مدة كل شريحة (بالثواني) - افتراضية وقابلة للتعديل
+    WELCOME_DURATION: float = 3.5
+    TITLE_DURATION: float = 4.0
+    MAP_DURATION: float = 5.0
+    SECTION_TITLE_DURATION: float = 3.0
+    SUMMARY_DURATION: float = 6.0
+
+    # ========== إعدادات اللغة واللهجات ==========
+    SUPPORTED_LANGUAGES: list = ["ar", "en"]
+    DEFAULT_LANGUAGE: str = "ar"
+    DIALECTS: Dict[str, str] = {
+        "iraqi": "اللهجة العراقية",
+        "egyptian": "اللهجة المصرية",
+        "levantine": "اللهجة الشامية",
+        "gulf": "اللهجة الخليجية",
+        "fusha": "العربية الفصحى"
+    }
+    DEFAULT_DIALECT: str = "fusha"
+
+    # ========== التخصصات الطبية ==========
+    MEDICAL_SPECIALTIES: Dict[str, str] = {
+        "cardiology": "أمراض القلب",
+        "pulmonology": "أمراض الصدر",
+        "neurology": "الأعصاب",
+        "gastroenterology": "الجهاز الهضمي",
+        "nephrology": "الكلى",
+        "endocrinology": "الغدد الصماء",
+        "hematology": "أمراض الدم",
+        "oncology": "الأورام",
+        "rheumatology": "الروماتيزم",
+        "dermatology": "الأمراض الجلدية",
+        "ophthalmology": "طب العيون",
+        "ent": "الأنف والأذن والحنجرة",
+        "pediatrics": "طب الأطفال",
+        "gynecology": "أمراض النساء والتوليد",
+        "urology": "المسالك البولية",
+        "orthopedics": "جراحة العظام",
+        "psychiatry": "الطب النفسي",
+        "emergency": "طب الطوارئ",
+        "general": "طب عام",
+        "anatomy": "علم التشريح",
+        "physiology": "علم وظائف الأعضاء",
+        "pathology": "علم الأمراض",
+        "pharmacology": "علم الأدوية",
+        "microbiology": "علم الأحياء الدقيقة",
+    }
+
+    # التخصصات الفرعية (يمكن توسيعها)
+    SUB_SPECIALTIES: Dict[str, Dict[str, str]] = {
+        "cardiology": {
+            "interventional": "القسطرة التداخلية",
+            "electrophysiology": "كهرباء القلب",
+            "heart_failure": "فشل القلب",
+            "preventive": "الوقاية",
+        },
+        "neurology": {
+            "stroke": "الجلطات الدماغية",
+            "epilepsy": "الصرع",
+            "movement_disorders": "اضطرابات الحركة",
+            "neuromuscular": "الأمراض العصبية العضلية",
+        },
+        # ... باقي التخصصات
+    }
+
+    # المراحل الدراسية
+    EDUCATION_LEVELS: Dict[str, str] = {
+        "undergraduate": "طالب بكالوريوس",
+        "postgraduate": "طالب دراسات عليا",
+        "resident": "طبيب مقيم",
+        "specialist": "أخصائي",
+        "consultant": "استشاري",
+        "public": "تثقيف عام",
+    }
+
+    # ========== إعدادات الذكاء الاصطناعي ==========
+    AI_TIMEOUT: int = int(os.getenv("AI_TIMEOUT", "60"))  # ثواني
+    AI_MAX_RETRIES: int = int(os.getenv("AI_MAX_RETRIES", "3"))
+    AI_TEMPERATURE: float = float(os.getenv("AI_TEMPERATURE", "0.7"))
+    AI_MAX_TOKENS: int = int(os.getenv("AI_MAX_TOKENS", "4096"))
+
+    # ========== إعدادات الصور ==========
+    IMAGE_SOURCES: list = ["pollinations", "unsplash", "picsum", "generated"]
+    UNSPLASH_ACCESS_KEY: str = os.getenv("UNSPLASH_ACCESS_KEY", "")
+    PEXELS_API_KEY: str = os.getenv("PEXELS_API_KEY", "")
+
+    # ========== إعدادات الصوت ==========
+    GTTS_LANG_MAP: Dict[str, str] = {
+        "iraqi": "ar",
+        "egyptian": "ar",
+        "levantine": "ar",
+        "gulf": "ar",
+        "fusha": "ar",
+        "english": "en"
+    }
+    GTTS_TLD: str = "com"  # نطاق Google المستخدم
+
+    # ========== إعدادات التخزين المؤقت والتنظيف ==========
+    AUTO_CLEANUP_AFTER_HOURS: int = int(os.getenv("AUTO_CLEANUP_HOURS", "24"))
+    MAX_CONCURRENT_VIDEO_TASKS: int = int(os.getenv("MAX_CONCURRENT_VIDEO", "2"))
+
+    # ========== إعدادات التسجيل ==========
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+    LOG_FILE: Path = TMP_DIR / "bot.log"
+
+    # ========== دوال مساعدة ==========
+    @classmethod
+    def validate(cls) -> bool:
+        """التحقق من وجود الإعدادات الضرورية"""
+        errors = []
+        warnings = []
+
+        if not cls.BOT_TOKEN:
+            errors.append("❌ BOT_TOKEN غير موجود! يجب تعيين توكن البوت.")
+        if not cls.OWNER_ID:
+            errors.append("❌ OWNER_ID غير موجود! يجب تعيين معرف المالك.")
+
+        # تحذيرات للمفاتيح الاختيارية ولكنها مهمة
+        if not cls.DEEPSEEK_API_KEY and not cls.GEMINI_API_KEY and not cls.GROQ_API_KEY:
+            warnings.append("⚠️ لم يتم تعيين أي مفتاح AI. سيعمل البوت بوضع محدود (محتوى احتياطي فقط).")
+        if not cls.DATABASE_URL:
+            warnings.append("⚠️ DATABASE_URL غير موجود. لن يتم حفظ البيانات.")
+
+        if errors:
+            print("\n".join(errors))
+            return False
+
+        if warnings:
+            print("\n".join(warnings))
+
+        return True
+
+    @classmethod
+    def get_ai_keys(cls, provider: str) -> list:
+        """إرجاع قائمة المفاتيح لمزود معين"""
+        if provider.lower() == "deepseek":
+            return cls.DEEPSEEK_KEYS
+        elif provider.lower() == "gemini":
+            return cls.GEMINI_KEYS
+        elif provider.lower() == "groq":
+            return cls.GROQ_KEYS
+        return []
+
+    @classmethod
+    def get_subscription_price_stars(cls, plan: str) -> int:
+        """إرجاع سعر الخطة بنجوم تيليجرام"""
+        mapping = {
+            "1_month": cls.STARS_PRICE_1M,
+            "3_months": cls.STARS_PRICE_3M,
+            "12_months": cls.STARS_PRICE_12M,
+            "unlimited": cls.STARS_PRICE_UNLIMITED
+        }
+        return mapping.get(plan, 0)
+
+    @classmethod
+    def get_subscription_price_usd(cls, plan: str) -> float:
+        """إرجاع سعر الخطة بالدولار"""
+        return cls.SUBSCRIPTION_PRICES.get(plan, 0.0)
 
 
-def _load_dotenv():
-    """Load .env file — overrides any existing env var if .env has a non-empty value."""
-    env_path = os.path.join(os.path.dirname(__file__), '.env')
-    try:
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, _, val = line.partition('=')
-                    key, val = key.strip(), val.strip()
-                    if key and val:
-                        os.environ[key] = val
-    except FileNotFoundError:
-        pass
+# ========== إعداد التسجيل (Logging) ==========
+def setup_logging():
+    """تهيئة نظام التسجيل"""
+    log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    logging.basicConfig(
+        level=getattr(logging, Config.LOG_LEVEL),
+        format=log_format,
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(Config.LOG_FILE, encoding='utf-8')
+        ]
+    )
+    # تقليل مستوى تسجيل المكتبات الخارجية
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("PIL").setLevel(logging.WARNING)
 
-_load_dotenv()
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+# تهيئة التسجيل
+setup_logging()
+logger = logging.getLogger(__name__)
 
-# ── Google API key pool ───────────────────────────────────────────────────────
-_raw_google = os.getenv("GOOGLE_API_KEYS", "") or os.getenv("GOOGLE_API_KEY", "")
-_g_from_comma: list[str] = [k.strip() for k in _raw_google.split(",") if k.strip()]
-_g_from_numbered: list[str] = [
-    v for i in range(1, 10)
-    if (v := os.getenv(f"GOOGLE_API_KEY_{i}", "")).strip()
-]
-_g_all = _g_from_comma + [k for k in _g_from_numbered if k not in _g_from_comma]
-GOOGLE_API_KEYS: list[str] = _g_all
-GOOGLE_API_KEY = GOOGLE_API_KEYS[0] if GOOGLE_API_KEYS else ""
+# إنشاء نسخة من الإعدادات للاستخدام في باقي الملفات
+config = Config()
 
-# ── Groq API key pool ─────────────────────────────────────────────────────────
-_raw_groq = os.getenv("GROQ_API_KEYS", "") or os.getenv("GROQ_API_KEY", "")
-_groq_from_comma: list[str] = [k.strip() for k in _raw_groq.split(",") if k.strip()]
-_groq_from_numbered: list[str] = [
-    v for i in range(1, 10)
-    if (v := os.getenv(f"GROQ_API_KEY_{i}", "")).strip()
-]
-_groq_all = _groq_from_comma + [k for k in _groq_from_numbered if k not in _groq_from_comma]
-GROQ_API_KEYS: list[str] = _groq_all
-GROQ_API_KEY = GROQ_API_KEYS[0] if GROQ_API_KEYS else ""
-
-# ── OpenRouter API key pool ───────────────────────────────────────────────────
-_raw_or = os.getenv("OPENROUTER_API_KEYS", "") or os.getenv("OPENROUTER_API_KEY", "")
-_or_from_comma: list[str] = [k.strip() for k in _raw_or.split(",") if k.strip()]
-_or_from_numbered: list[str] = [
-    v for i in range(1, 10)
-    if (v := os.getenv(f"OPENROUTER_API_KEY_{i}", "")).strip()
-]
-_or_all = _or_from_comma + [k for k in _or_from_numbered if k not in _or_from_comma]
-OPENROUTER_API_KEYS: list[str] = _or_all
-OPENROUTER_API_KEY = OPENROUTER_API_KEYS[0] if OPENROUTER_API_KEYS else ""
-
-# ── DeepSeek API key pool ⭐ الأولوية الأولى ─────────────────────────────────
-_raw_ds = os.getenv("DEEPSEEK_API_KEYS", "") or os.getenv("DEEPSEEK_API_KEY", "")
-_ds_from_comma: list[str] = [k.strip() for k in _raw_ds.split(",") if k.strip()]
-_ds_from_numbered: list[str] = [
-    v for i in range(1, 10)
-    if (v := os.getenv(f"DEEPSEEK_API_KEY_{i}", "")).strip()
-]
-_ds_all = _ds_from_comma + [k for k in _ds_from_numbered if k not in _ds_from_comma]
-DEEPSEEK_API_KEYS: list[str] = _ds_all
-DEEPSEEK_API_KEY = DEEPSEEK_API_KEYS[0] if DEEPSEEK_API_KEYS else ""
-
-# ── ElevenLabs key pool ───────────────────────────────────────────────────────
-_raw_keys = os.getenv("ELEVENLABS_API_KEYS", "") or os.getenv("ELEVENLABS_API_KEY", "")
-_el_from_comma: list[str] = [k.strip() for k in _raw_keys.split(",") if k.strip()]
-_el_from_numbered: list[str] = [
-    v for i in range(1, 10)
-    if (v := os.getenv(f"ELEVENLABS_API_KEY_{i}", "")).strip()
-]
-_el_all = _el_from_comma + [k for k in _el_from_numbered if k not in _el_from_comma]
-ELEVENLABS_API_KEYS: list[str] = _el_all
-ELEVENLABS_API_KEY = ELEVENLABS_API_KEYS[0] if ELEVENLABS_API_KEYS else ""
-
-if not TELEGRAM_BOT_TOKEN:
-    print("WARNING: TELEGRAM_BOT_TOKEN environment variable is not set", file=sys.stderr)
-if not GOOGLE_API_KEY:
-    print("WARNING: GOOGLE_API_KEY not set — get a free key from https://aistudio.google.com/", file=sys.stderr)
-if not GROQ_API_KEY:
-    print("INFO: GROQ_API_KEY not set — get a free key from https://console.groq.com/ for better reliability", file=sys.stderr)
-if not DEEPSEEK_API_KEY:
-    print("INFO: DEEPSEEK_API_KEY not set — get a free key from https://platform.deepseek.com/", file=sys.stderr)
-if not ELEVENLABS_API_KEYS:
-    print("INFO: ELEVENLABS_API_KEYS not set — voice will use gTTS fallback", file=sys.stderr)
-
-DATABASE_URL = os.getenv("DATABASE_URL", "")
-
-OWNER_ID = 7021542402
-FREE_ATTEMPTS = 1
-PAID_ATTEMPTS = 7
-REFERRAL_POINTS_PER_INVITE = 0.1
-REFERRAL_POINTS_PER_ATTEMPT = 1.0
-MASTERCARD_NUMBER = "4272128655"
-OWNER_USERNAME = "@zakros22bot"
-WATERMARK_TEXT = "@zakros_probot"
-MASTERCARD_PRICE = 4
-TON_WALLET = "UQBpVo1V-ZhWpJi5YzoyQeX5fWuVwNq8KgcxXJWPq1ideEeD"
-TRC20_WALLET = "TNbYTFmtoAr2CH3YYgxhCMZ3YNXNm9QLcq"
-TELEGRAM_STARS_PRICE = 50
-
-VOICES = {
-    "iraq": {"name": "🇮🇶 عراقي", "voice_id": "TX3LPaxmHKxFdv7VOQHJ", "description": "لهجة عراقية أصيلة"},
-    "egypt": {"name": "🇪🇬 مصري", "voice_id": "AZnzlk1XvdvUeBnXmlld", "description": "لهجة مصرية مميزة"},
-    "syria": {"name": "🇸🇾 سوري", "voice_id": "21m00Tcm4TlvDq8ikWAM", "description": "لهجة شامية جميلة"},
-    "gulf": {"name": "🇸🇦 خليجي", "voice_id": "EXAVITQu4vr4xnSDxMaL", "description": "لهجة خليجية راقية"},
-    "msa": {"name": "📚 فصحى", "voice_id": "pNInz6obpgDQGcFmaJgB", "description": "عربي فصيح"},
-    "english": {"name": "🇺🇸 English", "voice_id": "9BWtsMINqrJLrRacOk9x", "description": "Professional English"},
-    "british": {"name": "🇬🇧 British", "voice_id": "CwhRBWXzGAHq8TQ4Fs17", "description": "British English accent"}
-}
-
-LECTURE_TYPES = {
-    "medicine": "🩺 طب", "surgery": "🔪 جراحة", "pediatrics": "👶 أطفال", "dentistry": "🦷 أسنان",
-    "pharmacy": "💊 صيدلة", "cardiology": "❤️ قلب", "neurology": "🧠 أعصاب",
-    "engineering": "⚙️ هندسة", "civil": "🏗️ مدنية", "electrical": "⚡ كهربائية",
-    "mechanical": "🔧 ميكانيكية", "aerospace": "🚀 فضاء", "software": "💻 برمجيات",
-    "science": "🔬 علوم", "physics": "⚛️ فيزياء", "chemistry": "🧪 كيمياء", "biology": "🧬 أحياء",
-    "math": "📐 رياضيات", "literature": "📖 أدب", "history": "🏛️ تاريخ", "geography": "🌍 جغرافيا",
-    "islamic": "🕌 إسلامي", "quran": "📖 قرآن", "hadith": "📜 حديث", "fiqh": "📚 فقه",
-    "primary": "🎒 ابتدائي", "middle": "📚 متوسط", "high": "🎓 إعدادي", "other": "📚 عام"
-}
-
-SUBJECT_COLORS = {
-    "medicine": (21, 128, 61), "surgery": (185, 28, 28), "pediatrics": (255, 159, 67),
-    "dentistry": (13, 71, 161), "pharmacy": (46, 125, 50), "cardiology": (220, 20, 60),
-    "neurology": (75, 0, 130), "engineering": (230, 126, 34), "civil": (121, 85, 72),
-    "electrical": (255, 193, 7), "mechanical": (96, 125, 139), "aerospace": (33, 33, 33),
-    "software": (41, 98, 255), "science": (46, 204, 113), "physics": (155, 89, 182),
-    "chemistry": (231, 76, 60), "biology": (241, 196, 15), "math": (52, 73, 94),
-    "literature": (192, 57, 43), "history": (230, 126, 34), "geography": (39, 174, 96),
-    "islamic": (21, 101, 192), "quran": (46, 134, 222), "hadith": (41, 128, 185),
-    "fiqh": (142, 68, 173), "primary": (255, 107, 107), "middle": (78, 205, 196),
-    "high": (255, 209, 102), "other": (100, 116, 139)
-}
-
-TEMP_DIR = "/tmp/telegram_bot"
-os.makedirs(TEMP_DIR, exist_ok=True)
+# طباعة معلومات البدء
+if __name__ == "__main__":
+    print("=== إعدادات بوت المحاضرات الطبية ===")
+    print(f"المالك ID: {config.OWNER_ID}")
+    print(f"المحاولات المجانية: {config.FREE_ATTEMPTS}")
+    print(f"عدد التخصصات المدعومة: {len(config.MEDICAL_SPECIALTIES)}")
+    print(f"مجلد الملفات المؤقتة: {config.TMP_DIR}")
+    valid = config.validate()
+    print(f"حالة الإعدادات: {'✅ صالحة' if valid else '❌ تحتاج تصحيح'}")
