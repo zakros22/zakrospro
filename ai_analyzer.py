@@ -1,9 +1,23 @@
-# ai_analyzer.py - تعديل جزء الصور
+# ai_analyzer.py
+# -*- coding: utf-8 -*-
+"""
+وحدة التحليل بالذكاء الاصطناعي - عقل بوت المحاضرات الطبية
+"""
 
+import re
+import json
+import asyncio
+import aiohttp
+import logging
+import time
+import random
 import requests
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
-import uuid
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Any, Union   # <--- هذا السطر ضروري
+
+# ... باقي الكود ...
 
 def _fetch_pollinations_image_sync(keyword: str, specialty: str = None) -> Optional[Path]:
     """جلب صورة من Pollinations.ai (متزامن)"""
