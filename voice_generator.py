@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-توليد الصوت - ElevenLabs مع gTTS احتياطي
+توليد الصوت - ElevenLabs مع تناوب المفاتيح و gTTS احتياطي
 """
 
 import io
@@ -192,3 +192,15 @@ async def generate_sections_audio(sections: list, dialect: str) -> dict:
     all_failed = all(not r.get("ok") for r in results)
     
     return {"results": results, "used_elevenlabs": any_el, "all_failed": all_failed}
+
+
+def keys_status() -> dict:
+    """حالة مفاتيح ElevenLabs."""
+    total = len(ELEVENLABS_API_KEYS)
+    exhausted = len(_exhausted)
+    return {
+        "total": total,
+        "active": total - exhausted,
+        "exhausted": exhausted,
+        "all_gone": exhausted >= total if total else True
+        }
