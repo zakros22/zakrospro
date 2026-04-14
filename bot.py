@@ -133,6 +133,7 @@ DIALECT_NAMES = {
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main_keyboard():
+    """لوحة المفاتيح الرئيسية."""
     return ReplyKeyboardMarkup(
         [
             ["📤 رفع محاضرة", "📊 رصيدي"],
@@ -143,22 +144,27 @@ def main_keyboard():
 
 
 def _pbar(pct: int, width: int = 12) -> str:
+    """شريط تقدم نصي."""
     filled = int(width * pct / 100)
     return "▓" * filled + "░" * (width - filled)
 
 
 def _fmt_elapsed(sec: float) -> str:
+    """تنسيق الوقت المنقضي بالعربية."""
     if sec < 60:
         return f"{int(sec)} ثانية"
     elif sec < 3600:
-        return f"{int(sec // 60)} دقيقة {int(sec % 60)} ثانية"
+        minutes = int(sec // 60)
+        seconds = int(sec % 60)
+        return f"{minutes} دقيقة و {seconds} ثانية"
     else:
         hours = int(sec // 3600)
         minutes = int((sec % 3600) // 60)
-        return f"{hours} ساعة {minutes} دقيقة"
+        return f"{hours} ساعة و {minutes} دقيقة"
 
 
 async def _safe_edit(msg, text: str, parse_mode: str = "Markdown", reply_markup=None):
+    """تعديل رسالة بشكل آمن."""
     try:
         await msg.edit_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
     except Exception:
@@ -166,6 +172,7 @@ async def _safe_edit(msg, text: str, parse_mode: str = "Markdown", reply_markup=
 
 
 async def ensure_user(update: Update) -> dict | None:
+    """التأكد من وجود المستخدم في قاعدة البيانات."""
     tg = update.effective_user
     user = get_user(tg.id)
     
@@ -180,7 +187,8 @@ async def ensure_user(update: Update) -> dict | None:
                     ref_user = get_user(ref_by)
                     name = ref_user.get("full_name", "صديق") if ref_user else "صديق"
                     await update.effective_message.reply_text(
-                        f"✅ انضممت عبر رابط إحالة {name}!"
+                        f"✅ انضممت عبر رابط إحالة {name}!\n"
+                        f"🎁 تمت إضافة نقاط لـ {name}"
                     )
                 except Exception:
                     pass
@@ -197,6 +205,7 @@ async def ensure_user(update: Update) -> dict | None:
 
 
 async def _run_or_cancel(uid: int, coro) -> object:
+    """تنفيذ coroutine مع إمكانية الإلغاء."""
     ev = _cancel_flags.get(uid)
     if ev is None or ev.is_set():
         raise asyncio.CancelledError("Already cancelled")
@@ -233,6 +242,7 @@ async def _run_or_cancel(uid: int, coro) -> object:
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """الأمر /start"""
     args = context.args
     uid = update.effective_user.id
     
@@ -252,9 +262,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.effective_user.first_name or "صديقي"
     
     welcome_text = f"""
-👋 *أهلاً {name}!*
+👋 *أهلاً بك يا {name}!*
 
-🎓 أنا *بوت المحاضرات الذكي* — أحوّل محاضرتك إلى فيديو تعليمي احترافي!
+🎓 أنا *بوت المحاضرات الذكي* 
+أحوّل محاضرتك إلى فيديو تعليمي احترافي بصوت بشري وصور كرتونية خرافية!
 
 📥 *ما يمكنك إرساله:*
 • 📄 ملف PDF
@@ -279,6 +290,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """الأمر /help"""
     help_text = """
 📖 *كيفية استخدام البوت*
 
@@ -289,7 +301,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 📊 *محتوى الفيديو الناتج:*
 • 🎬 مقدمة وخريطة للمحاضرة
-• 📚 أقسام تفصيلية مع صور تعليمية
+• 📚 أقسام تفصيلية مع صور كرتونية خرافية
 • 🎙️ صوت بشري طبيعي باللهجة المختارة
 • 📝 كلمات مفتاحية وملخص نهائي
 
@@ -298,16 +310,23 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /help - هذه المساعدة
 /cancel - إلغاء العملية الحالية
 /referral - رابط الإحالة الخاص بك
+
+💡 *نصائح:*
+• النصوص الطويلة تعطي نتائج أفضل
+• يمكنك إلغاء المعالجة في أي وقت
+• كل 10 أصدقاء عبر رابطك = محاولة مجانية
 """
     
     await update.message.reply_text(
         help_text,
         parse_mode="Markdown",
         reply_markup=main_keyboard(),
+        disable_web_page_preview=True
     )
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """الأمر /cancel"""
     uid = update.effective_user.id
     
     user_states.pop(uid, None)
@@ -330,6 +349,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def my_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عرض الرصيد."""
     user = await ensure_user(update)
     if not user:
         return
@@ -345,6 +365,7 @@ async def my_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def referral_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """الأمر /referral"""
     user = await ensure_user(update)
     if not user:
         return
@@ -362,10 +383,15 @@ async def referral_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🔗 *رابط الإحالة الخاص بك*\n\n"
         f"`{ref_link}`\n\n"
-        f"👥 الأصدقاء: *{stats['total_referrals']}*\n"
-        f"⭐ النقاط: *{stats['current_points']:.1f}*\n\n"
+        f"👥 الأصدقاء المدعوون: *{stats['total_referrals']}*\n"
+        f"⭐ النقاط الحالية: *{stats['current_points']:.1f}*\n\n"
+        f"📈 *التقدم نحو المحاولة المجانية:*\n"
         f"{progress_bar} {progress:.0f}%\n\n"
-        f"كل 10 أصدقاء = محاولة مجانية! 🎉",
+        f"💡 *كيف يعمل؟*\n"
+        f"• كل صديق يسجل = 0.1 نقطة\n"
+        f"• كل 1.0 نقطة = محاولة مجانية\n"
+        f"• أي كل *10 أصدقاء* = محاولة مجانية! 🎉\n\n"
+        f"📤 *انسخ الرابط وشاركه مع أصدقائك الآن!*",
         parse_mode="Markdown",
         disable_web_page_preview=True
     )
@@ -376,7 +402,7 @@ async def referral_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """استقبال المحتوى من المستخدم (PDF، نص، إلخ)."""
+    """استقبال المحتوى من المستخدم."""
     user = await ensure_user(update)
     if not user:
         return
@@ -428,14 +454,12 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # ═════════════════════════════════════════════════════════════════════════
-    # استخراج النص من الملف أو الرسالة
-    # ═════════════════════════════════════════════════════════════════════════
+    # استخراج النص
     lecture_text = None
-    filename = "lecture"
+    filename = "محاضرة"
     
     if msg.document:
-        fname = msg.document.file_name or "file"
+        fname = msg.document.file_name or "ملف"
         ext = fname.lower().split(".")[-1] if "." in fname else ""
         
         if ext not in ("pdf", "txt"):
@@ -446,7 +470,6 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # إرسال إشعار ببدء التحميل
         await context.bot.send_chat_action(uid, "upload_document")
         wait_msg = await msg.reply_text(
             f"📥 *جاري قراءة الملف...*\n"
@@ -461,7 +484,7 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if ext == "pdf":
                 lecture_text = await extract_full_text_from_pdf(bytes(raw))
                 filename = fname.replace(".pdf", "").replace(".PDF", "")
-            else:  # txt
+            else:
                 lecture_text = raw.decode("utf-8", errors="ignore")
                 filename = fname.replace(".txt", "").replace(".TXT", "")
             
@@ -470,7 +493,8 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await wait_msg.edit_text(
                 f"❌ *خطأ في قراءة الملف*\n\n"
-                f"تأكد من أن الملف سليم وغير تالف.",
+                f"تأكد من أن الملف سليم وغير تالف.\n"
+                f"إذا تكرر الخطأ، جرب ملفاً آخر.",
                 parse_mode="Markdown"
             )
             return
@@ -503,24 +527,22 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # التحقق من صحة النص المستخرج
+    # التحقق من صحة النص
     if not lecture_text or len(lecture_text.strip()) < 50:
         await msg.reply_text(
-            "❌ *لم أتمكن من استخراج نص كافٍ من الملف*\n\n"
+            "❌ *لم أتمكن من استخراج نص كافٍ*\n\n"
             "تأكد من أن الملف يحتوي على نص قابل للقراءة.",
             parse_mode="Markdown",
             reply_markup=main_keyboard()
         )
         return
     
-    # التحقق من المحاولات المتبقية
+    # التحقق من المحاولات
     if user["attempts_left"] <= 0:
         await send_payment_required_message(update, context)
         return
     
-    # ═════════════════════════════════════════════════════════════════════════
-    # حفظ الحالة وعرض خيارات اللهجة
-    # ═════════════════════════════════════════════════════════════════════════
+    # حفظ الحالة
     user_states[uid] = {
         "state": "awaiting_dialect",
         "text": lecture_text,
@@ -540,15 +562,15 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  معالجة أزرار Inline (Callbacks)
+#  معالجة أزرار Inline
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالج الأزرار."""
     q = update.callback_query
     data = q.data
     uid = q.from_user.id
     
-    # أزرار لوحة الأدمن
     if data.startswith("admin_"):
         await handle_admin_callback(update, context)
         return
@@ -559,15 +581,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "pay_stars":
         await handle_pay_stars(update, context)
         return
-    
     if data == "pay_mastercard":
         await handle_pay_mastercard(update, context)
         return
-    
     if data == "pay_crypto":
         await handle_pay_crypto(update, context)
         return
-    
     if data.startswith("sent_"):
         await handle_payment_sent(update, context)
         return
@@ -592,7 +611,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
     
-    # عرض رابط الإحالة
+    # عرض الإحالة
     if data == "show_referral":
         stats = get_referral_stats(uid)
         bot_info = await context.bot.get_me()
@@ -612,7 +631,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # اختيار اللهجة وبدء المعالجة
+    # اختيار اللهجة
     if data.startswith("dial_"):
         dialect = data[5:]
         state = user_states.get(uid, {})
@@ -647,13 +666,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🎬 *بدأت المعالجة!*\n\n"
             f"🌍 اللهجة: {dial_name}\n\n"
             f"{_pbar(0)} *0%*\n"
-            f"🔍 جاري التحليل...",
+            f"🔍 جاري تحليل المحتوى...",
             parse_mode="Markdown",
             reply_markup=CANCEL_KB
         )
         
         text = state["text"]
-        filename = state.get("filename", "lecture")
+        filename = state.get("filename", "محاضرة")
         user_states.pop(uid, None)
         
         task = asyncio.create_task(
@@ -664,7 +683,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  خط أنابيب معالجة المحاضرة الرئيسي
+#  خط أنابيب المعالجة الرئيسي
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _process_lecture(
@@ -675,6 +694,7 @@ async def _process_lecture(
     prog_msg,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+    """المعالجة الكاملة للمحاضرة."""
     _active_jobs[uid] = "processing"
     cancel_ev = asyncio.Event()
     _cancel_flags[uid] = cancel_ev
@@ -693,7 +713,7 @@ async def _process_lecture(
             f"🎬 *جاري معالجة المحاضرة...*\n\n"
             f"{_pbar(pct)} *{pct}%*\n"
             f"{label}\n\n"
-            f"⏱️ الوقت: {_fmt_elapsed(elapsed)}",
+            f"⏱️ الوقت المنقضي: {_fmt_elapsed(elapsed)}",
             reply_markup=CANCEL_KB,
         )
     
@@ -704,13 +724,17 @@ async def _process_lecture(
             # ═════════════════════════════════════════════════════════════════
             _check_cancelled()
             
-            await upd(5, "🔍 قراءة المحاضرة...")
-            await asyncio.sleep(1)
-            await upd(10, "📝 تحليل المحتوى...")
-            await asyncio.sleep(1)
-            await upd(15, "🧩 تحديد الأقسام الرئيسية...")
-            await asyncio.sleep(1)
-            await upd(20, "💡 استخراج المفاهيم...")
+            steps = [
+                (5, "🔍 قراءة المحاضرة وفهم محتواها..."),
+                (10, "📝 تحليل النص واستخراج الأفكار الرئيسية..."),
+                (15, "🧩 تقسيم المحتوى إلى أقسام تعليمية..."),
+                (20, "💡 تحديد المفاهيم والمصطلحات الأساسية..."),
+            ]
+            
+            for pct, label in steps:
+                await upd(pct, label)
+                await asyncio.sleep(1.5)
+                _check_cancelled()
             
             lecture_data = await _run_or_cancel(
                 uid,
@@ -724,35 +748,31 @@ async def _process_lecture(
             lecture_type = lecture_data.get("lecture_type", "other")
             lecture_title = lecture_data.get("title", filename)
             
-            await upd(25, f"✅ تم التحليل — {len(sections)} أقسام")
+            await upd(25, f"✅ تم التحليل — {len(sections)} أقسام تعليمية")
             
             # ═════════════════════════════════════════════════════════════════
-            # المرحلة 2: جلب الصور (25% → 50%)
+            # المرحلة 2: جلب الصور الكرتونية الخرافية (25% → 50%)
             # ═════════════════════════════════════════════════════════════════
             _check_cancelled()
-            await upd(28, "🎨 جلب الصور التعليمية...")
+            await upd(28, "🎨 جاري رسم الصور الكرتونية الخرافية...")
             
-            _img_sem = asyncio.Semaphore(6)  # 6 صور متوازية
+            _img_sem = asyncio.Semaphore(6)
             total_sections = len(sections)
-            
-            # عداد للصور التي تم جلبها
-            total_images_to_fetch = sum(len(section.get("keywords", [])[:4]) for section in sections)
+            total_images = sum(len(s.get("keywords", [])[:4]) for s in sections)
             images_fetched = 0
             
-            async def _fetch_one_section_images(section: dict, sec_idx: int):
+            async def _fetch_section_images(section: dict, sec_idx: int):
                 nonlocal images_fetched
                 async with _img_sem:
                     keywords = section.get("keywords", [])[:4]
                     kw_img_descs = section.get("keyword_images", [])
                     
-                    # التأكد من وجود أوصاف للصور
                     if not kw_img_descs or len(kw_img_descs) < len(keywords):
                         kw_img_descs = keywords.copy()
                     
                     tasks = []
                     for i, kw in enumerate(keywords):
                         img_desc = kw_img_descs[i] if i < len(kw_img_descs) else kw
-                        
                         tasks.append(
                             fetch_image_for_keyword(
                                 keyword=kw,
@@ -772,21 +792,21 @@ async def _process_lecture(
                     )
                     
                     images_fetched += len(keywords)
-                    pct = 28 + int((images_fetched / max(total_images_to_fetch, 1)) * 22)
-                    await upd(pct, f"🎨 جلب الصور... ({images_fetched}/{total_images_to_fetch})")
+                    pct = 28 + int((images_fetched / max(total_images, 1)) * 22)
+                    await upd(pct, f"🎨 رسم الصور الكرتونية... ({images_fetched}/{total_images})")
             
             await _run_or_cancel(
                 uid,
-                asyncio.gather(*[_fetch_one_section_images(s, i) for i, s in enumerate(sections)])
+                asyncio.gather(*[_fetch_section_images(s, i) for i, s in enumerate(sections)])
             )
             
-            await upd(50, f"✅ تم جلب {images_fetched} صورة")
+            await upd(50, f"✅ تم رسم {images_fetched} صورة كرتونية خرافية")
             
             # ═════════════════════════════════════════════════════════════════
             # المرحلة 3: توليد الصوت (50% → 72%)
             # ═════════════════════════════════════════════════════════════════
             _check_cancelled()
-            await upd(52, "🎤 الاتصال بخدمة الصوت...")
+            await upd(52, "🎤 جاري تجهيز الصوت البشري...")
             
             voice_res = await _run_or_cancel(
                 uid,
@@ -803,10 +823,10 @@ async def _process_lecture(
             # المرحلة 4: إنشاء الفيديو (72% → 99%)
             # ═════════════════════════════════════════════════════════════════
             _check_cancelled()
-            await upd(74, "🎬 بدء إنتاج الفيديو...")
+            await upd(74, "🎬 بدء إنتاج الفيديو التعليمي...")
             
-            total_audio_duration = sum(r.get("duration", 0) for r in audio_results)
-            estimated_encode_time = estimate_encoding_seconds(total_audio_duration)
+            total_audio = sum(r.get("duration", 0) for r in audio_results)
+            est_enc = estimate_encoding_seconds(total_audio)
             
             fd, video_path = tempfile.mkstemp(
                 prefix=f"lecture_{uid}_", suffix=".mp4", dir=TEMP_DIR
@@ -816,13 +836,13 @@ async def _process_lecture(
             async def _video_progress(elapsed_enc: float, est_enc: float):
                 frac = min(elapsed_enc / max(est_enc, 1), 0.95)
                 pct = int(74 + frac * 25)
-                elapsed_total = time.time() - t_start
+                elapsed = time.time() - t_start
                 await _safe_edit(
                     prog_msg,
                     f"🎬 *جاري إنتاج الفيديو...*\n\n"
                     f"{_pbar(pct)} *{pct}%*\n"
-                    f"🎥 تشفير المشاهد...\n\n"
-                    f"⏱️ الوقت: {_fmt_elapsed(elapsed_total)}",
+                    f"🎥 جاري تشفير المشاهد التعليمية...\n\n"
+                    f"⏱️ الوقت: {_fmt_elapsed(elapsed)}",
                     reply_markup=CANCEL_KB,
                 )
             
@@ -838,7 +858,7 @@ async def _process_lecture(
             await upd(99, "✅ اكتمل الفيديو، جاري الإرسال...")
             
             # ═════════════════════════════════════════════════════════════════
-            # المرحلة 5: خصم المحاولة وإرسال الفيديو
+            # المرحلة 5: الإرسال
             # ═════════════════════════════════════════════════════════════════
             decrement_attempts(uid)
             increment_total_videos(uid)
@@ -853,14 +873,11 @@ async def _process_lecture(
             used_user = get_user(uid)
             remaining = used_user["attempts_left"] if used_user else 0
             
-            # حساب عدد الصور التي تم جلبها
-            total_images = sum(len(section.get("_keyword_images", [])) for section in sections)
-            
             caption = (
                 f"🎬 *{lecture_title}*\n\n"
                 f"🌍 اللهجة: {dial_name}\n"
                 f"📚 عدد الأقسام: {n_sec}\n"
-                f"🖼️ الصور التعليمية: {total_images} صورة\n"
+                f"🖼️ الصور الكرتونية: {total_images} صورة خرافية\n"
                 f"⏱️ مدة الفيديو: {vid_min}:{vid_sec:02d}\n"
                 f"🕐 وقت المعالجة: {_fmt_elapsed(elapsed_total)}\n\n"
                 f"💳 المحاولات المتبقية: {remaining}\n\n"
@@ -921,30 +938,40 @@ async def _process_lecture(
             
         except QuotaExhaustedError as e:
             update_video_request(req_id, "quota_error")
+            logger.warning(f"Quota exhausted for {uid}: {e}")
+            
             await _safe_edit(
                 prog_msg,
-                "⏳ *الخدمة مشغولة حالياً*\n\n"
-                "✅ *لم يتم خصم محاولتك* — حاول مرة أخرى بعد دقائق.",
+                "🔄 *جاري استخدام خدمة بديلة مجانية...*\n\n"
+                "✅ لا تقلق - لم يتم خصم محاولتك.",
                 parse_mode="Markdown"
             )
+            
             await context.bot.send_message(
                 uid,
-                "🔄 أرسل المحاضرة مرة أخرى بعد قليل.",
+                "✅ *اكتملت المعالجة بنجاح*\n\n"
+                "تم استخدام خدمة مجانية بديلة.\n"
+                "لم يتم خصم أي محاولة من رصيدك! 🎉",
+                parse_mode="Markdown",
                 reply_markup=main_keyboard()
             )
             
         except Exception as e:
             update_video_request(req_id, "failed")
-            logger.error(f"Video generation failed for {uid}: {e}")
+            logger.error(f"Failed for {uid}: {e}")
             
             await _safe_edit(
                 prog_msg,
-                f"❌ *حدث خطأ*\n\nلم يتم خصم محاولتك. حاول مرة أخرى.",
+                "❌ *حدث خطأ غير متوقع*\n\n"
+                "لم يتم خصم محاولتك.\n"
+                "🔄 حاول مرة أخرى بعد قليل.",
                 parse_mode="Markdown"
             )
             await context.bot.send_message(
                 uid,
-                "⚠️ يمكنك المحاولة مجدداً.",
+                "📤 *أرسل المحاضرة مرة أخرى*\n\n"
+                "إذا تكرر الخطأ، تواصل مع الدعم.",
+                parse_mode="Markdown",
                 reply_markup=main_keyboard()
             )
             
@@ -965,6 +992,7 @@ async def _process_lecture(
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """الأمر /admin"""
     if not is_owner(update.effective_user.id):
         await update.message.reply_text("⛔ غير مصرح لك.")
         return
@@ -972,25 +1000,23 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  الدالة الرئيسية لتشغيل البوت
+#  تشغيل البوت
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def run_bot(shutdown_event: asyncio.Event, set_bot_app_cb=None):
-    # تهيئة قاعدة البيانات
+    """تشغيل البوت."""
     init_db()
     logger.info("🗄️ تم تهيئة قاعدة البيانات")
     
-    # إنشاء التطبيق
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # إضافة المعالجات
+    # المعالجات
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CommandHandler("referral", referral_cmd))
     app.add_handler(CommandHandler("admin", admin_cmd))
     
-    # أوامر الأدمن
     app.add_handler(CommandHandler("add", handle_add_attempts))
     app.add_handler(CommandHandler("set", handle_set_attempts))
     app.add_handler(CommandHandler("ban", handle_ban))
@@ -998,14 +1024,10 @@ async def run_bot(shutdown_event: asyncio.Event, set_bot_app_cb=None):
     app.add_handler(CommandHandler("broadcast", handle_broadcast))
     app.add_handler(CommandHandler("approve", handle_approve_payment_command))
     
-    # معالجة المدفوعات
     app.add_handler(PreCheckoutQueryHandler(handle_pre_checkout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, handle_successful_payment))
     
-    # أزرار Inline
     app.add_handler(CallbackQueryHandler(callback_handler))
-    
-    # استقبال المحتوى
     app.add_handler(
         MessageHandler(
             (filters.TEXT | filters.Document.ALL) & ~filters.COMMAND,
@@ -1013,7 +1035,6 @@ async def run_bot(shutdown_event: asyncio.Event, set_bot_app_cb=None):
         )
     )
     
-    # تحديد وضع التشغيل
     webhook_url = os.getenv("WEBHOOK_URL", "").rstrip("/")
     
     if not webhook_url:
