@@ -736,4 +736,50 @@ async def run_bot(shutdown_event: asyncio.Event, set_bot_app_cb=None):
             await app.updater.start_polling()
             await shutdown_event.wait()
             await app.updater.stop()
-        await app.stop()
+     
+        
+        def setup_handlers(app: Application):
+    """إعداد جميع معالجات البوت."""
+    
+    from telegram.ext import CommandHandler, MessageHandler, CallbackQueryHandler, PreCheckoutQueryHandler, filters
+    
+    # الأوامر الأساسية
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("cancel", cancel_cmd))
+    app.add_handler(CommandHandler("referral", referral_cmd))
+    app.add_handler(CommandHandler("admin", admin_cmd))
+    
+    # أوامر الأدمن (اختيارية)
+    try:
+        from admin_panel import (
+            handle_add_attempts, handle_set_attempts, handle_ban, 
+            handle_unban, handle_broadcast, handle_approve_payment_command
+        )
+        app.add_handler(CommandHandler("add", handle_add_attempts))
+        app.add_handler(CommandHandler("set", handle_set_attempts))
+        app.add_handler(CommandHandler("ban", handle_ban))
+        app.add_handler(CommandHandler("unban", handle_unban))
+        app.add_handler(CommandHandler("broadcast", handle_broadcast))
+        app.add_handler(CommandHandler("approve", handle_approve_payment_command))
+    except ImportError:
+        pass
+    
+    # المدفوعات
+    try:
+        from payment_handler import handle_pre_checkout, handle_successful_payment
+        app.add_handler(PreCheckoutQueryHandler(handle_pre_checkout))
+        app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, handle_successful_payment))
+    except ImportError:
+        pass
+    
+    # الأزرار والمحتوى
+    app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(
+        MessageHandler(
+            (filters.TEXT | filters.Document.ALL) & ~filters.COMMAND,
+            receive_content
+        )
+    )
+    
+    logger.info("✅ تم إعداد المعالجات")await app.stop()
