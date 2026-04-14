@@ -7,7 +7,7 @@
 import os
 import sqlite3
 import logging
-from config import FREE_ATTEMPTS, REFERRAL_POINTS_PER_INVITE, REFERRAL_POINTS_PER_ATTEMPT
+from config import FREE_ATTEMPTS, REFERRAL_POINTS_PER_INVITE, REFERRAL_POINTS_PER_ATTEMPT, PAID_ATTEMPTS
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,7 @@ else:
     USING_POSTGRES = False
     PLACEHOLDER = "?"
     DB_PATH = os.path.join("/tmp/telegram_bot", "bot.db")
+    os.makedirs("/tmp/telegram_bot", exist_ok=True)
     
     def get_connection():
         conn = sqlite3.connect(DB_PATH)
@@ -47,7 +48,6 @@ def init_db():
     cur = conn.cursor()
     
     if USING_POSTGRES:
-        # PostgreSQL
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -98,7 +98,6 @@ def init_db():
             )
         """)
     else:
-        # SQLite
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -173,7 +172,7 @@ def get_user(user_id: int):
             return {
                 "user_id": row[0], "username": row[1], "full_name": row[2],
                 "attempts_left": row[3], "total_videos": row[4], "is_banned": bool(row[5]),
-                "referral_points": row[6], "referred_by": row[7]
+                "referral_points": row[6], "referred_by": row[7], "created_at": row[8]
             }
     return None
 
@@ -270,20 +269,85 @@ def add_attempts(user_id: int, count: int) -> int:
     return 0
 
 
+def subtract_attempts(user_id: int, count: int) -> int:
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    if USING_POSTGRES:
+        cur.execute("""
+            UPDATE users SET attempts_left = GREATEST(0, attempts_left - %s), updated_at = NOW()
+            WHERE user_id = %s
+            RETURNING attempts_left
+        """, (count, user_id))
+    else:
+        cur.execute("""
+            UPDATE users SET attempts_left = MAX(0, attempts_left - ?), updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+        """, (count, user_id))
+        cur.execute(f"SELECT attempts_left FROM users WHERE user_id = {PLACEHOLDER}", (user_id,))
+    
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    
+    if row:
+        return row[0] if not USING_POSTGRES else row['attempts_left']
+    return 0
+
+
+def set_attempts(user_id: int, count: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    if USING_POSTGRES:
+        cur.execute("UPDATE users SET attempts_left = %s, updated_at = NOW() WHERE user_id = %s", (count, user_id))
+    else:
+        cur.execute("UPDATE users SET attempts_left = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?", (count, user_id))
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def increment_total_videos(user_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    if USING_POSTGRES:
+        cur.execute("UPDATE users SET total_videos = total_videos + 1 WHERE user_id = %s", (user_id,))
+    else:
+        cur.execute("UPDATE users SET total_videos = total_videos + 1 WHERE user_id = ?", (user_id,))
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
 def ban_user(user_id: int, banned: bool = True):
     conn = get_connection()
     cur = conn.cursor()
-    ban_val = 1 if banned and not USING_POSTGRES else banned
+    ban_val = banned if USING_POSTGRES else (1 if banned else 0)
     cur.execute(f"UPDATE users SET is_banned = {PLACEHOLDER} WHERE user_id = {PLACEHOLDER}", (ban_val, user_id))
     conn.commit()
     cur.close()
     conn.close()
 
 
-def get_all_users(limit: int = 50):
+def is_banned(user_id: int) -> bool:
+    user = get_user(user_id)
+    return user.get('is_banned', False) if user else False
+
+
+def get_all_users(limit: int = 50, offset: int = 0):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute(f"SELECT * FROM users ORDER BY created_at DESC LIMIT {PLACEHOLDER}", (limit,))
+    
+    if USING_POSTGRES:
+        cur.execute("SELECT * FROM users ORDER BY created_at DESC LIMIT %s OFFSET %s", (limit, offset))
+    else:
+        cur.execute("SELECT * FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset))
+    
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -308,43 +372,161 @@ def get_stats():
     cur.execute("SELECT COUNT(*) as total FROM users")
     total_users = cur.fetchone()[0] if not USING_POSTGRES else cur.fetchone()['total']
     
-    cur.execute("SELECT COUNT(*) as total FROM users WHERE is_banned = true")
-    banned = cur.fetchone()[0] if not USING_POSTGRES else cur.fetchone()['total']
+    cur.execute("SELECT COUNT(*) as total FROM users WHERE DATE(created_at) = DATE('now')")
+    new_today = cur.fetchone()[0] if not USING_POSTGRES else cur.fetchone()['total']
     
     cur.execute("SELECT COALESCE(SUM(total_videos), 0) as total FROM users")
-    videos = cur.fetchone()[0] if not USING_POSTGRES else cur.fetchone()['total']
+    total_videos = cur.fetchone()[0] if not USING_POSTGRES else cur.fetchone()['total']
+    
+    cur.execute("SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE status = 'approved'")
+    total_revenue = cur.fetchone()[0] if not USING_POSTGRES else cur.fetchone()['total']
+    
+    cur.execute("SELECT COUNT(*) as total FROM payments WHERE status = 'pending'")
+    pending_payments = cur.fetchone()[0] if not USING_POSTGRES else cur.fetchone()['total']
+    
+    cur.execute("SELECT COUNT(*) as total FROM users WHERE is_banned = true")
+    banned_users = cur.fetchone()[0] if not USING_POSTGRES else cur.fetchone()['total']
     
     cur.close()
     conn.close()
     
-    return {"total_users": total_users, "banned_users": banned, "total_videos": int(videos or 0)}
+    return {
+        'total_users': total_users,
+        'new_today': new_today,
+        'total_videos': int(total_videos or 0),
+        'total_revenue': float(total_revenue or 0),
+        'pending_payments': pending_payments,
+        'banned_users': banned_users
+    }
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  دوال المدفوعات
+# ══════════════════════════════════════════════════════════════════════════════
+def create_payment(user_id: int, method: str, amount: float, reference: str = None) -> int:
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    if USING_POSTGRES:
+        cur.execute("""
+            INSERT INTO payments (user_id, payment_method, amount, reference_id, status)
+            VALUES (%s, %s, %s, %s, 'pending')
+            RETURNING id
+        """, (user_id, method, amount, reference))
+        pid = cur.fetchone()['id']
+    else:
+        cur.execute("""
+            INSERT INTO payments (user_id, payment_method, amount, reference_id, status)
+            VALUES (?, ?, ?, ?, 'pending')
+        """, (user_id, method, amount, reference))
+        pid = cur.lastrowid
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+    return pid
+
+
+def approve_payment(payment_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    if USING_POSTGRES:
+        cur.execute("""
+            UPDATE payments SET status = 'approved', attempts_granted = %s
+            WHERE id = %s AND status = 'pending'
+            RETURNING user_id
+        """, (PAID_ATTEMPTS, payment_id))
+    else:
+        cur.execute("""
+            UPDATE payments SET status = 'approved', attempts_granted = ?
+            WHERE id = ? AND status = 'pending'
+        """, (PAID_ATTEMPTS, payment_id))
+        cur.execute(f"SELECT user_id FROM payments WHERE id = {PLACEHOLDER}", (payment_id,))
+    
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    
+    if row:
+        user_id = row[0] if not USING_POSTGRES else row['user_id']
+        add_attempts(user_id, PAID_ATTEMPTS)
+        return {"user_id": user_id}
+    return None
+
+
+def mark_payment_approved_without_adding(payment_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    if USING_POSTGRES:
+        cur.execute("UPDATE payments SET status = 'approved', attempts_granted = %s WHERE id = %s", (PAID_ATTEMPTS, payment_id))
+    else:
+        cur.execute("UPDATE payments SET status = 'approved', attempts_granted = ? WHERE id = ?", (PAID_ATTEMPTS, payment_id))
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_pending_payments():
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    if USING_POSTGRES:
+        cur.execute("""
+            SELECT p.*, u.username, u.full_name
+            FROM payments p JOIN users u ON p.user_id = u.user_id
+            WHERE p.status = 'pending'
+            ORDER BY p.created_at DESC
+            LIMIT 20
+        """)
+    else:
+        cur.execute("""
+            SELECT p.*, u.username, u.full_name
+            FROM payments p JOIN users u ON p.user_id = u.user_id
+            WHERE p.status = 'pending'
+            ORDER BY p.created_at DESC
+            LIMIT 20
+        """)
+    
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    
+    payments = []
+    for row in rows:
+        if USING_POSTGRES:
+            payments.append(dict(row))
+        else:
+            payments.append({
+                "id": row[0], "user_id": row[1], "amount": row[2], "payment_method": row[3],
+                "status": row[4], "reference_id": row[5], "attempts_granted": row[6],
+                "created_at": row[7], "username": row[8], "full_name": row[9]
+            })
+    return payments
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  دوال الإحالات
+# ══════════════════════════════════════════════════════════════════════════════
 def record_referral(referrer_id: int, referred_id: int) -> dict:
     conn = get_connection()
     cur = conn.cursor()
     
-    # التحقق من عدم وجود إحالة سابقة
     cur.execute(f"SELECT id FROM referrals WHERE referred_id = {PLACEHOLDER}", (referred_id,))
     if cur.fetchone():
         cur.close()
         conn.close()
-        return {"already_referred": True, "new_points": 0, "attempts_granted": 0}
+        return {'already_referred': True, 'new_points': 0, 'attempts_granted': 0}
     
-    # إضافة الإحالة
     if USING_POSTGRES:
         cur.execute("""
             INSERT INTO referrals (referrer_id, referred_id, points_awarded)
             VALUES (%s, %s, %s)
         """, (referrer_id, referred_id, REFERRAL_POINTS_PER_INVITE))
-    else:
-        cur.execute("""
-            INSERT INTO referrals (referrer_id, referred_id, points_awarded)
-            VALUES (?, ?, ?)
-        """, (referrer_id, referred_id, REFERRAL_POINTS_PER_INVITE))
-    
-    # تحديث نقاط المُحيل
-    if USING_POSTGRES:
+        
         cur.execute("""
             UPDATE users SET referral_points = referral_points + %s, updated_at = NOW()
             WHERE user_id = %s
@@ -354,6 +536,11 @@ def record_referral(referrer_id: int, referred_id: int) -> dict:
         new_points = row['referral_points'] if row else 0
     else:
         cur.execute("""
+            INSERT INTO referrals (referrer_id, referred_id, points_awarded)
+            VALUES (?, ?, ?)
+        """, (referrer_id, referred_id, REFERRAL_POINTS_PER_INVITE))
+        
+        cur.execute("""
             UPDATE users SET referral_points = referral_points + ?, updated_at = CURRENT_TIMESTAMP
             WHERE user_id = ?
         """, (REFERRAL_POINTS_PER_INVITE, referrer_id))
@@ -361,7 +548,6 @@ def record_referral(referrer_id: int, referred_id: int) -> dict:
         row = cur.fetchone()
         new_points = row[0] if row else 0
     
-    # منح محاولات إذا وصل للنقاط المطلوبة
     attempts_granted = 0
     while new_points >= REFERRAL_POINTS_PER_ATTEMPT:
         new_points -= REFERRAL_POINTS_PER_ATTEMPT
@@ -384,9 +570,10 @@ def record_referral(referrer_id: int, referred_id: int) -> dict:
     conn.close()
     
     return {
-        "already_referred": False,
-        "new_points": new_points,
-        "attempts_granted": attempts_granted
+        'already_referred': False,
+        'new_points': new_points,
+        'attempts_granted': attempts_granted,
+        'total_points_added': REFERRAL_POINTS_PER_INVITE
     }
 
 
@@ -395,7 +582,7 @@ def get_referral_stats(user_id: int) -> dict:
     cur = conn.cursor()
     
     cur.execute(f"SELECT COUNT(*) FROM referrals WHERE referrer_id = {PLACEHOLDER}", (user_id,))
-    count = cur.fetchone()[0]
+    total = cur.fetchone()[0]
     
     cur.execute(f"SELECT referral_points FROM users WHERE user_id = {PLACEHOLDER}", (user_id,))
     row = cur.fetchone()
@@ -404,9 +591,16 @@ def get_referral_stats(user_id: int) -> dict:
     cur.close()
     conn.close()
     
-    return {"total_referrals": count, "current_points": points}
+    return {
+        'total_referrals': total,
+        'current_points': round(points, 2),
+        'points_needed': round(REFERRAL_POINTS_PER_ATTEMPT - points, 2) if points < REFERRAL_POINTS_PER_ATTEMPT else 0
+    }
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  دوال طلبات الفيديو
+# ══════════════════════════════════════════════════════════════════════════════
 def save_video_request(user_id: int, input_type: str, dialect: str) -> int:
     conn = get_connection()
     cur = conn.cursor()
@@ -436,20 +630,14 @@ def update_video_request(req_id: int, status: str, video_path: str = None):
     cur = conn.cursor()
     
     if USING_POSTGRES:
-        cur.execute("""
-            UPDATE video_requests SET status = %s, video_path = %s
-            WHERE id = %s
-        """, (status, video_path, req_id))
+        cur.execute("UPDATE video_requests SET status = %s, video_path = %s WHERE id = %s", (status, video_path, req_id))
     else:
-        cur.execute("""
-            UPDATE video_requests SET status = ?, video_path = ?
-            WHERE id = ?
-        """, (status, video_path, req_id))
+        cur.execute("UPDATE video_requests SET status = ?, video_path = ? WHERE id = ?", (status, video_path, req_id))
     
     conn.commit()
     cur.close()
     conn.close()
 
 
-# تهيئة قاعدة البيانات عند الاستيراد
+# تهيئة قاعدة البيانات
 init_db()
