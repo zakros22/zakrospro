@@ -8,13 +8,16 @@ import os
 import tempfile
 import subprocess
 import asyncio
+import logging
 from typing import Callable, Awaitable
+
+logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  الإعدادات
 # ══════════════════════════════════════════════════════════════════════════════
 INTRO_DURATION = 5.0
-SUMMARY_DURATION = 8.0
+SUMMARY_DURATION = 6.0
 
 
 def estimate_encoding_seconds(total_duration: float) -> float:
@@ -32,7 +35,7 @@ def create_video_segments(
     audio_paths: list,
     durations: list,
     output_path: str
-) -> None:
+) -> float:
     """
     إنشاء الفيديو من الصور والصوتيات.
     
@@ -43,9 +46,13 @@ def create_video_segments(
         audio_paths: مسارات ملفات الصوت
         durations: مدد كل شريحة
         output_path: مسار حفظ الفيديو
+    
+    Returns:
+        المدة الإجمالية للفيديو
     """
     video_segments = []
     temp_files = []
+    total_duration = INTRO_DURATION
     
     try:
         # 1. شريحة المقدمة
@@ -62,12 +69,14 @@ def create_video_segments(
             "-c:a", "aac", "-b:a", "64k", "-t", str(INTRO_DURATION), intro_out
         ]
         subprocess.run(cmd, capture_output=True, check=True)
+        logger.info(f"✅ تم إنشاء شريحة المقدمة ({INTRO_DURATION}s)")
         
         # 2. شرائح الأقسام
         for i, (img, audio, dur) in enumerate(zip(section_images, audio_paths, durations)):
             seg_out = tempfile.mktemp(suffix=".mp4")
             temp_files.append(seg_out)
             video_segments.append(seg_out)
+            total_duration += dur
             
             if audio and os.path.exists(audio):
                 aud_args = ["-i", audio]
@@ -84,8 +93,10 @@ def create_video_segments(
                 "-c:a", "aac", "-b:a", "64k", "-t", str(dur), seg_out
             ]
             subprocess.run(cmd, capture_output=True, check=True)
+            logger.info(f"✅ تم إنشاء شريحة القسم {i+1} ({dur}s)")
         
         # 3. شريحة الملخص
+        total_duration += SUMMARY_DURATION
         summary_out = tempfile.mktemp(suffix=".mp4")
         temp_files.append(summary_out)
         video_segments.append(summary_out)
@@ -99,6 +110,7 @@ def create_video_segments(
             "-c:a", "aac", "-b:a", "64k", "-t", str(SUMMARY_DURATION), summary_out
         ]
         subprocess.run(cmd, capture_output=True, check=True)
+        logger.info(f"✅ تم إنشاء شريحة الملخص ({SUMMARY_DURATION}s)")
         
         # 4. دمج المقاطع
         list_file = tempfile.mktemp(suffix=".txt")
@@ -113,7 +125,13 @@ def create_video_segments(
             "-c", "copy", output_path
         ]
         subprocess.run(cmd, capture_output=True, check=True)
+        logger.info(f"✅ تم دمج الفيديو النهائي ({total_duration:.1f}s)")
         
+        return total_duration
+        
+    except subprocess.CalledProcessError as e:
+        logger.error(f"❌ خطأ في FFmpeg: {e.stderr.decode() if e.stderr else str(e)}")
+        raise
     finally:
         # تنظيف
         for f in temp_files:
@@ -148,7 +166,7 @@ async def create_video_from_sections(
     Returns:
         مدة الفيديو بالثواني
     """
-    from image_generator import create_educational_card, create_summary_card
+    from image_generator import create_educational_card, create_intro_card, create_summary_card
     
     is_arabic = dialect not in ("english", "british")
     subject = lecture_data.get("lecture_type", "other")
@@ -165,7 +183,9 @@ async def create_video_from_sections(
         if not img_path:
             keywords = sec.get("keywords", [])
             title = sec.get("title", f"القسم {i+1}")
-            img_path = create_educational_card(title, keywords, subject, i+1, len(sections), is_arabic)
+            img_path = create_educational_card(
+                title, keywords, subject, i+1, len(sections), is_arabic
+            )
             sec["_image_path"] = img_path
         
         section_images.append(img_path)
@@ -184,16 +204,12 @@ async def create_video_from_sections(
         durations.append(max(aud.get("duration", 10), 8))
     
     # إنشاء صورة المقدمة
-    intro_img = create_educational_card(
-        f"🎓 {lecture_title}",
-        [f"{len(sections)} أقسام تعليمية", "شرح مبسط", "صور توضيحية", "صوت احترافي"],
-        subject, 0, len(sections), is_arabic
-    )
+    intro_img = create_intro_card(lecture_title, sections, subject, is_arabic)
     
     # إنشاء صورة الملخص
     summary_img = create_summary_card(sections, lecture_title, subject, is_arabic)
     
-    # حساب المدة الإجمالية
+    # حساب المدة الإجمالية المتوقعة
     total_duration = INTRO_DURATION + sum(durations) + SUMMARY_DURATION
     estimated_enc = estimate_encoding_seconds(total_duration)
     
@@ -201,7 +217,7 @@ async def create_video_from_sections(
     loop = asyncio.get_event_loop()
     
     async def run_encode():
-        await loop.run_in_executor(
+        return await loop.run_in_executor(
             None,
             create_video_segments,
             intro_img, section_images, summary_img,
@@ -220,7 +236,7 @@ async def create_video_from_sections(
             except:
                 pass
     
-    await encode_task
+    actual_duration = await encode_task
     
     # تنظيف ملفات الصوت
     for ap in audio_paths:
@@ -245,4 +261,4 @@ async def create_video_from_sections(
     except:
         pass
     
-    return total_duration
+    return actual_duration
