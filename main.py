@@ -1,93 +1,179 @@
-# ai_analyzer.py - تعديل جزء الصور
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
-import requests
-from PIL import Image
-from io import BytesIO
-import uuid
+import asyncio
+import os
+import sys
+import signal
+import logging
 
-def _fetch_pollinations_image_sync(keyword: str, specialty: str = None) -> Optional[Path]:
-    """جلب صورة من Pollinations.ai (متزامن)"""
-    try:
-        if specialty:
-            prompt = f"medical illustration of {keyword} for {specialty} education, clean professional style"
-        else:
-            prompt = f"medical illustration of {keyword}, educational diagram, clean style"
+# ══════════════════════════════════════════════════════════════════════════════
+#  تصحيح PIL.Image.ANTIALIAS (متوافق مع Pillow 10+)
+# ══════════════════════════════════════════════════════════════════════════════
+try:
+    import PIL.Image as _pil
+    if not hasattr(_pil, "ANTIALIAS"):
+        _pil.ANTIALIAS = _pil.LANCZOS
+    
+    # Patch __getattr__ للتوافق مع المكتبات القديمة
+    _orig_ga = _pil.__dict__.get("__getattr__")
+    def _pil_ga(name):
+        if name == "ANTIALIAS":
+            return _pil.LANCZOS
+        if _orig_ga:
+            return _orig_ga(name)
+        raise AttributeError(f"module 'PIL.Image' has no attribute {name!r}")
+    _pil.__getattr__ = _pil_ga
+    print("[✓] PIL.Image.ANTIALIAS patch applied")
+except Exception as e:
+    print(f"[!] PIL patch failed: {e}", file=sys.stderr)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  إعداد التسجيل (Logging)
+# ══════════════════════════════════════════════════════════════════════════════
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  متغيرات عامة للتحكم في الإيقاف النظيف
+# ══════════════════════════════════════════════════════════════════════════════
+_shutdown_event = asyncio.Event()
+_web_server_task = None
+_bot_task = None
+
+
+def handle_signal(signum, frame):
+    """معالج إشارات النظام (SIGTERM, SIGINT) للإيقاف النظيف."""
+    sig_name = signal.Signals(signum).name
+    logger.info(f"⚠️ استلام إشارة {sig_name} - جاري الإيقاف النظيف...")
+    _shutdown_event.set()
+
+
+async def run_web_server_only():
+    """تشغيل خادم الويب فقط (عند عدم وجود توكن البوت)."""
+    from web_server import start_web_server
+    logger.info("🌐 تشغيل خادم الويب فقط (لا يوجد توكن بوت)...")
+    await start_web_server()
+    
+    # انتظار إشارة الإيقاف
+    await _shutdown_event.wait()
+    logger.info("👋 إيقاف خادم الويب...")
+
+
+async def run_bot_with_web_server():
+    """تشغيل البوت مع خادم الويب (Webhook أو Polling)."""
+    from web_server import start_web_server, set_bot_app
+    from bot import run_bot
+    
+    # بدء خادم الويب في الخلفية
+    web_task = asyncio.create_task(start_web_server())
+    logger.info("🌐 خادم الويب يعمل في الخلفية...")
+    
+    # إعطاء الخادم فرصة للبدء
+    await asyncio.sleep(1)
+    
+    # تشغيل البوت (يمرر shutdown_event للإيقاف النظيف)
+    bot_task = asyncio.create_task(run_bot(_shutdown_event, set_bot_app))
+    
+    # انتظار إشارة الإيقاف أو انتهاء البوت
+    done, pending = await asyncio.wait(
+        [asyncio.create_task(_shutdown_event.wait()), bot_task],
+        return_when=asyncio.FIRST_COMPLETED
+    )
+    
+    # إلغاء المهام المتبقية
+    logger.info("🛑 جاري إيقاف جميع المهام...")
+    
+    if not bot_task.done():
+        bot_task.cancel()
+        try:
+            await bot_task
+        except asyncio.CancelledError:
+            pass
+    
+    if not web_task.done():
+        web_task.cancel()
+        try:
+            await web_task
+        except asyncio.CancelledError:
+            pass
+    
+    # إلغاء أي مهام متبقية
+    for task in pending:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    
+    logger.info("✅ تم إيقاف جميع المهام بنجاح")
+
+
+async def main():
+    """الدالة الرئيسية - نقطة دخول البرنامج."""
+    # تسجيل معالجات الإشارات
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+    
+    # التحقق من وجود توكن البوت
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    
+    print("=" * 60)
+    print("🎓 بوت المحاضرات الذكي - Lecture Video Bot")
+    print("=" * 60)
+    
+    if not token:
+        logger.warning("⚠️ TELEGRAM_BOT_TOKEN غير مضبوط - تشغيل خادم الويب فقط")
+        await run_web_server_only()
+    else:
+        logger.info("🤖 جاري تشغيل البوت مع خادم الويب...")
         
-        url = f"https://image.pollinations.ai/prompt/{prompt.replace(' ', '%20')}"
-        url += "?width=640&height=480&nologo=true"
+        # محاولة تشغيل البوت مع إعادة المحاولة عند الأعطال
+        max_restarts = 5
+        restart_count = 0
+        restart_delay = 5
         
-        response = requests.get(url, timeout=30)
-        if response.status_code == 200:
-            img = Image.open(BytesIO(response.content))
-            file_path = config.IMAGES_TMP / f"pollinations_{uuid.uuid4().hex[:8]}.png"
-            img.save(file_path, "PNG")
-            logger.info(f"✅ تم جلب صورة من Pollinations: {keyword}")
-            return file_path
-    except Exception as e:
-        logger.debug(f"Pollinations فشل: {e}")
-    return None
+        while restart_count < max_restarts and not _shutdown_event.is_set():
+            try:
+                await run_bot_with_web_server()
+                
+                # إذا وصلنا هنا بدون خطأ، نخرج من الحلقة
+                break
+                
+            except asyncio.CancelledError:
+                logger.info("🛑 تم إلغاء المهمة الرئيسية")
+                break
+                
+            except Exception as e:
+                restart_count += 1
+                logger.error(f"❌ خطأ في البوت (محاولة {restart_count}/{max_restarts}): {e}")
+                
+                if restart_count < max_restarts and not _shutdown_event.is_set():
+                    delay = min(restart_delay * restart_count, 60)
+                    logger.info(f"⏳ إعادة التشغيل خلال {delay} ثانية...")
+                    
+                    try:
+                        await asyncio.wait_for(_shutdown_event.wait(), timeout=delay)
+                        break  # تم استلام إشارة إيقاف
+                    except asyncio.TimeoutError:
+                        continue
+                else:
+                    logger.critical("💥 تجاوز الحد الأقصى لإعادة التشغيل - توقف")
+    
+    logger.info("👋 تم إيقاف البرنامج")
 
-def _fetch_unsplash_image_sync(keyword: str) -> Optional[Path]:
-    """جلب صورة من Unsplash (متزامن)"""
-    if not config.UNSPLASH_ACCESS_KEY:
-        return None
+
+if __name__ == "__main__":
     try:
-        headers = {"Authorization": f"Client-ID {config.UNSPLASH_ACCESS_KEY}"}
-        params = {
-            "query": f"{keyword} medical",
-            "orientation": "landscape",
-            "per_page": 1
-        }
-        response = requests.get("https://api.unsplash.com/search/photos",
-                                headers=headers, params=params, timeout=20)
-        if response.status_code == 200:
-            data = response.json()
-            if data["results"]:
-                img_url = data["results"][0]["urls"]["regular"]
-                img_response = requests.get(img_url, timeout=20)
-                img = Image.open(BytesIO(img_response.content))
-                img = img.resize((640, 480), Image.Resampling.LANCZOS)
-                file_path = config.IMAGES_TMP / f"unsplash_{uuid.uuid4().hex[:8]}.jpg"
-                img.save(file_path, "JPEG")
-                logger.info(f"✅ تم جلب صورة من Unsplash: {keyword}")
-                return file_path
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("👋 تم إيقاف البرنامج بواسطة المستخدم")
     except Exception as e:
-        logger.debug(f"Unsplash فشل: {e}")
-    return None
-
-def _fetch_picsum_image_sync() -> Optional[Path]:
-    """جلب صورة عشوائية من Lorem Picsum (متزامن)"""
-    try:
-        response = requests.get("https://picsum.photos/640/480", timeout=15)
-        if response.status_code == 200:
-            img = Image.open(BytesIO(response.content))
-            file_path = config.IMAGES_TMP / f"picsum_{uuid.uuid4().hex[:8]}.jpg"
-            img.save(file_path, "JPEG")
-            logger.info(f"✅ تم جلب صورة من Picsum")
-            return file_path
-    except Exception as e:
-        logger.debug(f"Picsum فشل: {e}")
-    return None
-
-def fetch_image_for_keyword(keyword: str, specialty: str = None) -> Path:
-    """
-    الدالة الرئيسية لجلب صورة لقسم معين (متزامنة بالكامل).
-    تجرب Pollinations -> Unsplash -> Picsum -> صورة مولدة.
-    """
-    # محاولة Pollinations
-    img = _fetch_pollinations_image_sync(keyword, specialty)
-    if img:
-        return img
-
-    # محاولة Unsplash
-    img = _fetch_unsplash_image_sync(keyword)
-    if img:
-        return img
-
-    # محاولة Picsum
-    img = _fetch_picsum_image_sync()
-    if img:
-        return img
-
-    # الصورة الاحتياطية
-    return _make_medical_image(keyword, specialty)
+        logger.critical(f"💥 خطأ غير متوقع: {e}", exc_info=True)
+        sys.exit(1)
