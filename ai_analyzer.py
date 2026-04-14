@@ -1,25 +1,32 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import json
 import re
 import io
 import asyncio
 import aiohttp
-from PIL import Image as PILImage
+import random
+from PIL import Image as PILImage, ImageDraw, ImageFont
 from google import genai
 from google.genai import types as genai_types
 from config import (
     DEEPSEEK_API_KEYS, GEMINI_API_KEYS, OPENROUTER_API_KEYS, GROQ_API_KEYS, OPENAI_API_KEY
 )
 
-# =============================================================================
-# نظام تبادل المفاتيح المتقدم
-# الأولوية: DeepSeek → Gemini → OpenRouter → Groq
-# =============================================================================
+# ══════════════════════════════════════════════════════════════════════════════
+#  نظام تبادل المفاتيح المتقدم
+#  الأولوية: DeepSeek → Gemini → OpenRouter → Groq → DuckDuckGo → Blackbox
+# ══════════════════════════════════════════════════════════════════════════════
 
 class QuotaExhaustedError(Exception):
     """يُرفع عندما تنفد جميع المفاتيح من جميع المزودين."""
     pass
 
-# --- DeepSeek (OpenAI-compatible) ---
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  مزود 1: DeepSeek (OpenAI-compatible)
+# ══════════════════════════════════════════════════════════════════════════════
 async def _generate_with_deepseek(prompt: str, max_tokens: int = 8192) -> str:
     """محاولة التوليد باستخدام مفاتيح DeepSeek بالتناوب."""
     if not DEEPSEEK_API_KEYS:
@@ -51,9 +58,9 @@ async def _generate_with_deepseek(prompt: str, max_tokens: int = 8192) -> str:
                             text = data["choices"][0]["message"]["content"].strip()
                             print(f"✅ DeepSeek نجاح: {model}")
                             return text
-                        elif resp.status == 402:  # رصيد غير كافي
-                            print(f"⚠️ DeepSeek رصيد منتهي للمفتاح {key[:10]}...")
-                            break  # جرب المفتاح التالي
+                        elif resp.status == 402:
+                            print(f"⚠️ DeepSeek رصيد منتهي للمفتاح {key[:15]}...")
+                            break
                         else:
                             body = await resp.text()
                             print(f"⚠️ DeepSeek {resp.status}: {body[:100]}")
@@ -61,10 +68,12 @@ async def _generate_with_deepseek(prompt: str, max_tokens: int = 8192) -> str:
             except Exception as e:
                 print(f"⚠️ DeepSeek خطأ: {str(e)[:80]}")
                 continue
-    raise QuotaExhaustedError("جميع مفاتيح DeepSeek منتهية أو فشلت")
+    raise QuotaExhaustedError("جميع مفاتيح DeepSeek منتهية")
 
 
-# --- Gemini (Google) ---
+# ══════════════════════════════════════════════════════════════════════════════
+#  مزود 2: Gemini (Google)
+# ══════════════════════════════════════════════════════════════════════════════
 _gemini_clients: dict[str, object] = {}
 _gemini_idx = 0
 
@@ -105,26 +114,28 @@ async def _generate_with_gemini(prompt: str, max_tokens: int = 8192) -> str:
             except Exception as e:
                 err = str(e)
                 if "quota" in err.lower() or "exhausted" in err.lower() or "429" in err:
-                    print(f"⚠️ Gemini حصة منتهية للمفتاح {key[:10]}...")
-                    break  # جرب المفتاح التالي
+                    print(f"⚠️ Gemini حصة منتهية للمفتاح {key[:15]}...")
+                    break
                 else:
                     print(f"⚠️ Gemini خطأ: {err[:80]}")
                     continue
     raise QuotaExhaustedError("جميع مفاتيح Gemini منتهية")
 
 
-# --- OpenRouter ---
+# ══════════════════════════════════════════════════════════════════════════════
+#  مزود 3: OpenRouter
+# ══════════════════════════════════════════════════════════════════════════════
 async def _generate_with_openrouter(prompt: str, max_tokens: int = 8192) -> str:
-    """محاولة التوليد باستخدام مفاتيح OpenRouter (نموذج DeepSeek المجاني)."""
+    """محاولة التوليد باستخدام مفاتيح OpenRouter."""
     if not OPENROUTER_API_KEYS:
         raise QuotaExhaustedError("لا توجد مفاتيح OpenRouter")
 
-    # نستخدم نموذج DeepSeek المجاني على OpenRouter
     models = [
         "deepseek/deepseek-r1:free",
         "deepseek/deepseek-chat:free",
         "google/gemini-2.0-flash-exp:free",
         "meta-llama/llama-3.3-70b-instruct:free",
+        "qwen/qwen-2.5-72b-instruct:free",
     ]
     for key in OPENROUTER_API_KEYS:
         for model in models:
@@ -155,7 +166,7 @@ async def _generate_with_openrouter(prompt: str, max_tokens: int = 8192) -> str:
                                 print(f"✅ OpenRouter نجاح: {model}")
                                 return content.strip()
                         elif resp.status == 402:
-                            print(f"⚠️ OpenRouter رصيد منتهي للمفتاح {key[:10]}...")
+                            print(f"⚠️ OpenRouter رصيد منتهي للمفتاح {key[:15]}...")
                             break
                         else:
                             continue
@@ -165,7 +176,9 @@ async def _generate_with_openrouter(prompt: str, max_tokens: int = 8192) -> str:
     raise QuotaExhaustedError("جميع مفاتيح OpenRouter منتهية")
 
 
-# --- Groq (احتياطي أخير) ---
+# ══════════════════════════════════════════════════════════════════════════════
+#  مزود 4: Groq
+# ══════════════════════════════════════════════════════════════════════════════
 async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
     """محاولة التوليد باستخدام مفاتيح Groq."""
     if not GROQ_API_KEYS:
@@ -198,7 +211,7 @@ async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
                             print(f"✅ Groq نجاح: {model}")
                             return text
                         elif resp.status == 429:
-                            print(f"⚠️ Groq حد الطلبات للمفتاح {key[:10]}...")
+                            print(f"⚠️ Groq حد الطلبات للمفتاح {key[:15]}...")
                             continue
                         else:
                             continue
@@ -208,16 +221,181 @@ async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
     raise QuotaExhaustedError("جميع مفاتيح Groq منتهية")
 
 
-# =============================================================================
-# الوظيفة الرئيسية للتوليد (تدوير تلقائي بين المزودين)
-# =============================================================================
+# ══════════════════════════════════════════════════════════════════════════════
+#  مزود 5: DuckDuckGo AI Chat (مجاني تماماً - بدون مفتاح)
+# ══════════════════════════════════════════════════════════════════════════════
+async def _generate_with_duckduckgo(prompt: str, max_tokens: int = 8192) -> str:
+    """
+    استخدام DuckDuckGo AI Chat - مجاني تماماً وبدون مفتاح.
+    يدعم نماذج متعددة: gpt-4o-mini, claude-3-haiku, llama-3.3-70b, mixtral-8x7b
+    """
+    models = ["gpt-4o-mini", "claude-3-haiku", "llama-3.3-70b", "mixtral-8x7b"]
+    
+    for model in models:
+        try:
+            # DuckDuckGo AI Chat API
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Content-Type": "application/json",
+                "Origin": "https://duckduckgo.com",
+                "Referer": "https://duckduckgo.com/",
+            }
+            
+            # الحصول على VQD token
+            async with aiohttp.ClientSession() as session:
+                # الخطوة 1: الحصول على status
+                async with session.get(
+                    "https://duckduckgo.com/duckchat/v1/status",
+                    headers={"User-Agent": headers["User-Agent"]},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status != 200:
+                        continue
+                
+                # الخطوة 2: إنشاء محادثة جديدة
+                chat_payload = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt[:4000]}],
+                }
+                
+                async with session.post(
+                    "https://duckduckgo.com/duckchat/v1/chat",
+                    headers=headers,
+                    json=chat_payload,
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as resp:
+                    if resp.status == 200:
+                        # قراءة الاستجابة المتدفقة
+                        full_response = ""
+                        async for line in resp.content:
+                            if line:
+                                try:
+                                    line_text = line.decode('utf-8').strip()
+                                    if line_text.startswith('data: '):
+                                        data = json.loads(line_text[6:])
+                                        if data.get("message"):
+                                            full_response += data["message"]
+                                except:
+                                    pass
+                        
+                        if full_response.strip():
+                            print(f"✅ DuckDuckGo نجاح: {model}")
+                            return full_response.strip()
+                    else:
+                        print(f"⚠️ DuckDuckGo {model} فشل: {resp.status}")
+                        continue
+                        
+        except Exception as e:
+            print(f"⚠️ DuckDuckGo {model} خطأ: {str(e)[:80]}")
+            continue
+    
+    raise QuotaExhaustedError("DuckDuckGo AI Chat فشل")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  مزود 6: Blackbox AI (مجاني - بدون مفتاح)
+# ══════════════════════════════════════════════════════════════════════════════
+async def _generate_with_blackbox(prompt: str, max_tokens: int = 8192) -> str:
+    """استخدام Blackbox AI - مجاني وبدون مفتاح."""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Content-Type": "application/json",
+            "Origin": "https://www.blackbox.ai",
+            "Referer": "https://www.blackbox.ai/",
+        }
+        
+        payload = {
+            "messages": [{"role": "user", "content": prompt[:4000]}],
+            "model": "blackboxai",
+            "max_tokens": min(max_tokens, 4096),
+            "temperature": 0.3,
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://www.blackbox.ai/api/chat",
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                if resp.status == 200:
+                    text = await resp.text()
+                    if text and len(text) > 50:
+                        print(f"✅ Blackbox AI نجاح")
+                        return text.strip()
+                else:
+                    print(f"⚠️ Blackbox AI فشل: {resp.status}")
+                    
+    except Exception as e:
+        print(f"⚠️ Blackbox AI خطأ: {str(e)[:80]}")
+    
+    raise QuotaExhaustedError("Blackbox AI فشل")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  مزود 7: Hugging Face Inference API (مجاني - نماذج متعددة)
+# ══════════════════════════════════════════════════════════════════════════════
+async def _generate_with_huggingface(prompt: str, max_tokens: int = 8192) -> str:
+    """استخدام Hugging Face Inference API - بعض النماذج مجانية."""
+    
+    # نماذج مجانية على Hugging Face
+    free_models = [
+        "mistralai/Mistral-7B-Instruct-v0.2",
+        "microsoft/Phi-3-mini-4k-instruct",
+        "google/gemma-2b-it",
+    ]
+    
+    for model in free_models:
+        try:
+            headers = {"Content-Type": "application/json"}
+            payload = {
+                "inputs": prompt[:2000],
+                "parameters": {
+                    "max_new_tokens": min(max_tokens, 2048),
+                    "temperature": 0.3,
+                    "return_full_text": False,
+                }
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"https://api-inference.huggingface.co/models/{model}",
+                    headers=headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if isinstance(data, list) and data:
+                            text = data[0].get("generated_text", "")
+                            if text.strip():
+                                print(f"✅ HuggingFace نجاح: {model}")
+                                return text.strip()
+                    else:
+                        print(f"⚠️ HuggingFace {model} فشل: {resp.status}")
+                        continue
+                        
+        except Exception as e:
+            print(f"⚠️ HuggingFace {model} خطأ: {str(e)[:80]}")
+            continue
+    
+    raise QuotaExhaustedError("HuggingFace فشل")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  الدالة الرئيسية للتوليد (تدوير تلقائي بين جميع المزودين)
+# ══════════════════════════════════════════════════════════════════════════════
 async def _generate_with_rotation(prompt: str, max_output_tokens: int = 8192) -> str:
     """
     تدوير تلقائي بين المزودين حسب الأولوية:
-    1. DeepSeek (الأفضل والأسرع)
-    2. Gemini (Google)
-    3. OpenRouter (نماذج مجانية)
-    4. Groq (احتياطي أخير)
+    1. DeepSeek
+    2. Gemini
+    3. OpenRouter
+    4. Groq
+    5. DuckDuckGo (مجاني - بدون مفتاح)
+    6. Blackbox AI (مجاني - بدون مفتاح)
+    7. HuggingFace (مجاني)
     """
     errors = []
 
@@ -253,12 +431,33 @@ async def _generate_with_rotation(prompt: str, max_output_tokens: int = 8192) ->
         except QuotaExhaustedError as e:
             errors.append(f"Groq: {e}")
 
+    # 5. DuckDuckGo AI (مجاني - بدون مفتاح)
+    print("🔄 تجربة DuckDuckGo AI (مجاني)...")
+    try:
+        return await _generate_with_duckduckgo(prompt, max_output_tokens)
+    except QuotaExhaustedError as e:
+        errors.append(f"DuckDuckGo: {e}")
+
+    # 6. Blackbox AI (مجاني - بدون مفتاح)
+    print("🔄 تجربة Blackbox AI (مجاني)...")
+    try:
+        return await _generate_with_blackbox(prompt, max_output_tokens)
+    except QuotaExhaustedError as e:
+        errors.append(f"Blackbox: {e}")
+
+    # 7. HuggingFace (مجاني)
+    print("🔄 تجربة HuggingFace (مجاني)...")
+    try:
+        return await _generate_with_huggingface(prompt, max_output_tokens)
+    except QuotaExhaustedError as e:
+        errors.append(f"HuggingFace: {e}")
+
     raise QuotaExhaustedError(f"جميع المزودين منتهين: {' | '.join(errors)}")
 
 
-# =============================================================================
-# تحليل المحاضرة (نفس الوظيفة الأصلية مع تعديل استدعاء _generate_with_rotation)
-# =============================================================================
+# ══════════════════════════════════════════════════════════════════════════════
+#  تحليل المحاضرة
+# ══════════════════════════════════════════════════════════════════════════════
 def _compute_lecture_scale(text: str) -> tuple:
     word_count = len(text.split())
     if word_count < 300:
@@ -343,6 +542,7 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
 مهم جداً:
 - {lang_note}
 - يجب أن تكون {num_sections} أقسام بالضبط
+- keyword_images: مصفوفة من 4 عناصر - لكل كلمة مفتاحية وصف إنجليزي قصير (3-5 كلمات) لصورة كرتونية بسيطة
 - أرجع JSON فقط بدون أي نص إضافي
 """
 
@@ -361,10 +561,9 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         raise ValueError(f"Failed to parse response as JSON: {content[:500]}")
 
 
-# =============================================================================
-# باقي الوظائف (استخراج النص من PDF، ترجمة، توليد الصور) - كما هي بدون تغيير
-# =============================================================================
-
+# ══════════════════════════════════════════════════════════════════════════════
+#  استخراج النص من PDF
+# ══════════════════════════════════════════════════════════════════════════════
 async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
     import PyPDF2
     reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
@@ -376,24 +575,66 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
     return "\n\n".join(pages)
 
 
-async def translate_full_text(text: str, dialect: str) -> str:
-    dialect_instructions = {
-        "iraq": "ترجم النص إلى اللهجة العراقية.",
-        "egypt": "ترجم النص إلى اللهجة المصرية.",
-        "syria": "ترجم النص إلى اللهجة الشامية السورية.",
-        "gulf": "ترجم النص إلى اللهجة الخليجية.",
-        "msa": "حوّل النص إلى العربية الفصحى السليمة.",
-    }
-    instruction = dialect_instructions.get(dialect, dialect_instructions["msa"])
-    prompt = f"{instruction}\n\nالنص:\n---\n{text[:12000]}\n---\n\nقدّم الترجمة فقط."
-    return await _generate_with_rotation(prompt)
+# ══════════════════════════════════════════════════════════════════════════════
+#  توليد الصور - Pollinations.ai (مجاني وسريع)
+# ══════════════════════════════════════════════════════════════════════════════
+async def _pollinations_generate(prompt: str) -> bytes | None:
+    """توليد صورة باستخدام Pollinations.ai - مجاني وسريع."""
+    import urllib.parse
+    
+    clean_prompt = prompt[:380].replace("\n", " ")
+    seed = random.randint(1, 99999)
+    encoded = urllib.parse.quote(clean_prompt)
+    
+    # استخدام نموذج flux للحصول على صور كرتونية تعليمية
+    url = f"https://image.pollinations.ai/prompt/{encoded}?width=854&height=480&nologo=true&seed={seed}&model=flux"
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                if resp.status == 200:
+                    raw = await resp.read()
+                    if len(raw) > 5000:
+                        pil_img = PILImage.open(io.BytesIO(raw)).convert("RGB")
+                        pil_img = pil_img.resize((854, 480), PILImage.LANCZOS)
+                        buf = io.BytesIO()
+                        pil_img.save(buf, "JPEG", quality=85)
+                        print(f"✅ Pollinations صورة: {len(buf.getvalue())//1024}KB")
+                        return buf.getvalue()
+    except Exception as e:
+        print(f"⚠️ Pollinations خطأ: {str(e)[:60]}")
+    
+    return None
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  توليد الصور - Picsum (صور توضيحية احتياطية)
+# ══════════════════════════════════════════════════════════════════════════════
+async def _picsum_generate(keyword: str) -> bytes | None:
+    """صور توضيحية من Picsum - مجاني."""
+    try:
+        # استخدام seed مستقر لكل كلمة
+        seed = sum(ord(c) for c in keyword) % 1000
+        url = f"https://picsum.photos/seed/{seed}/854/480"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status == 200:
+                    raw = await resp.read()
+                    if len(raw) > 5000:
+                        print(f"✅ Picsum صورة احتياطية لـ: {keyword[:20]}")
+                        return raw
+    except Exception as e:
+        print(f"⚠️ Picsum خطأ: {str(e)[:60]}")
+    
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  توليد صورة احتياطية (كرت تعليمي)
+# ══════════════════════════════════════════════════════════════════════════════
 def _make_placeholder_image(keywords: list, lecture_type: str = "other") -> bytes:
-    # (نفس الكود الأصلي - لم يتم تغييره)
-    from PIL import ImageDraw, ImageFont
-    import os
-
+    """إنشاء كرت تعليمي احتياطي."""
     PALETTES = {
         "medicine": ((20, 78, 140), (6, 147, 227), (255, 200, 0)),
         "science": ((11, 110, 79), (28, 200, 135), (255, 220, 50)),
@@ -406,6 +647,7 @@ def _make_placeholder_image(keywords: list, lecture_type: str = "other") -> byte
     img = PILImage.new("RGB", (W, H), bg1)
     draw = ImageDraw.Draw(img)
 
+    # تدرج لوني
     for x in range(W):
         t = x / W
         r = int(bg1[0] * (1 - t) + bg2[0] * t)
@@ -413,115 +655,60 @@ def _make_placeholder_image(keywords: list, lecture_type: str = "other") -> byte
         b = int(bg1[2] * (1 - t) + bg2[2] * t)
         draw.line([(x, 0), (x, H)], fill=(r, g, b))
 
+    # النص الرئيسي
     keyword_raw = (keywords[0] if keywords else "").strip()
+    
     try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 60)
+        # محاولة استخدام خط عربي
+        font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        font = ImageFont.truetype(font_path, 50)
     except:
         font = ImageFont.load_default()
 
+    # رسم النص
     bbox = draw.textbbox((0, 0), keyword_raw, font=font)
     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
     draw.text(((W - tw) // 2, (H - th) // 2), keyword_raw, fill=(255, 255, 255), font=font)
+    
+    # إطار
+    draw.rectangle([(10, 10), (W-10, H-10)], outline=accent, width=3)
 
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=85)
     return buf.getvalue()
 
 
-async def _pollinations_generate(prompt: str, lecture_type: str = "other") -> bytes | None:
-    import urllib.parse, random
-    model = "flux-anime"
-    clean_prompt = prompt[:380].replace("\n", " ")
-    seed = random.randint(1, 99999)
-    encoded = urllib.parse.quote(clean_prompt)
-    url = f"https://image.pollinations.ai/prompt/{encoded}?width=854&height=480&nologo=true&seed={seed}&model={model}"
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                if resp.status == 200:
-                    raw = await resp.read()
-                    if len(raw) > 5000:
-                        pil_img = PILImage.open(io.BytesIO(raw)).convert("RGB")
-                        pil_img = pil_img.resize((854, 480), PILImage.LANCZOS)
-                        buf = io.BytesIO()
-                        pil_img.save(buf, "JPEG", quality=85)
-                        return buf.getvalue()
-    except Exception as e:
-        print(f"Pollinations error: {e}")
-    return None
-
-
-async def _dalle_generate(prompt: str) -> bytes | None:
-    import base64
-    if not OPENAI_API_KEY:
-        return None
-    payload = {
-        "model": "dall-e-3",
-        "prompt": prompt,
-        "size": "1024x1024",
-        "quality": "standard",
-        "n": 1,
-        "response_format": "b64_json",
-    }
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {OPENAI_API_KEY}"}
-    try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.post(
-                "https://api.openai.com/v1/images/generations",
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=40),
-            ) as resp:
-                if resp.status != 200:
-                    return None
-                data = await resp.json()
-                imgs = data.get("data", [])
-                if not imgs:
-                    return None
-                b64 = imgs[0].get("b64_json", "")
-                raw = base64.b64decode(b64)
-                pil_img = PILImage.open(io.BytesIO(raw)).convert("RGB")
-                pil_img = pil_img.resize((854, 480), PILImage.LANCZOS)
-                buf = io.BytesIO()
-                pil_img.save(buf, "JPEG", quality=92)
-                return buf.getvalue()
-    except Exception as e:
-        print(f"DALL-E error: {e}")
-        return None
-
-
-def _build_dalle_prompt(subject: str, lecture_type: str) -> str:
-    style = {
-        "medicine": "medical anatomy sketch, thin pink outline drawing",
-        "science": "science diagram sketch, thin line drawing",
-    }.get(lecture_type, "educational sketch, simple line drawing")
-    return f"{style}, {subject}, Osmosis.org style, hand-drawn pencil sketch, pure white background, no text"
-
-
+# ══════════════════════════════════════════════════════════════════════════════
+#  الدالة الرئيسية لجلب صورة لكلمة مفتاحية
+# ══════════════════════════════════════════════════════════════════════════════
 async def fetch_image_for_keyword(
     keyword: str,
     section_title: str,
     lecture_type: str,
     image_search_en: str = "",
 ) -> bytes:
+    """
+    جلب صورة تعليمية للكلمة المفتاحية.
+    
+    Pipeline:
+    1. Pollinations.ai (مجاني - AI)
+    2. Picsum (صور توضيحية احتياطية)
+    3. كرت تعليمي (صورة مولدة محلياً)
+    """
     subject = (image_search_en or keyword).strip()
-    pol_prompt = _build_dalle_prompt(subject, lecture_type)
-
-    # 1. Pollinations (مجاني وسريع)
-    try:
-        img_bytes = await asyncio.wait_for(_pollinations_generate(pol_prompt, lecture_type), timeout=15.0)
-        if img_bytes:
-            return img_bytes
-    except:
-        pass
-
-    # 2. DALL-E (إذا كان المفتاح موجوداً)
-    if OPENAI_API_KEY:
-        try:
-            img_bytes = await asyncio.wait_for(_dalle_generate(pol_prompt), timeout=30.0)
-            if img_bytes:
-                return img_bytes
-        except:
-            pass
-
-    # 3. صورة احتياطية
+    
+    # بناء prompt للصورة
+    prompt = f"educational cartoon illustration of {subject}, simple clean style, white background, no text"
+    
+    # 1. محاولة Pollinations.ai
+    img_bytes = await _pollinations_generate(prompt)
+    if img_bytes:
+        return img_bytes
+    
+    # 2. محاولة Picsum
+    img_bytes = await _picsum_generate(keyword)
+    if img_bytes:
+        return img_bytes
+    
+    # 3. كرت تعليمي احتياطي
     return _make_placeholder_image([keyword, section_title], lecture_type)
