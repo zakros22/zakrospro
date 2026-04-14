@@ -10,7 +10,10 @@ import random
 import tempfile
 import asyncio
 import aiohttp
-from PIL import Image as PILImage, ImageDraw, ImageFont, ImageFilter
+import logging
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
+
+logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  الإعدادات
@@ -52,8 +55,14 @@ def get_font(size: int, bold: bool = False, arabic: bool = False):
     """تحميل الخط المناسب."""
     font_paths = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "fonts/Amiri-Bold.ttf" if bold and arabic else "fonts/Amiri-Regular.ttf"
     ]
+    
+    if arabic:
+        arabic_paths = [
+            "fonts/Amiri-Bold.ttf" if bold else "fonts/Amiri-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ]
+        font_paths = arabic_paths + font_paths
     
     for path in font_paths:
         try:
@@ -77,12 +86,12 @@ def create_educational_card(
     is_arabic: bool = True
 ) -> str:
     """
-    إنشاء كرت تعليمي احترافي يشبه الكروت الطبية/التعليمية.
+    إنشاء كرت تعليمي احترافي.
     
     Args:
         section_title: عنوان القسم
         keywords: قائمة الكلمات المفتاحية
-        subject: نوع المادة (medicine, math, etc)
+        subject: نوع المادة
         section_num: رقم القسم
         total_sections: إجمالي الأقسام
         is_arabic: هل النص عربي
@@ -94,7 +103,7 @@ def create_educational_card(
     primary, secondary, accent, bg_color = colors["primary"], colors["secondary"], colors["accent"], colors["bg"]
     
     # إنشاء الصورة
-    img = PILImage.new("RGB", (W, H), bg_color)
+    img = Image.new("RGB", (W, H), bg_color)
     draw = ImageDraw.Draw(img)
     
     # ═════════════════════════════════════════════════════════════════════════
@@ -103,7 +112,7 @@ def create_educational_card(
     draw.rectangle([(0, 0), (W, 8)], fill=primary)
     
     # ═════════════════════════════════════════════════════════════════════════
-    # رأس الكرت - خلفية ملونة
+    # رأس الكرت
     # ═════════════════════════════════════════════════════════════════════════
     draw.rectangle([(0, 8), (W, 75)], fill=primary)
     
@@ -151,18 +160,15 @@ def create_educational_card(
     # ═════════════════════════════════════════════════════════════════════════
     # منطقة المحتوى
     # ═════════════════════════════════════════════════════════════════════════
-    # إطار
     draw.rectangle([(20, 90), (W-20, H-20)], fill=(255, 255, 255), outline=secondary, width=2)
     
-    # عنوان "مصطلحات رئيسية"
+    # عنوان المصطلحات
     font_label = get_font(16, bold=True, arabic=is_arabic)
     label = "📌 مصطلحات رئيسية:" if is_arabic else "📌 Key Terms:"
     label_display = prepare_arabic(label) if is_arabic else label
     draw.text((40, 108), label_display, fill=primary, font=font_label)
     
-    # ═════════════════════════════════════════════════════════════════════════
-    # المصطلحات (في عمودين)
-    # ═════════════════════════════════════════════════════════════════════════
+    # المصطلحات في عمودين
     font_kw = get_font(15, arabic=is_arabic)
     y_start = 150
     line_height = 45
@@ -187,36 +193,29 @@ def create_educational_card(
             y = y_start + (i // 2) * line_height
         
         if y < H - 60:
-            # مربع ملون صغير
             draw.rectangle([(x-5, y+5), (x-1, y+9)], fill=secondary)
             draw.text((x+5, y), kw_display, fill=(60, 60, 80), font=font_kw)
     
     # ═════════════════════════════════════════════════════════════════════════
     # رسم توضيحي حسب المادة
     # ═════════════════════════════════════════════════════════════════════════
-    icon_x = W - 100
-    icon_y = H - 110
+    icon_x, icon_y = W - 100, H - 110
     
     if subject == "medicine":
-        # صليب طبي
         draw.rectangle([(icon_x, icon_y+30), (icon_x+60, icon_y+40)], fill=primary)
         draw.rectangle([(icon_x+25, icon_y+15), (icon_x+35, icon_y+75)], fill=primary)
     elif subject == "math":
-        # رموز رياضية
         font_math = get_font(28, bold=True)
         draw.text((icon_x-10, icon_y+20), "∑", fill=primary, font=font_math)
         draw.text((icon_x+30, icon_y+20), "∫", fill=secondary, font=font_math)
     elif subject == "science":
-        # دورق
         draw.ellipse([(icon_x+15, icon_y+40), (icon_x+45, icon_y+70)], outline=primary, width=2)
         draw.rectangle([(icon_x+20, icon_y+10), (icon_x+40, icon_y+40)], outline=primary, width=2)
     elif subject == "physics":
-        # ذرة
         draw.ellipse([(icon_x+10, icon_y+30), (icon_x+50, icon_y+70)], outline=primary, width=2)
         draw.ellipse([(icon_x+20, icon_y+20), (icon_x+40, icon_y+80)], outline=secondary, width=2)
         draw.ellipse([(icon_x+25, icon_y+40), (icon_x+35, icon_y+50)], fill=accent)
     else:
-        # نجمة
         for i in range(5):
             import math
             angle = i * 72 - 90
@@ -234,7 +233,7 @@ def create_educational_card(
     font_wm = get_font(11)
     draw.text((W-130, H-22), "@zakros_probot", fill=(150, 150, 170), font=font_wm)
     
-    # حفظ الصورة
+    # حفظ
     fd, path = tempfile.mkstemp(suffix=".jpg", dir="/tmp/telegram_bot")
     os.close(fd)
     img.save(path, "JPEG", quality=92)
@@ -243,80 +242,95 @@ def create_educational_card(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  إنشاء صورة الملخص (تجمع كل الصور)
+#  إنشاء صورة المقدمة
 # ══════════════════════════════════════════════════════════════════════════════
-def create_summary_card(
+def create_intro_card(
+    title: str,
     sections: list,
-    lecture_title: str,
     subject: str,
     is_arabic: bool = True
 ) -> str:
-    """
-    إنشاء كرت الملخص النهائي الذي يجمع كل الأقسام.
-    """
+    """إنشاء صورة المقدمة مع خريطة المحاضرة."""
     colors = SUBJECT_COLORS.get(subject, SUBJECT_COLORS["other"])
-    primary, secondary, accent = colors["primary"], colors["secondary"], colors["accent"]
+    primary = colors["primary"]
     
-    img = PILImage.new("RGB", (W, H), (248, 248, 250))
+    img = Image.new("RGB", (W, H), (248, 248, 250))
     draw = ImageDraw.Draw(img)
     
-    # شريط علوي
     draw.rectangle([(0, 0), (W, 8)], fill=primary)
-    draw.rectangle([(0, 8), (W, 60)], fill=primary)
+    draw.rectangle([(0, 8), (W, 70)], fill=primary)
     
-    # عنوان الملخص
-    title = "📋 ملخص المحاضرة" if is_arabic else "📋 Lecture Summary"
-    title_display = prepare_arabic(title) if is_arabic else title
-    font_title = get_font(24, bold=True, arabic=is_arabic)
+    font_title = get_font(26, bold=True, arabic=is_arabic)
+    title_display = prepare_arabic(title[:35]) if is_arabic else title[:35]
     bbox = draw.textbbox((0, 0), title_display, font=font_title)
     tw = bbox[2] - bbox[0]
-    draw.text(((W - tw) // 2, 18), title_display, fill=(255, 255, 255), font=font_title)
+    draw.text(((W - tw) // 2, 22), title_display, fill=(255, 255, 255), font=font_title)
     
-    # إطار المحتوى
-    draw.rectangle([(20, 75), (W-20, H-20)], fill=(255, 255, 255), outline=secondary, width=2)
+    draw.rectangle([(20, 85), (W-20, H-20)], fill=(255, 255, 255), outline=primary, width=2)
     
-    # عرض الأقسام
-    font_sec = get_font(14, bold=True, arabic=is_arabic)
-    font_kw = get_font(12, arabic=is_arabic)
+    font_sec = get_font(16, arabic=is_arabic)
+    map_label = "📋 خريطة المحاضرة:" if is_arabic else "📋 Lecture Map:"
+    label_display = prepare_arabic(map_label) if is_arabic else map_label
+    draw.text((40, 105), label_display, fill=primary, font=font_sec)
     
-    y = 95
+    y = 145
     for i, sec in enumerate(sections[:6]):
-        accent_color = list(SUBJECT_COLORS.values())[i % len(SUBJECT_COLORS)]["primary"]
-        
-        # رقم القسم
-        draw.ellipse([(35, y), (55, y+20)], fill=accent_color)
-        font_num = get_font(12, bold=True)
-        draw.text((42, y+3), str(i+1), fill=(255, 255, 255), font=font_num)
-        
-        # عنوان القسم
-        sec_title = sec.get("title", f"القسم {i+1}")[:35]
-        sec_display = prepare_arabic(sec_title) if is_arabic else sec_title
-        draw.text((70, y+2), sec_display, fill=(40, 40, 60), font=font_sec)
-        
-        # كلمات مفتاحية
-        keywords = sec.get("keywords", [])[:3]
-        kw_text = " • ".join(keywords)
-        kw_display = prepare_arabic(kw_text) if is_arabic else kw_text
-        draw.text((70, y+22), kw_display, fill=(100, 100, 130), font=font_kw)
-        
-        y += 55
-        
-        # خط فاصل
-        if i < len(sections) - 1:
-            draw.line([(40, y-5), (W-40, y-5)], fill=(200, 200, 210), width=1)
+        sec_title = sec.get("title", f"القسم {i+1}")[:40]
+        sec_display = prepare_arabic(f"{i+1}. {sec_title}") if is_arabic else f"{i+1}. {sec_title}"
+        draw.text((50, y), sec_display, fill=(60, 60, 80), font=font_sec)
+        y += 45
     
-    # شريط سفلي
     draw.rectangle([(0, H-6), (W, H)], fill=primary)
+    draw.text((W-120, H-22), "@zakros_probot", fill=(150, 150, 170), font=font_sec)
     
-    # علامة مائية
-    font_wm = get_font(11)
-    draw.text((W-130, H-22), "@zakros_probot", fill=(150, 150, 170), font=font_wm)
-    
-    # حفظ
     fd, path = tempfile.mkstemp(suffix=".jpg", dir="/tmp/telegram_bot")
     os.close(fd)
     img.save(path, "JPEG", quality=92)
+    return path
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  إنشاء صورة الملخص
+# ══════════════════════════════════════════════════════════════════════════════
+def create_summary_card(
+    sections: list,
+    title: str,
+    subject: str,
+    is_arabic: bool = True
+) -> str:
+    """إنشاء صورة الملخص النهائي."""
+    colors = SUBJECT_COLORS.get(subject, SUBJECT_COLORS["other"])
+    primary = colors["primary"]
     
+    img = Image.new("RGB", (W, H), (248, 248, 250))
+    draw = ImageDraw.Draw(img)
+    
+    draw.rectangle([(0, 0), (W, 8)], fill=primary)
+    draw.rectangle([(0, 8), (W, 60)], fill=primary)
+    
+    font_title = get_font(24, bold=True, arabic=is_arabic)
+    summary_label = "📋 ملخص المحاضرة" if is_arabic else "📋 Summary"
+    label_display = prepare_arabic(summary_label) if is_arabic else summary_label
+    bbox = draw.textbbox((0, 0), label_display, font=font_title)
+    tw = bbox[2] - bbox[0]
+    draw.text(((W - tw) // 2, 20), label_display, fill=(255, 255, 255), font=font_title)
+    
+    draw.rectangle([(20, 75), (W-20, H-20)], fill=(255, 255, 255), outline=primary, width=2)
+    
+    font_sec = get_font(14, arabic=is_arabic)
+    y = 100
+    for i, sec in enumerate(sections[:8]):
+        sec_title = sec.get("title", f"القسم {i+1}")[:35]
+        sec_display = prepare_arabic(f"✓ {sec_title}") if is_arabic else f"✓ {sec_title}"
+        draw.text((40, y), sec_display, fill=(60, 60, 80), font=font_sec)
+        y += 38
+    
+    draw.rectangle([(0, H-6), (W, H)], fill=primary)
+    draw.text((W-120, H-22), "@zakros_probot", fill=(150, 150, 170), font=font_sec)
+    
+    fd, path = tempfile.mkstemp(suffix=".jpg", dir="/tmp/telegram_bot")
+    os.close(fd)
+    img.save(path, "JPEG", quality=92)
     return path
 
 
@@ -332,13 +346,14 @@ async def generate_ai_image(prompt: str) -> bytes | None:
     url = f"https://image.pollinations.ai/prompt/{encoded}?width=854&height=480&seed={seed}&model=flux&nologo=true"
     
     try:
-        async with aiohttp.ClientSession() as s:
-            async with s.get(url, timeout=20) as r:
-                if r.status == 200:
-                    data = await r.read()
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
                     if len(data) > 5000:
+                        logger.info(f"✅ صورة AI: {len(data)//1024}KB")
                         return data
-    except:
-        pass
+    except Exception as e:
+        logger.warning(f"⚠️ Pollinations خطأ: {str(e)[:60]}")
     
     return None
