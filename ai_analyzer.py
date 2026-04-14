@@ -1,199 +1,301 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+تحليل المحاضرات باستخدام الذكاء الاصطناعي
+يدعم: DeepSeek, Gemini, OpenRouter, Groq
+مع تحليل محلي احتياطي
+"""
 
 import json
 import re
 import io
 import asyncio
 import aiohttp
-import random
-import os
-from PIL import Image as PILImage, ImageDraw, ImageFont
 from google import genai
 from google.genai import types as genai_types
 from config import (
-    DEEPSEEK_API_KEYS, GEMINI_API_KEYS, OPENROUTER_API_KEYS, GROQ_API_KEYS, OPENAI_API_KEY
+    DEEPSEEK_API_KEYS, GEMINI_API_KEYS, OPENROUTER_API_KEYS, GROQ_API_KEYS
 )
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  نظام تبادل المفاتيح
-# ══════════════════════════════════════════════════════════════════════════════
 
 class QuotaExhaustedError(Exception):
+    """يُرفع عند نفاد جميع المفاتيح."""
     pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  أنماط الشرح حسب المادة
+# ══════════════════════════════════════════════════════════════════════════════
+TEACHING_STYLES = {
+    "medicine": """
+أنت طبيب استشاري تشرح لطلاب الطب. أسلوبك:
+- ابدأ بحالة سريرية واقعية: "مريض جاء يشكو من..."
+- اشرح الآلية بتشبيهات حياتية
+- اذكر المصطلحات الطبية مع شرحها
+- اختم بخلاصة سريرية في 3 نقاط
+""",
+    "science": """
+أنت عالم تشرح العلوم بأسلوب تجريبي ممتع:
+- ابدأ بتجربة ذهنية: "تخيل أنك في مختبر..."
+- اشرح الظاهرة بتشبيه من الحياة اليومية
+- اذكر تطبيقات عملية
+- اختم بسر علمي يثير الفضول
+""",
+    "math": """
+أنت أستاذ رياضيات تشرح بالألغاز:
+- ابدأ بتحدي: "هل تستطيع حل هذه المسألة؟"
+- اشرح القاعدة كسر من أسرار الأرقام
+- استخدم رسوماً ذهنية
+- اختم بخدعة رياضية
+""",
+    "physics": """
+أنت فيزيائي تشرح قوانين الكون:
+- ابدأ بظاهرة غامضة
+- اشرح القانون كتعويذة سحرية
+- استخدم تشبيهات من الخيال
+- اختم بتطبيق مذهل
+""",
+    "chemistry": """
+أنت كيميائي تشرح التفاعلات كوصفات سحرية:
+- ابدأ بتفاعل مذهل
+- اشرحه كرقصة بين الذرات
+- استخدم الألوان والروائح في الوصف
+- اختم بسر المختبر
+""",
+    "engineering": """
+أنت مهندس تشرح كيفية بناء الأشياء:
+- ابدأ بتحدي بناء
+- اشرح المبدأ بقصة هندسية
+- اذكر أخطاء شهيرة وتجنبها
+- اختم بنصيحة المهندس الذهبية
+""",
+    "computer": """
+أنت خبير برمجة تشرح بأسلوب الهاكر:
+- ابدأ بمشكلة تقنية
+- اشرح الخوارزمية كوصفة طبخ
+- استخدم تشبيهات تقنية
+- اختم بخدعة برمجية
+""",
+    "history": """
+أنت راوي قصص تاريخي:
+- انقل المستمع للزمن الماضي
+- اروي الأحداث كفيلم سينمائي
+- اربط الماضي بالحاضر
+- اختم بدرس مستفاد
+""",
+    "literature": """
+أنت أديب وناقد:
+- ابدأ بلوحة فنية من النص
+- حلل الأسلوب كأسرار السحر
+- اربط بمشاعر إنسانية
+- اختم باقتباس من ذهب
+""",
+    "business": """
+أنت خبير إدارة أعمال:
+- ابدأ بقصة نجاح أو فشل حقيقية
+- اشرح المفهوم كلعبة استراتيجية
+- استخدم أرقاماً واقعية
+- اختم بنصيحة المليونير
+""",
+    "other": """
+أنت معلم مبدع:
+- ابدأ بقصة تثير الفضول
+- اشرح بتشبيه من الحياة
+- اذكر تطبيقات عملية
+- اختم بخلاصة في 3 نقاط
+"""
+}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  اكتشاف نوع المادة
 # ══════════════════════════════════════════════════════════════════════════════
-
-def _detect_subject(text: str) -> str:
+def detect_subject(text: str) -> str:
+    """اكتشاف نوع المادة من النص."""
     text_lower = text.lower()
+    
     subjects = {
-        "medicine": ["طب", "مرض", "علاج", "طبيب", "مريض", "جراحة", "medicine", "disease", "treatment", "doctor"],
-        "physics": ["فيزياء", "قوة", "حركة", "طاقة", "كهرباء", "physics", "force", "energy"],
-        "chemistry": ["كيمياء", "تفاعل", "عنصر", "مركب", "chemistry", "reaction"],
-        "math": ["رياضيات", "معادلة", "حساب", "جبر", "math", "equation", "algebra"],
-        "engineering": ["هندسة", "بناء", "تصميم", "engineering", "design"],
-        "computer": ["برمجة", "حاسوب", "خوارزمية", "computer", "programming"],
-        "history": ["تاريخ", "حرب", "حضارة", "history", "war"],
-        "literature": ["أدب", "شعر", "رواية", "literature", "poetry"],
-        "business": ["إدارة", "اقتصاد", "تسويق", "business", "management"],
-        "science": ["علوم", "أحياء", "نبات", "science", "biology"],
+        "medicine": ["طب", "مرض", "علاج", "طبيب", "مريض", "جراحة", "ولادة", "قيصرية", "تشريح", "دوائي"],
+        "physics": ["فيزياء", "قوة", "حركة", "طاقة", "كهرباء", "مغناطيس", "جاذبية", "نيوتن", "اينشتاين"],
+        "chemistry": ["كيمياء", "تفاعل", "عنصر", "مركب", "حمض", "قاعدة", "جزيء", "ذرة"],
+        "math": ["رياضيات", "معادلة", "حساب", "جبر", "هندسة", "تكامل", "تفاضل", "إحصاء"],
+        "engineering": ["هندسة", "بناء", "جسر", "تصميم", "إنشاء", "ميكانيكا", "كهرباء"],
+        "computer": ["برمجة", "حاسوب", "خوارزمية", "برنامج", "كود", "بايثون", "جافا"],
+        "history": ["تاريخ", "حرب", "معركة", "حضارة", "إمبراطورية", "خلافة", "قديم"],
+        "literature": ["أدب", "شعر", "رواية", "قصة", "كاتب", "شاعر", "نثر", "بلاغة"],
+        "business": ["إدارة", "اقتصاد", "تسويق", "شركة", "استثمار", "أسهم", "تمويل"],
+        "science": ["علوم", "أحياء", "نبات", "حيوان", "خلية", "وراثة", "بيئة"],
     }
+    
+    scores = {}
     for subject, keywords in subjects.items():
-        if any(kw in text_lower for kw in keywords):
-            return subject
+        score = sum(1 for kw in keywords if kw in text_lower)
+        if score > 0:
+            scores[subject] = score
+    
+    if scores:
+        return max(scores, key=scores.get)
     return "other"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  دوال التوليد
 # ══════════════════════════════════════════════════════════════════════════════
-
-async def _generate_with_deepseek(prompt: str) -> str:
+async def _generate_deepseek(prompt: str) -> str:
     if not DEEPSEEK_API_KEYS:
-        raise QuotaExhaustedError("لا توجد مفاتيح")
+        raise QuotaExhaustedError("لا توجد مفاتيح DeepSeek")
+    
     for key in DEEPSEEK_API_KEYS:
         try:
             headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
             payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "max_tokens": 6000, "temperature": 0.5}
-            async with aiohttp.ClientSession() as session:
-                async with session.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=120) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return data["choices"][0]["message"]["content"].strip()
+            async with aiohttp.ClientSession() as s:
+                async with s.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=120) as r:
+                    if r.status == 200:
+                        d = await r.json()
+                        return d["choices"][0]["message"]["content"].strip()
         except:
             continue
     raise QuotaExhaustedError("DeepSeek فشل")
 
 
-async def _generate_with_gemini(prompt: str) -> str:
+async def _generate_gemini(prompt: str) -> str:
     if not GEMINI_API_KEYS:
-        raise QuotaExhaustedError("لا توجد مفاتيح")
+        raise QuotaExhaustedError("لا توجد مفاتيح Gemini")
+    
     for key in GEMINI_API_KEYS:
         try:
             client = genai.Client(api_key=key)
-            response = await asyncio.to_thread(client.models.generate_content, model="gemini-2.0-flash", contents=prompt, config=genai_types.GenerateContentConfig(temperature=0.5, max_output_tokens=6000))
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model="gemini-2.0-flash",
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(temperature=0.5, max_output_tokens=6000)
+            )
             return response.text.strip()
         except:
             continue
     raise QuotaExhaustedError("Gemini فشل")
 
 
-async def _generate_with_openrouter(prompt: str) -> str:
+async def _generate_openrouter(prompt: str) -> str:
     if not OPENROUTER_API_KEYS:
-        raise QuotaExhaustedError("لا توجد مفاتيح")
+        raise QuotaExhaustedError("لا توجد مفاتيح OpenRouter")
+    
     for key in OPENROUTER_API_KEYS:
         try:
             headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json", "HTTP-Referer": "https://lecture-bot.com"}
             payload = {"model": "google/gemini-2.0-flash-exp:free", "messages": [{"role": "user", "content": prompt}], "max_tokens": 6000}
-            async with aiohttp.ClientSession() as session:
-                async with session.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=120) as resp:
-                    if resp.status == 200:
-                        return await resp.json()["choices"][0]["message"]["content"].strip()
+            async with aiohttp.ClientSession() as s:
+                async with s.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=120) as r:
+                    if r.status == 200:
+                        d = await r.json()
+                        return d["choices"][0]["message"]["content"].strip()
         except:
             continue
     raise QuotaExhaustedError("OpenRouter فشل")
 
 
-async def _generate_with_groq(prompt: str) -> str:
+async def _generate_groq(prompt: str) -> str:
     if not GROQ_API_KEYS:
-        raise QuotaExhaustedError("لا توجد مفاتيح")
+        raise QuotaExhaustedError("لا توجد مفاتيح Groq")
+    
     for key in GROQ_API_KEYS:
         try:
             headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
             payload = {"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}], "max_tokens": 6000}
-            async with aiohttp.ClientSession() as session:
-                async with session.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=90) as resp:
-                    if resp.status == 200:
-                        return await resp.json()["choices"][0]["message"]["content"].strip()
+            async with aiohttp.ClientSession() as s:
+                async with s.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=90) as r:
+                    if r.status == 200:
+                        d = await r.json()
+                        return d["choices"][0]["message"]["content"].strip()
         except:
             continue
     raise QuotaExhaustedError("Groq فشل")
 
 
-async def _generate_with_rotation(prompt: str) -> str:
-    for func in [_generate_with_deepseek, _generate_with_gemini, _generate_with_openrouter, _generate_with_groq]:
+async def call_ai(prompt: str) -> str:
+    """استدعاء AI مع تناوب المزودين."""
+    for func in [_generate_deepseek, _generate_gemini, _generate_openrouter, _generate_groq]:
         try:
             return await func(prompt)
-        except:
+        except QuotaExhaustedError:
             continue
     raise QuotaExhaustedError("جميع المزودين فشلوا")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  تحليل محلي احتياطي (سريع ومضمون)
+#  تحليل محلي احتياطي
 # ══════════════════════════════════════════════════════════════════════════════
-
-def _local_analyze(text: str, dialect: str) -> dict:
-    """تحليل محلي يضمن نتيجة دائماً."""
-    is_english = dialect in ("english", "british")
-    subject = _detect_subject(text)
+def local_analyze(text: str, dialect: str) -> dict:
+    """تحليل محلي احتياطي يضمن دائماً نتيجة."""
+    is_arabic = dialect not in ("english", "british")
+    subject = detect_subject(text)
     
-    # تنظيف النص وتقسيمه
+    # تنظيف النص
     text = re.sub(r'\s+', ' ', text).strip()
     
     # تقسيم إلى فقرات
     paragraphs = []
     for p in text.split('\n'):
         p = p.strip()
-        if len(p) > 100:
+        if len(p) > 80:
             paragraphs.append(p)
     
     if len(paragraphs) < 3:
         words = text.split()
-        chunk_size = max(250, len(words) // 4)
-        for i in range(0, len(words), chunk_size):
-            chunk = ' '.join(words[i:i+chunk_size])
-            if len(chunk) > 50:
-                paragraphs.append(chunk)
+        chunk = max(200, len(words) // 4)
+        for i in range(0, len(words), chunk):
+            para = ' '.join(words[i:i+chunk])
+            if len(para) > 50:
+                paragraphs.append(para)
     
-    # أخذ أول 4 فقرات كأقسام
+    # إنشاء الأقسام
     sections = []
-    for i, para in enumerate(paragraphs[:4]):
-        # استخراج عنوان من أول جملة
-        first_sent = para.split('.')[0].split('؟')[0].split('!')[0][:50]
+    for i, para in enumerate(paragraphs[:5]):
+        # استخراج عنوان
+        first_sent = para.split('.')[0].split('؟')[0][:50]
+        title = f"القسم {i+1}: {first_sent}" if is_arabic else f"Section {i+1}: {first_sent}"
         
-        if is_english:
-            title = f"Section {i+1}: {first_sent}"
-            narration = para[:600]
-        else:
-            title = f"القسم {i+1}: {first_sent}"
-            narration = para[:600]
+        # استخراج كلمات مفتاحية
+        words_list = re.findall(r'[\u0600-\u06FF]{4,}|[A-Za-z]{4,}', para)
+        keywords = list(set(words_list))[:4]
+        if not keywords:
+            keywords = ["مصطلح 1", "مصطلح 2", "مصطلح 3"] if is_arabic else ["term1", "term2", "term3"]
         
         sections.append({
             "title": title,
-            "narration": narration,
-            "duration_estimate": max(30, len(narration) // 15)
+            "keywords": keywords,
+            "narration": para[:800],
+            "duration_estimate": max(30, len(para) // 12)
         })
     
     if not sections:
-        if is_english:
-            sections = [{"title": "Main Content", "narration": text[:600], "duration_estimate": 45}]
-        else:
-            sections = [{"title": "المحتوى الرئيسي", "narration": text[:600], "duration_estimate": 45}]
+        sections = [{
+            "title": "المحتوى الرئيسي" if is_arabic else "Main Content",
+            "keywords": ["مصطلح 1", "مصطلح 2"] if is_arabic else ["term1", "term2"],
+            "narration": text[:800],
+            "duration_estimate": 45
+        }]
     
     return {
         "lecture_type": subject,
-        "title": "Lecture Summary" if is_english else "ملخص المحاضرة",
+        "title": "ملخص المحاضرة" if is_arabic else "Lecture Summary",
         "sections": sections,
-        "summary": text[:300],
-        "total_sections": len(sections)
+        "summary": text[:400]
     }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  تحليل المحاضرة الرئيسي
+#  الدالة الرئيسية للتحليل
 # ══════════════════════════════════════════════════════════════════════════════
-
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
-    """تحليل المحاضرة - كل قسم له عنوان ونص شرح."""
+    """تحليل المحاضرة إلى أقسام مع كلمات مفتاحية وشرح."""
+    is_arabic = dialect not in ("english", "british")
+    subject = detect_subject(text)
+    style = TEACHING_STYLES.get(subject, TEACHING_STYLES["other"])
     
-    is_english_output = dialect in ("english", "british")
-    subject = _detect_subject(text)
-    
-    # عدد الأقسام حسب طول النص (بحد أقصى 5 أقسام)
+    # تحديد عدد الأقسام
     word_count = len(text.split())
     if word_count < 400:
         num_sections = 2
@@ -204,7 +306,7 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     else:
         num_sections = 5
     
-    text_limit = min(len(text), 4000)
+    text_sample = text[:4000]
     
     # لهجة الشرح
     dialect_names = {
@@ -213,212 +315,72 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
     }
     dialect_name = dialect_names.get(dialect, "الفصحى")
     
-    if is_english_output:
-        prompt = f"""Analyze this text and create a structured lecture with exactly {num_sections} sections.
+    if is_arabic:
+        prompt = f"""{style}
 
-For each section provide:
-1. A clear section title
-2. A simplified narration in English (explain like a teacher to students, mention key terms with simple definitions)
-
-Text:
-{text[:text_limit]}
-
-Return ONLY valid JSON:
-{{
-  "title": "Lecture title",
-  "sections": [
-    {{"title": "Section 1 title", "narration": "Simplified explanation..."}},
-    {{"title": "Section 2 title", "narration": "Simplified explanation..."}}
-  ]
-}}"""
-    else:
-        prompt = f"""حلل هذا النص وأنشئ محاضرة تعليمية مكونة من {num_sections} أقسام بالضبط.
-
-المطلوب لكل قسم:
-1. عنوان واضح للقسم
-2. شرح مبسط باللهجة {dialect_name}. اشرح كمعلم لطلابه. اذكر المصطلحات المهمة مع شرحها.
+حلل النص التالي إلى {num_sections} أقسام تعليمية.
 
 النص:
-{text[:text_limit]}
+{text_sample}
 
-أرجع JSON فقط:
-{{
-  "title": "عنوان المحاضرة",
-  "sections": [
-    {{"title": "عنوان القسم الأول", "narration": "الشرح المبسط باللهجة المطلوبة..."}},
-    {{"title": "عنوان القسم الثاني", "narration": "الشرح المبسط..."}}
-  ]
-}}"""
+لكل قسم، قدم:
+1. title: عنوان واضح وجذاب للقسم
+2. keywords: 3-5 كلمات مفتاحية (مصطلحات مهمة في هذا القسم)
+3. narration: شرح مبسط وممتع (250-400 كلمة) باللهجة {dialect_name}. اشرح كمعلم لطلابه.
+
+أرجع JSON فقط بالتنسيق التالي:
+{{"title": "عنوان المحاضرة", "sections": [{{"title": "عنوان القسم", "keywords": ["مصطلح1", "مصطلح2", "مصطلح3"], "narration": "الشرح..."}}], "summary": "ملخص عام للمحاضرة (3-4 جمل)"}}"""
+    else:
+        prompt = f"""{style}
+
+Analyze this text into {num_sections} sections.
+
+Text: {text_sample}
+
+For each section provide:
+1. title: Clear section title
+2. keywords: 3-5 key terms
+3. narration: Simplified explanation in English
+
+Return ONLY JSON:
+{{"title": "Lecture Title", "sections": [{{"title": "Section", "keywords": ["term1", "term2"], "narration": "explanation..."}}], "summary": "Overall summary"}}"""
 
     try:
-        content = await _generate_with_rotation(prompt)
-        content = re.sub(r'^```json\s*', '', content.strip())
-        content = re.sub(r'\s*```$', '', content)
+        response = await call_ai(prompt)
+        response = re.sub(r'```json\s*', '', response.strip())
+        response = re.sub(r'\s*```', '', response)
         
-        result = json.loads(content)
-        result["lecture_type"] = subject
+        data = json.loads(response)
+        data["lecture_type"] = subject
         
-        # إضافة مدة تقديرية لكل قسم
-        for section in result["sections"]:
-            narration_len = len(section.get("narration", ""))
-            section["duration_estimate"] = max(25, narration_len // 12)
+        # إضافة مدد تقديرية
+        for sec in data["sections"]:
+            narration_len = len(sec.get("narration", ""))
+            sec["duration_estimate"] = max(25, narration_len // 12)
         
-        print(f"✅ تم التحليل: {len(result['sections'])} أقسام")
-        return result
-        
+        return data
     except Exception as e:
         print(f"⚠️ استخدام التحليل المحلي: {e}")
-        return _local_analyze(text, dialect)
+        return local_analyze(text, dialect)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  استخراج النص من PDF
 # ══════════════════════════════════════════════════════════════════════════════
-
 async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
+    """استخراج النص الكامل من ملف PDF."""
     try:
         import PyPDF2
         reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
-        pages = [page.extract_text() or "" for page in reader.pages]
+        pages = []
+        for page in reader.pages:
+            page_text = page.extract_text() or ""
+            if page_text.strip():
+                pages.append(page_text)
+        
         text = "\n\n".join(pages)
         if len(text.strip()) < 50:
-            raise ValueError("النص قصير جداً")
+            raise ValueError("النص المستخرج قصير جداً")
         return text
     except Exception as e:
         raise ValueError(f"فشل قراءة PDF: {e}")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  توليد صورة كرتونية خرافية واحدة لكل قسم
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _build_section_image_prompt(section_title: str, lecture_type: str, is_arabic: bool) -> str:
-    """بناء وصف لصورة كرتونية خرافية تلخص القسم بأكمله."""
-    
-    style = {
-        "medicine": "cute medical fantasy, magical healing, whimsical doctor and patient",
-        "science": "magical laboratory, fairy tale science, glowing potions",
-        "math": "floating magical numbers, fairy tale geometry, cute math wizard",
-        "physics": "cosmic magic, fairy tale physics, magical forces",
-        "chemistry": "magical potions, colorful smoke, cute chemistry set",
-        "engineering": "fairy tale construction, magical bridge, whimsical machine",
-        "computer": "magical circuit, cute robot, fairy tale coding",
-        "history": "fairy tale ancient scene, magical history, whimsical past",
-        "literature": "magical book, fairy tale story, whimsical words",
-        "business": "magical marketplace, fairy tale merchant, cute coins",
-        "other": "fairy tale classroom, magical learning, whimsical education"
-    }.get(lecture_type, "fairy tale education, magical learning, cute cartoon")
-    
-    # استخدام عنوان القسم لوصف الصورة
-    clean_title = section_title[:60].replace('"', '').replace("'", "")
-    
-    if is_arabic:
-        # للعربية نستخدم وصف إنجليزي بسيط
-        prompt = f"cute fantasy cartoon illustration about {clean_title}, {style}, whimsical storybook style, bright magical colors, simple clean design, no text no words"
-    else:
-        prompt = f"cute fantasy cartoon illustration about {clean_title}, {style}, whimsical storybook style, bright magical colors, simple clean design, no text no words"
-    
-    return prompt
-
-
-async def _generate_cartoon_image(prompt: str) -> bytes | None:
-    """توليد صورة كرتونية."""
-    import urllib.parse
-    seed = random.randint(1, 99999)
-    encoded = urllib.parse.quote(prompt[:300])
-    url = f"https://image.pollinations.ai/prompt/{encoded}?width=854&height=480&nologo=true&seed={seed}&model=flux"
-    
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-                if resp.status == 200:
-                    raw = await resp.read()
-                    if len(raw) > 5000:
-                        img = PILImage.open(io.BytesIO(raw)).convert("RGB")
-                        img = img.resize((854, 480), PILImage.LANCZOS)
-                        buf = io.BytesIO()
-                        img.save(buf, "JPEG", quality=90)
-                        print(f"✅ صورة كرتونية: {len(buf.getvalue())//1024}KB")
-                        return buf.getvalue()
-    except:
-        pass
-    return None
-
-
-def _create_placeholder_image(title: str, lecture_type: str, is_arabic: bool) -> bytes:
-    """صورة احتياطية جميلة."""
-    colors = {
-        "medicine": ((180, 30, 80), (220, 100, 150), (255, 220, 100)),
-        "science": ((30, 100, 150), (100, 180, 220), (200, 255, 150)),
-        "math": ((80, 30, 150), (150, 100, 220), (255, 200, 100)),
-        "physics": ((20, 50, 120), (80, 150, 250), (255, 150, 200)),
-        "chemistry": ((100, 20, 100), (200, 80, 180), (150, 255, 200)),
-        "other": ((40, 40, 120), (100, 100, 200), (255, 200, 100)),
-    }
-    bg1, bg2, accent = colors.get(lecture_type, colors["other"])
-    
-    W, H = 854, 480
-    img = PILImage.new("RGB", (W, H), bg1)
-    draw = ImageDraw.Draw(img)
-    
-    # تدرج
-    for y in range(H):
-        t = y / H
-        r = int(bg1[0] * (1-t) + bg2[0] * t)
-        g = int(bg1[1] * (1-t) + bg2[1] * t)
-        b = int(bg1[2] * (1-t) + bg2[2] * t)
-        draw.line([(0, y), (W, y)], fill=(r, g, b))
-    
-    # نجوم
-    for _ in range(20):
-        x, y = random.randint(20, W-20), random.randint(20, H-20)
-        s = random.randint(3, 8)
-        draw.ellipse([x-s, y-s, x+s, y+s], fill=(255, 255, 200))
-    
-    # عنوان مبسط
-    short_title = title[:30]
-    if is_arabic:
-        try:
-            import arabic_reshaper
-            from bidi.algorithm import get_display
-            short_title = get_display(arabic_reshaper.reshape(short_title))
-        except:
-            pass
-    
-    try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 35)
-    except:
-        font = ImageFont.load_default()
-    
-    bbox = draw.textbbox((0, 0), short_title, font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    draw.text(((W-tw)//2, (H-th)//2), short_title, fill=(255, 255, 255), font=font)
-    
-    draw.rectangle([15, 15, W-15, H-15], outline=accent, width=4)
-    
-    buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=90)
-    return buf.getvalue()
-
-
-async def fetch_image_for_keyword(
-    keyword: str,
-    section_title: str,
-    lecture_type: str,
-    image_search_en: str = "",
-) -> bytes:
-    """جلب صورة كرتونية واحدة للقسم بأكمله."""
-    
-    # نستخدم عنوان القسم كاملاً لوصف الصورة
-    title_to_use = section_title if section_title else keyword
-    is_arabic = any('\u0600' <= c <= '\u06ff' for c in title_to_use)
-    
-    prompt = _build_section_image_prompt(title_to_use, lecture_type, is_arabic)
-    
-    # محاولة التوليد
-    img = await _generate_cartoon_image(prompt)
-    if img:
-        return img
-    
-    # صورة احتياطية
-    return _create_placeholder_image(title_to_use, lecture_type, is_arabic)
