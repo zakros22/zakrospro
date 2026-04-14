@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+البوت الرئيسي - جميع المنطق هنا
+"""
 
 import asyncio
 import os
@@ -9,10 +12,7 @@ import time
 import re
 import json
 import io
-import aiohttp
-import random
 from datetime import datetime
-from PIL import Image as PILImage, ImageDraw, ImageFont, ImageFilter
 
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
@@ -23,64 +23,46 @@ from telegram.ext import (
     PreCheckoutQueryHandler, filters, ContextTypes
 )
 
+from config import (
+    TELEGRAM_BOT_TOKEN, OWNER_ID, FREE_ATTEMPTS, TEMP_DIR, WATERMARK_TEXT
+)
+from database import (
+    get_user, create_user, decrement_attempts, add_attempts,
+    ban_user, get_stats, get_all_users, record_referral, get_referral_stats,
+    save_video_request, update_video_request
+)
+from ai_analyzer import analyze_lecture, extract_full_text_from_pdf, QuotaExhaustedError
+from image_generator import create_educational_card, create_summary_card
+from voice_generator import generate_sections_audio
+from video_creator import create_video_from_sections, estimate_encoding_seconds
+from admin_panel import (
+    is_owner, handle_admin_command, handle_admin_callback, handle_admin_text_search,
+    handle_add_attempts, handle_set_attempts, handle_ban, handle_unban, handle_broadcast
+)
+from payment_handler import (
+    get_payment_keyboard, send_payment_required_message,
+    handle_pay_stars, handle_pay_mastercard, handle_pay_crypto,
+    handle_payment_sent, handle_pre_checkout, handle_successful_payment
+)
+
 # ══════════════════════════════════════════════════════════════════════════════
-#  الإعدادات
+#  إعداد التسجيل
 # ══════════════════════════════════════════════════════════════════════════════
-logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-OWNER_ID = int(os.getenv("OWNER_ID", "7021542402"))
-DEEPSEEK_KEYS = [k.strip() for k in os.getenv("DEEPSEEK_API_KEYS", "").split(",") if k.strip()]
-GEMINI_KEYS = [k.strip() for k in os.getenv("GOOGLE_API_KEYS", "").split(",") if k.strip()]
-
-TEMP_DIR = "/tmp/telegram_bot"
-os.makedirs(TEMP_DIR, exist_ok=True)
-
-# حالة المستخدمين
+# ══════════════════════════════════════════════════════════════════════════════
+#  حالة المستخدمين
+# ══════════════════════════════════════════════════════════════════════════════
 user_states = {}
 active_jobs = {}
+active_tasks = {}
 cancel_flags = {}
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  قاعدة بيانات SQLite بسيطة
-# ══════════════════════════════════════════════════════════════════════════════
-import sqlite3
-DB_PATH = os.path.join(TEMP_DIR, "bot.db")
-
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, attempts INTEGER DEFAULT 1, videos INTEGER DEFAULT 0, banned INTEGER DEFAULT 0)")
-    conn.commit()
-    conn.close()
-
-def get_user(uid):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT * FROM users WHERE user_id=?", (uid,))
-    row = c.fetchone()
-    conn.close()
-    if row:
-        return {"user_id": row[0], "attempts_left": row[1], "total_videos": row[2], "is_banned": row[3]}
-    return None
-
-def create_user(uid):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO users (user_id, attempts) VALUES (?, 1)", (uid,))
-    conn.commit()
-    conn.close()
-    return get_user(uid)
-
-def use_attempt(uid):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("UPDATE users SET attempts = attempts - 1, videos = videos + 1 WHERE user_id = ? AND attempts > 0", (uid,))
-    conn.commit()
-    conn.close()
-
-init_db()
+_Q_SEM = asyncio.Semaphore(2)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  لوحات المفاتيح
@@ -96,24 +78,29 @@ DIALECT_KB = InlineKeyboardMarkup([
      InlineKeyboardButton("🇪🇬 مصري", callback_data="dial_egypt")],
     [InlineKeyboardButton("🇸🇾 شامي", callback_data="dial_syria"),
      InlineKeyboardButton("🇸🇦 خليجي", callback_data="dial_gulf")],
-    [InlineKeyboardButton("📚 فصحى", callback_data="dial_msa")]
+    [InlineKeyboardButton("📚 فصحى", callback_data="dial_msa"),
+     InlineKeyboardButton("🇺🇸 English", callback_data="dial_english")],
 ])
 
-CANCEL_KB = InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="cancel_job")]])
+CANCEL_KB = InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء المعالجة", callback_data="cancel_job")]])
 
-DIALECT_NAMES = {"iraq": "🇮🇶 عراقي", "egypt": "🇪🇬 مصري", "syria": "🇸🇾 شامي", "gulf": "🇸🇦 خليجي", "msa": "📚 فصحى"}
+DIALECT_NAMES = {
+    "iraq": "🇮🇶 عراقي", "egypt": "🇪🇬 مصري", "syria": "🇸🇾 شامي",
+    "gulf": "🇸🇦 خليجي", "msa": "📚 فصحى", "english": "🇺🇸 English"
+}
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  دوال مساعدة
 # ══════════════════════════════════════════════════════════════════════════════
-def pbar(pct, w=10):
-    f = int(w * pct / 100)
-    return "▓" * f + "░" * (w - f)
+def pbar(pct: int, width: int = 12) -> str:
+    filled = int(width * pct / 100)
+    return "▓" * filled + "░" * (width - filled)
 
-def fmt_time(s):
-    if s < 60: return f"{int(s)} ثانية"
-    m, sec = divmod(int(s), 60)
-    return f"{m} دقيقة و {sec} ثانية"
+def fmt_time(sec: float) -> str:
+    if sec < 60:
+        return f"{int(sec)} ثانية"
+    m, s = divmod(int(sec), 60)
+    return f"{m} دقيقة و {s} ثانية"
 
 async def safe_edit(msg, text, markup=None):
     try:
@@ -121,385 +108,167 @@ async def safe_edit(msg, text, markup=None):
     except:
         pass
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  استدعاء AI للتحليل
-# ══════════════════════════════════════════════════════════════════════════════
-async def call_ai(prompt):
-    # DeepSeek أولاً
-    for key in DEEPSEEK_KEYS:
-        try:
-            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-            payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "max_tokens": 4000, "temperature": 0.5}
-            async with aiohttp.ClientSession() as s:
-                async with s.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=90) as r:
-                    if r.status == 200:
-                        d = await r.json()
-                        return d["choices"][0]["message"]["content"].strip()
-        except:
-            continue
-    
-    # Gemini ثانياً
-    for key in GEMINI_KEYS:
-        try:
-            from google import genai
-            client = genai.Client(api_key=key)
-            response = await asyncio.to_thread(client.models.generate_content, model="gemini-2.0-flash", contents=prompt)
-            return response.text.strip()
-        except:
-            continue
-    
-    return None
-
-def detect_subject(text):
-    text_l = text.lower()
-    subjects = {
-        "طب": "medicine", "مرض": "medicine", "جراحة": "medicine", "ولادة": "medicine", "قيصرية": "medicine",
-        "رياضيات": "math", "معادلة": "math", "هندسة": "engineering", "بناء": "engineering",
-        "فيزياء": "physics", "كيمياء": "chemistry", "برمجة": "computer", "تاريخ": "history"
-    }
-    for ar, en in subjects.items():
-        if ar in text_l or en in text_l:
-            return en
-    return "science"
-
-def local_analyze(text, dialect):
-    """تحليل محلي احتياطي."""
-    text = re.sub(r'\s+', ' ', text).strip()
-    
-    # تقسيم النص إلى أقسام بناءً على العناوين أو الفقرات
-    sections = []
-    lines = text.split('\n')
-    
-    current_section = {"title": "مقدمة", "content": "", "keywords": []}
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        
-        # اكتشاف العناوين (أسطر قصيرة أو تحتوي على كلمات مفتاحية)
-        if len(line) < 60 and (':' in line or any(kw in line.lower() for kw in ['مقدمه', 'مقدمة', 'تعريف', 'أنواع', 'أسباب', 'دواعي', 'مضاعفات', 'علاج', 'خلاصة'])):
-            if current_section["content"]:
-                sections.append(current_section)
-            current_section = {"title": line[:50], "content": "", "keywords": []}
-        else:
-            current_section["content"] += line + " "
-            
-        # استخراج كلمات مفتاحية
-        words = re.findall(r'[\u0600-\u06FF]{4,}|[A-Za-z]{4,}', line)
-        for w in words[:3]:
-            if w not in current_section["keywords"]:
-                current_section["keywords"].append(w)
-    
-    if current_section["content"]:
-        sections.append(current_section)
-    
-    # تنظيف
-    clean_sections = []
-    for i, sec in enumerate(sections[:5]):
-        clean_sections.append({
-            "title": sec["title"],
-            "narration": sec["content"][:600],
-            "keywords": sec["keywords"][:4]
-        })
-    
-    if not clean_sections:
-        clean_sections = [{"title": "المحتوى الرئيسي", "narration": text[:600], "keywords": ["مصطلح1", "مصطلح2"]}]
-    
-    return {
-        "title": "ملخص المحاضرة",
-        "sections": clean_sections,
-        "lecture_type": detect_subject(text)
-    }
-
-async def analyze_lecture(text, dialect):
-    """تحليل النص إلى أقسام مع كلمات مفتاحية."""
-    is_arabic = dialect != "english"
-    subject = detect_subject(text)
-    
-    text_sample = text[:3500]
-    
-    if is_arabic:
-        prompt = f"""أنت محلل محتوى تعليمي. حلل النص التالي إلى 3-5 أقسام.
-
-المطلوب لكل قسم:
-1. title: عنوان القسم
-2. keywords: 3-4 كلمات مفتاحية (مصطلحات مهمة)
-3. narration: شرح مبسط للقسم (200-300 كلمة) باللهجة {DIALECT_NAMES.get(dialect, 'الفصحى')}
-
-النص:
-{text_sample}
-
-أرجع JSON فقط:
-{{"title": "عنوان المحاضرة", "sections": [{{"title": "عنوان القسم", "keywords": ["مصطلح1", "مصطلح2"], "narration": "الشرح..."}}]}}"""
-    else:
-        prompt = f"""Analyze this text into 3-5 sections. Return JSON:
-{{"title": "Title", "sections": [{{"title": "Section", "keywords": ["term1", "term2"], "narration": "explanation..."}}]}}
-Text: {text_sample}"""
-
-    try:
-        response = await call_ai(prompt)
-        if response:
-            response = re.sub(r'```json\s*', '', response).strip()
-            response = re.sub(r'\s*```', '', response)
-            data = json.loads(response)
-            data["lecture_type"] = subject
-            return data
-    except:
-        pass
-    
-    return local_analyze(text, dialect)
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  إنشاء صورة كرت تعليمي احترافية (مثل الصور اللي أرسلتها)
-# ══════════════════════════════════════════════════════════════════════════════
-def create_educational_card(section_title, keywords, subject, section_num, total_sections):
-    """إنشاء كرت تعليمي احترافي يشبه الصور المرسلة."""
-    W, H = 854, 480
-    
-    # ألوان حسب المادة
-    colors = {
-        "medicine": ((180, 30, 60), (220, 50, 80), (255, 220, 200)),
-        "science": ((20, 80, 120), (40, 140, 200), (220, 255, 200)),
-        "math": ((80, 30, 140), (130, 60, 200), (255, 220, 100)),
-        "engineering": ((20, 70, 100), (60, 130, 180), (255, 230, 150)),
-        "physics": ((30, 40, 120), (70, 100, 200), (200, 220, 255)),
-        "chemistry": ((100, 20, 90), (180, 40, 150), (255, 200, 220)),
-        "computer": ((20, 60, 100), (60, 130, 180), (200, 255, 150)),
-        "other": ((40, 40, 120), (100, 100, 200), (255, 200, 100))
-    }
-    primary, secondary, accent = colors.get(subject, colors["other"])
-    
-    # إنشاء الصورة
-    img = PILImage.new("RGB", (W, H), (248, 248, 250))
-    draw = ImageDraw.Draw(img)
-    
-    # شريط علوي
-    draw.rectangle([(0, 0), (W, 8)], fill=primary)
-    
-    # رأس الكرت - خلفية ملونة
-    draw.rectangle([(0, 8), (W, 70)], fill=primary)
-    
-    # رقم القسم
-    try:
-        font_num = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
-    except:
-        font_num = ImageFont.load_default()
-    draw.text((20, 15), f"{section_num}/{total_sections}", fill=(255,255,255,180), font=font_num)
-    
-    # عنوان القسم
-    try:
-        import arabic_reshaper
-        from bidi.algorithm import get_display
-        title_display = get_display(arabic_reshaper.reshape(section_title[:40]))
-    except:
-        title_display = section_title[:40]
-    
-    try:
-        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 24)
-    except:
-        font_title = ImageFont.load_default()
-    
-    bbox = draw.textbbox((0,0), title_display, font=font_title)
-    tw = bbox[2] - bbox[0]
-    draw.text(((W-tw)//2, 25), title_display, fill=(255,255,255), font=font_title)
-    
-    # خط تحت العنوان
-    draw.rectangle([(W//4, 65), (W*3//4, 68)], fill=accent)
-    
-    # منطقة المحتوى - خلفية فاتحة
-    draw.rectangle([(20, 85), (W-20, H-20)], fill=(255, 255, 255), outline=secondary, width=2)
-    
-    # عنوان "مصطلحات رئيسية"
-    try:
-        font_label = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
-    except:
-        font_label = ImageFont.load_default()
-    
-    label = "📌 مصطلحات رئيسية:"
-    try:
-        import arabic_reshaper
-        from bidi.algorithm import get_display
-        label_display = get_display(arabic_reshaper.reshape(label))
-    except:
-        label_display = label
-    
-    draw.text((40, 100), label_display, fill=primary, font=font_label)
-    
-    # المصطلحات
-    try:
-        font_kw = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 15)
-    except:
-        font_kw = ImageFont.load_default()
-    
-    y = 135
-    for i, kw in enumerate(keywords[:6]):
-        if not kw:
-            continue
-        
-        try:
-            import arabic_reshaper
-            from bidi.algorithm import get_display
-            kw_display = get_display(arabic_reshaper.reshape(f"• {kw}"))
-        except:
-            kw_display = f"• {kw}"
-        
-        # توزيع المصطلحات في عمودين
-        if i % 2 == 0:
-            x = 50
-        else:
-            x = W//2 + 20
-        
-        draw.text((x, y), kw_display, fill=(60, 60, 80), font=font_kw)
-        
-        if i % 2 == 1:
-            y += 40
-    
-    # رسم توضيحي بسيط حسب المادة
-    icon_y = H - 120
-    
-    if subject == "medicine":
-        # رسم رمز طبي
-        draw.ellipse([W-120, icon_y, W-40, icon_y+80], outline=primary, width=3)
-        draw.line([W-80, icon_y+20, W-80, icon_y+60], fill=primary, width=3)
-        draw.line([W-60, icon_y+40, W-100, icon_y+40], fill=primary, width=3)
-    elif subject == "math":
-        # رسم معادلة
-        draw.text((W-150, icon_y+20), "f(x) = x² + 2x + 1", fill=primary, font=font_kw)
-    elif subject == "science":
-        # رسم دورق
-        draw.ellipse([W-100, icon_y+20, W-50, icon_y+70], outline=primary, width=2)
-        draw.rectangle([W-85, icon_y-10, W-65, icon_y+20], outline=primary, width=2)
-    else:
-        # رسم نجمة
-        for i in range(5):
-            angle = i * 72 - 90
-            import math
-            x1 = W-80 + 30 * math.cos(math.radians(angle))
-            y1 = icon_y+40 + 30 * math.sin(math.radians(angle))
-            x2 = W-80 + 15 * math.cos(math.radians(angle+36))
-            y2 = icon_y+40 + 15 * math.sin(math.radians(angle+36))
-            draw.line([x1, y1, x2, y2], fill=accent, width=3)
-    
-    # شريط سفلي
-    draw.rectangle([(0, H-6), (W, H)], fill=primary)
-    
-    # علامة مائية
-    try:
-        font_wm = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 11)
-    except:
-        font_wm = ImageFont.load_default()
-    draw.text((W-130, H-20), "@zakros_probot", fill=(150, 150, 170), font=font_wm)
-    
-    # حفظ
-    fd, path = tempfile.mkstemp(suffix=".jpg")
-    os.close(fd)
-    img.save(path, "JPEG", quality=92)
-    return path
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  توليد الصوت
-# ══════════════════════════════════════════════════════════════════════════════
-async def generate_audio(text, dialect):
-    try:
-        from gtts import gTTS
-        lang = "ar" if dialect != "english" else "en"
-        
-        def _synth():
-            buf = io.BytesIO()
-            tts = gTTS(text=text, lang=lang, slow=False)
-            tts.write_to_fp(buf)
-            buf.seek(0)
-            return buf.read()
-        
-        return await asyncio.get_event_loop().run_in_executor(None, _synth)
-    except:
+async def ensure_user(update: Update):
+    tg = update.effective_user
+    user = get_user(tg.id)
+    if not user:
+        ref_by = user_states.get(tg.id, {}).get("ref_by")
+        user = create_user(tg.id, tg.username or "", tg.full_name or "", ref_by)
+        if ref_by and ref_by != tg.id:
+            record_referral(ref_by, tg.id)
+    if user and user.get("is_banned"):
+        await update.effective_message.reply_text("⛔ أنت محظور من استخدام البوت.")
         return None
+    return user
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  إنشاء شريحة فيديو من الصورة
-# ══════════════════════════════════════════════════════════════════════════════
-def create_video_frame(img_path):
-    """تجهيز الصورة للفيديو."""
-    return img_path
-
-def encode_video(segments, audio_paths, output):
-    """تشفير الفيديو."""
-    import subprocess
+async def _run_or_cancel(uid: int, coro):
+    ev = cancel_flags.get(uid)
+    if ev and ev.is_set():
+        raise asyncio.CancelledError()
     
-    video_segments = []
-    for i, (img, dur) in enumerate(segments):
-        seg_out = tempfile.mktemp(suffix=".mp4")
-        video_segments.append(seg_out)
-        
-        aud = ["-i", audio_paths[i]] if i < len(audio_paths) and audio_paths[i] else ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
-        
-        cmd = [
-            "ffmpeg", "-y", "-loop", "1", "-t", str(dur), "-i", img,
-            *aud, "-map", "0:v", "-map", "1:a",
-            "-vf", "scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2",
-            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-r", "10",
-            "-c:a", "aac", "-b:a", "64k", "-t", str(dur), seg_out
-        ]
-        subprocess.run(cmd, capture_output=True)
-    
-    lst = tempfile.mktemp(suffix=".txt")
-    with open(lst, "w") as f:
-        for v in video_segments:
-            f.write(f"file '{v}'\n")
-    
-    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", output], capture_output=True)
-    
-    for v in video_segments:
-        try:
-            os.remove(v)
-        except:
-            pass
-    try:
-        os.remove(lst)
-    except:
-        pass
+    task = asyncio.ensure_future(coro)
+    if ev:
+        cancel_task = asyncio.ensure_future(ev.wait())
+        done, pending = await asyncio.wait([task, cancel_task], return_when=asyncio.FIRST_COMPLETED)
+        for p in pending:
+            p.cancel()
+        if cancel_task in done:
+            task.cancel()
+            raise asyncio.CancelledError()
+    return await task
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  أوامر البوت
 # ══════════════════════════════════════════════════════════════════════════════
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    user = get_user(uid) or create_user(uid)
-    name = update.effective_user.first_name or "صديقي"
+    args = context.args
     
+    if args and args[0].startswith("ref_"):
+        try:
+            ref_id = int(args[0][4:])
+            if ref_id != uid:
+                user_states.setdefault(uid, {})["ref_by"] = ref_id
+        except:
+            pass
+    
+    user = await ensure_user(update)
+    if not user:
+        return
+    
+    name = update.effective_user.first_name or "صديقي"
     await update.message.reply_text(
         f"👋 *أهلاً {name}!*\n\n"
         f"🎓 أنا *بوت المحاضرات الذكي*\n"
-        f"أحوّل محاضرتك إلى فيديو تعليمي بصور احترافية وصوت!\n\n"
-        f"📤 أرسل ملف PDF أو نص المحاضرة للبدء.\n\n"
-        f"🎁 لديك *{user['attempts_left']}* محاولة مجانية.",
+        f"أحوّل محاضرتك إلى فيديو تعليمي احترافي!\n\n"
+        f"📤 أرسل ملف PDF أو TXT أو نص المحاضرة\n"
+        f"🎁 لديك *{user['attempts_left']}* محاولة مجانية",
         parse_mode="Markdown",
         reply_markup=main_keyboard()
     )
 
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📖 *كيفية الاستخدام*\n\n"
+        "1️⃣ أرسل ملف PDF أو نص المحاضرة\n"
+        "2️⃣ اختر لهجة الشرح\n"
+        "3️⃣ انتظر حتى اكتمال الفيديو\n"
+        "4️⃣ استلم الفيديو التعليمي\n\n"
+        "/start - بدء\n/cancel - إلغاء\n/referral - رابط الإحالة",
+        parse_mode="Markdown",
+        reply_markup=main_keyboard()
+    )
+
+async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    user_states.pop(uid, None)
+    
+    if uid in cancel_flags:
+        cancel_flags[uid].set()
+        await update.message.reply_text("⛔ تم إلغاء المعالجة", reply_markup=main_keyboard())
+    else:
+        await update.message.reply_text("✅ لا توجد عملية جارية", reply_markup=main_keyboard())
+
+async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = await ensure_user(update)
+    if not user:
+        return
+    await update.message.reply_text(
+        f"💳 *رصيدك*\n\n🎬 المحاولات: *{user['attempts_left']}*\n📊 الفيديوهات: *{user['total_videos']}*",
+        parse_mode="Markdown",
+        reply_markup=get_payment_keyboard(user['user_id'])
+    )
+
+async def referral_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = await ensure_user(update)
+    if not user:
+        return
+    
+    uid = update.effective_user.id
+    stats = get_referral_stats(uid)
+    bot_info = await context.bot.get_me()
+    ref_link = f"https://t.me/{bot_info.username}?start=ref_{uid}"
+    
+    progress = (stats['current_points'] / 1.0) * 100
+    await update.message.reply_text(
+        f"🔗 *رابط الإحالة*\n\n`{ref_link}`\n\n"
+        f"👥 الأصدقاء: *{stats['total_referrals']}*\n"
+        f"⭐ النقاط: *{stats['current_points']:.1f}*\n"
+        f"{pbar(int(progress))} {progress:.0f}%",
+        parse_mode="Markdown",
+        disable_web_page_preview=True
+    )
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  استقبال المحتوى
+# ══════════════════════════════════════════════════════════════════════════════
 async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     msg = update.message
     
-    user = get_user(uid) or create_user(uid)
+    # أزرار القائمة
+    if msg.text:
+        text = msg.text.strip()
+        if text == "📤 رفع محاضرة":
+            await msg.reply_text("📤 أرسل ملف PDF أو TXT أو نص المحاضرة:", reply_markup=ReplyKeyboardRemove())
+            return
+        if text == "📊 رصيدي":
+            await balance_cmd(update, context)
+            return
+        if text == "🔗 رابط الإحالة":
+            await referral_cmd(update, context)
+            return
+        if text == "❓ مساعدة":
+            await help_cmd(update, context)
+            return
     
-    if user["is_banned"]:
-        await msg.reply_text("⛔ أنت محظور.")
-        return
+    # أدمن
+    if is_owner(uid):
+        if await handle_admin_text_search(update, context):
+            return
     
-    if user["attempts_left"] <= 0:
-        await msg.reply_text("❌ لا تملك محاولات كافية.")
+    user = await ensure_user(update)
+    if not user:
         return
     
     if uid in active_jobs:
-        await msg.reply_text("⏳ لديك معالجة جارية...")
+        await msg.reply_text("⏳ محاضرتك قيد المعالجة...")
         return
     
+    if user['attempts_left'] <= 0:
+        await send_payment_required_message(update, context)
+        return
+    
+    # استخراج النص
     text = None
+    filename = "محاضرة"
+    
     if msg.document:
         doc = msg.document
-        if not doc.file_name.lower().endswith(('.pdf', '.txt')):
+        fname = doc.file_name or ""
+        ext = fname.lower().split(".")[-1] if "." in fname else ""
+        
+        if ext not in ("pdf", "txt"):
             await msg.reply_text("⚠️ PDF أو TXT فقط")
             return
         
@@ -507,23 +276,23 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             file = await doc.get_file()
             raw = await file.download_as_bytearray()
-            
-            if doc.file_name.lower().endswith('.pdf'):
-                import PyPDF2
-                reader = PyPDF2.PdfReader(io.BytesIO(bytes(raw)))
-                text = "\n".join([p.extract_text() or "" for p in reader.pages])
+            if ext == "pdf":
+                text = await extract_full_text_from_pdf(bytes(raw))
+                filename = fname.replace(".pdf", "").replace(".PDF", "")
             else:
-                text = raw.decode('utf-8', errors='ignore')
-            
+                text = raw.decode("utf-8", errors="ignore")
+                filename = fname.replace(".txt", "").replace(".TXT", "")
             await wait.delete()
         except Exception as e:
             await wait.edit_text(f"❌ خطأ: {e}")
             return
+    
     elif msg.text:
-        text = msg.text.strip()
-        if len(text) < 50:
-            await msg.reply_text("⚠️ النص قصير جداً")
+        if len(msg.text.strip()) < 100:
+            await msg.reply_text("⚠️ النص قصير جداً (أقل من 100 حرف)")
             return
+        text = msg.text.strip()
+        filename = text[:30].replace("\n", " ")
     else:
         return
     
@@ -531,43 +300,71 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("❌ لم أستطع قراءة النص")
         return
     
-    user_states[uid] = {"text": text}
+    user_states[uid] = {"text": text, "filename": filename}
     
     await msg.reply_text(
-        f"✅ *تم استلام المحاضرة!*\n📝 {len(text.split())} كلمة\n\nاختر لهجة الشرح:",
+        f"✅ *تم الاستلام!*\n📝 {len(text.split()):,} كلمة\n\nاختر لهجة الشرح:",
         parse_mode="Markdown",
         reply_markup=DIALECT_KB
     )
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  معالج الأزرار
+# ══════════════════════════════════════════════════════════════════════════════
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     data = q.data
     uid = q.from_user.id
     
+    if data.startswith("admin_"):
+        await handle_admin_callback(update, context)
+        return
+    
     await q.answer()
     
+    # دفع
+    if data == "pay_stars":
+        await handle_pay_stars(update, context)
+        return
+    if data == "pay_mastercard":
+        await handle_pay_mastercard(update, context)
+        return
+    if data == "pay_crypto":
+        await handle_pay_crypto(update, context)
+        return
+    if data.startswith("sent_"):
+        await handle_payment_sent(update, context)
+        return
+    if data == "show_referral":
+        await referral_cmd(update, context)
+        return
+    
+    # إلغاء
     if data == "cancel_job":
         if uid in cancel_flags:
             cancel_flags[uid].set()
         await q.edit_message_text("⛔ تم الإلغاء")
         return
     
+    # اختيار اللهجة
     if data.startswith("dial_"):
         dialect = data[5:]
         state = user_states.pop(uid, {})
         text = state.get("text")
+        filename = state.get("filename", "محاضرة")
         
         if not text:
             await q.edit_message_text("⚠️ انتهت الجلسة")
             return
         
         user = get_user(uid)
-        if user["attempts_left"] <= 0:
+        if user['attempts_left'] <= 0:
             await q.edit_message_text("❌ لا تملك محاولات")
             return
         
-        msg = await q.edit_message_text(
-            f"🎬 *بدأت المعالجة*\n{pbar(0)} 0%\n🔍 تحليل المحاضرة...",
+        dial_name = DIALECT_NAMES.get(dialect, dialect)
+        prog_msg = await q.edit_message_text(
+            f"🎬 *بدأت المعالجة*\n{pbar(0)} 0%\n🔍 تحليل...",
             parse_mode="Markdown",
             reply_markup=CANCEL_KB
         )
@@ -575,160 +372,155 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cancel_flags[uid] = asyncio.Event()
         active_jobs[uid] = True
         
-        try:
-            await process_lecture(uid, text, dialect, msg, context, cancel_flags[uid])
-        except asyncio.CancelledError:
-            await safe_edit(msg, "⛔ تم الإلغاء")
-        except Exception as e:
-            logger.error(f"Error: {e}")
-            await safe_edit(msg, f"❌ خطأ: {str(e)[:200]}")
-        finally:
-            active_jobs.pop(uid, None)
-            cancel_flags.pop(uid, None)
+        task = asyncio.create_task(
+            process_lecture(uid, text, filename, dialect, prog_msg, context)
+        )
+        active_tasks[uid] = task
 
-async def process_lecture(uid, text, dialect, msg, context, cancel_ev):
-    """معالجة المحاضرة كاملة."""
+# ══════════════════════════════════════════════════════════════════════════════
+#  معالجة المحاضرة
+# ══════════════════════════════════════════════════════════════════════════════
+async def process_lecture(uid, text, filename, dialect, prog_msg, context):
     t0 = time.time()
+    req_id = save_video_request(uid, "text", dialect)
+    video_path = None
+    is_arabic = dialect not in ("english", "british")
     
-    async def update(pct, label):
-        if cancel_ev.is_set():
+    async def upd(pct, label):
+        if cancel_flags.get(uid, asyncio.Event()).is_set():
             raise asyncio.CancelledError()
         e = time.time() - t0
-        await safe_edit(msg, f"🎬 *المعالجة*\n{pbar(pct)} {pct}%\n{label}\n⏱️ {fmt_time(e)}", CANCEL_KB)
+        await safe_edit(prog_msg, f"🎬 *المعالجة*\n{pbar(pct)} {pct}%\n{label}\n⏱️ {fmt_time(e)}", CANCEL_KB)
     
-    # 1. تحليل
-    await update(10, "🔍 تحليل المحتوى...")
-    data = await analyze_lecture(text, dialect)
-    sections = data.get("sections", [])
-    subject = data.get("lecture_type", "science")
-    lecture_title = data.get("title", "المحاضرة")
-    
-    if not sections:
-        raise Exception("لم يتم استخراج أقسام")
-    
-    await update(20, f"✅ تم التحليل إلى {len(sections)} أقسام")
-    
-    # 2. إنشاء صور كروت تعليمية لكل قسم
-    images = []
-    for i, sec in enumerate(sections):
-        if cancel_ev.is_set():
-            raise asyncio.CancelledError()
-        await update(25 + i*10, f"🎨 تصميم الكرت التعليمي للقسم {i+1}...")
-        
-        keywords = sec.get("keywords", [])
-        title = sec.get("title", f"القسم {i+1}")
-        
-        img_path = create_educational_card(title, keywords, subject, i+1, len(sections))
-        images.append(img_path)
-        sec["_image_path"] = img_path
-    
-    # 3. صوت لكل قسم
-    audios = []
-    audio_paths = []
-    for i, sec in enumerate(sections):
-        if cancel_ev.is_set():
-            raise asyncio.CancelledError()
-        await update(55 + i*8, f"🎤 توليد الصوت للقسم {i+1}...")
-        
-        narration = sec.get("narration", "")
-        audio_bytes = await generate_audio(narration, dialect)
-        audios.append(audio_bytes)
-        
-        if audio_bytes:
-            fd, ap = tempfile.mkstemp(suffix=".mp3")
+    async with _Q_SEM:
+        try:
+            # 1. تحليل
+            await upd(10, "🔍 تحليل المحتوى...")
+            data = await _run_or_cancel(uid, analyze_lecture(text, dialect))
+            sections = data.get("sections", [])
+            subject = data.get("lecture_type", "other")
+            
+            if not sections:
+                raise Exception("لم يتم استخراج أقسام")
+            
+            await upd(25, f"✅ {len(sections)} أقسام")
+            
+            # 2. صور
+            for i, sec in enumerate(sections):
+                await upd(30 + i*8, f"🎨 تصميم الكرت {i+1}...")
+                if cancel_flags.get(uid, asyncio.Event()).is_set():
+                    raise asyncio.CancelledError()
+                
+                img_path = create_educational_card(
+                    sec.get("title", f"القسم {i+1}"),
+                    sec.get("keywords", []),
+                    subject, i+1, len(sections), is_arabic
+                )
+                sec["_image_path"] = img_path
+            
+            # 3. صوت
+            await upd(60, "🎤 توليد الصوت...")
+            voice_res = await _run_or_cancel(uid, generate_sections_audio(sections, dialect))
+            audio_results = voice_res["results"]
+            
+            # 4. فيديو
+            await upd(75, "🎬 إنتاج الفيديو...")
+            
+            fd, video_path = tempfile.mkstemp(suffix=".mp4", dir=TEMP_DIR)
             os.close(fd)
-            with open(ap, "wb") as f:
-                f.write(audio_bytes)
-            audio_paths.append(ap)
-        else:
-            audio_paths.append(None)
-    
-    # 4. تجهيز الفيديو
-    await update(85, "🎬 تجهيز الفيديو...")
-    
-    segments = []
-    for i, sec in enumerate(sections):
-        dur = max(len(sec.get("narration", "")) // 12, 8)
-        segments.append((sec["_image_path"], dur))
-    
-    # 5. تشفير
-    await update(90, "🎥 تشفير الفيديو...")
-    
-    fd, video_path = tempfile.mkstemp(suffix=".mp4")
-    os.close(fd)
-    
-    await asyncio.get_event_loop().run_in_executor(
-        None, encode_video, segments, audio_paths, video_path
-    )
-    
-    # 6. خصم وإرسال
-    use_attempt(uid)
-    user = get_user(uid)
-    
-    await update(99, "📤 جاري الإرسال...")
-    
-    caption = f"🎬 *{lecture_title}*\n📚 {len(sections)} أقسام\n⏱️ {fmt_time(time.time()-t0)}\n💳 متبقي: {user['attempts_left']}"
-    
-    with open(video_path, "rb") as vf:
-        await context.bot.send_video(uid, vf, caption=caption, parse_mode="Markdown")
-    
-    await msg.delete()
-    await context.bot.send_message(uid, "✅ *تم بنجاح!* 🎉", parse_mode="Markdown", reply_markup=main_keyboard())
-    
-    # تنظيف
-    for sec in sections:
-        try:
-            if "_image_path" in sec:
-                os.remove(sec["_image_path"])
-        except:
-            pass
-    for ap in audio_paths:
-        try:
-            if ap:
-                os.remove(ap)
-        except:
-            pass
-    try:
-        os.remove(video_path)
-    except:
-        pass
-
-async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if uid in cancel_flags:
-        cancel_flags[uid].set()
-    await update.message.reply_text("✅ تم الإلغاء", reply_markup=main_keyboard())
-
-async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    user = get_user(uid) or create_user(uid)
-    await update.message.reply_text(f"💳 رصيدك: *{user['attempts_left']}* محاولة", parse_mode="Markdown")
-
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📖 أرسل PDF أو نص للمحاضرة وسأحوّله لفيديو تعليمي بصور احترافية!")
+            
+            total_secs = await create_video_from_sections(
+                sections, audio_results, data, video_path, dialect,
+                progress_cb=lambda e, est: upd(80 + int(e/est*15), "🎥 تشفير...")
+            )
+            
+            # 5. إرسال
+            await upd(98, "📤 إرسال...")
+            
+            decrement_attempts(uid)
+            update_video_request(req_id, "done", video_path)
+            
+            user = get_user(uid)
+            vid_min, vid_sec = divmod(int(total_secs), 60)
+            caption = f"🎬 *{data.get('title', filename)}*\n📚 {len(sections)} أقسام\n⏱️ {vid_min}:{vid_sec:02d}\n💳 متبقي: {user['attempts_left']}"
+            
+            with open(video_path, "rb") as vf:
+                await context.bot.send_video(uid, vf, caption=caption, parse_mode="Markdown")
+            
+            await prog_msg.delete()
+            await context.bot.send_message(uid, "✅ *تم بنجاح!* 🎉", parse_mode="Markdown", reply_markup=main_keyboard())
+            
+        except asyncio.CancelledError:
+            update_video_request(req_id, "cancelled")
+            await safe_edit(prog_msg, "⛔ تم الإلغاء")
+        except Exception as e:
+            update_video_request(req_id, "failed")
+            logger.error(f"Error: {e}")
+            await safe_edit(prog_msg, f"❌ خطأ: {str(e)[:200]}")
+        finally:
+            active_jobs.pop(uid, None)
+            active_tasks.pop(uid, None)
+            cancel_flags.pop(uid, None)
+            if video_path and os.path.exists(video_path):
+                try:
+                    os.remove(video_path)
+                except:
+                    pass
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  تشغيل البوت
+#  أمر الأدمن
 # ══════════════════════════════════════════════════════════════════════════════
-async def main():
+async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update.effective_user.id):
+        return
+    await handle_admin_command(update, context)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  دالة run_bot (المطلوبة من main.py)
+# ══════════════════════════════════════════════════════════════════════════════
+async def run_bot(shutdown_event: asyncio.Event, set_bot_app_cb=None):
+    """تشغيل البوت - تستدعى من main.py"""
+    
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
+    # المعالجات
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_content))
-    app.add_handler(MessageHandler(filters.Document.ALL, receive_content))
+    app.add_handler(CommandHandler("referral", referral_cmd))
+    app.add_handler(CommandHandler("admin", admin_cmd))
+    app.add_handler(CommandHandler("add", handle_add_attempts))
+    app.add_handler(CommandHandler("set", handle_set_attempts))
+    app.add_handler(CommandHandler("ban", handle_ban))
+    app.add_handler(CommandHandler("unban", handle_unban))
+    app.add_handler(CommandHandler("broadcast", handle_broadcast))
+    
+    app.add_handler(PreCheckoutQueryHandler(handle_pre_checkout))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, handle_successful_payment))
     app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(MessageHandler((filters.TEXT | filters.Document.ALL) & ~filters.COMMAND, receive_content))
     
-    logger.info("✅ البوت يعمل...")
+    # وضع التشغيل
+    webhook_url = os.getenv("WEBHOOK_URL", "").rstrip("/")
     
-    webhook = os.getenv("WEBHOOK_URL", "")
-    if webhook:
-        await app.bot.set_webhook(f"{webhook}/telegram")
-        logger.info(f"Webhook: {webhook}")
-        await asyncio.Event().wait()
-    else:
-        await app.run_polling()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    async with app:
+        await app.start()
+        
+        if webhook_url:
+            full_url = f"{webhook_url}/telegram"
+            await app.bot.delete_webhook(drop_pending_updates=True)
+            await app.bot.set_webhook(url=full_url, drop_pending_updates=True)
+            logger.info(f"✅ Webhook: {full_url}")
+            
+            if set_bot_app_cb:
+                set_bot_app_cb(app)
+            
+            await shutdown_event.wait()
+            await app.bot.delete_webhook(drop_pending_updates=True)
+        else:
+            logger.info("🔄 Polling mode")
+            await app.updater.start_polling(drop_pending_updates=True)
+            await shutdown_event.wait()
+            await app.updater.stop()
+        
+        await app.stop()
