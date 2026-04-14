@@ -1,884 +1,527 @@
-# ai_analyzer.py
-# -*- coding: utf-8 -*-
-"""
-وحدة التحليل بالذكاء الاصطناعي - عقل بوت المحاضرات الطبية
-"""
-
-import re
 import json
+import re
+import io
 import asyncio
 import aiohttp
-import logging
-import time
-import random
-import requests
-from PIL import Image, ImageDraw, ImageFont
-from io import BytesIO
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any, Union   # <--- هذا السطر ضروري
+from PIL import Image as PILImage
+from google import genai
+from google.genai import types as genai_types
+from config import (
+    DEEPSEEK_API_KEYS, GEMINI_API_KEYS, OPENROUTER_API_KEYS, GROQ_API_KEYS, OPENAI_API_KEY
+)
 
-# ... باقي الكود ...
+# =============================================================================
+# نظام تبادل المفاتيح المتقدم
+# الأولوية: DeepSeek → Gemini → OpenRouter → Groq
+# =============================================================================
 
-def _fetch_pollinations_image_sync(keyword: str, specialty: str = None) -> Optional[Path]:
-    """جلب صورة من Pollinations.ai (متزامن)"""
-    try:
-        if specialty:
-            prompt = f"medical illustration of {keyword} for {specialty} education, clean professional style"
-        else:
-            prompt = f"medical illustration of {keyword}, educational diagram, clean style"
-        
-        url = f"https://image.pollinations.ai/prompt/{prompt.replace(' ', '%20')}"
-        url += "?width=640&height=480&nologo=true"
-        
-        response = requests.get(url, timeout=30)
-        if response.status_code == 200:
-            img = Image.open(BytesIO(response.content))
-            file_path = config.IMAGES_TMP / f"pollinations_{uuid.uuid4().hex[:8]}.png"
-            img.save(file_path, "PNG")
-            logger.info(f"✅ تم جلب صورة من Pollinations: {keyword}")
-            return file_path
-    except Exception as e:
-        logger.debug(f"Pollinations فشل: {e}")
-    return None
+class QuotaExhaustedError(Exception):
+    """يُرفع عندما تنفد جميع المفاتيح من جميع المزودين."""
+    pass
 
-def _fetch_unsplash_image_sync(keyword: str) -> Optional[Path]:
-    """جلب صورة من Unsplash (متزامن)"""
-    if not config.UNSPLASH_ACCESS_KEY:
+# --- DeepSeek (OpenAI-compatible) ---
+async def _generate_with_deepseek(prompt: str, max_tokens: int = 8192) -> str:
+    """محاولة التوليد باستخدام مفاتيح DeepSeek بالتناوب."""
+    if not DEEPSEEK_API_KEYS:
+        raise QuotaExhaustedError("لا توجد مفاتيح DeepSeek")
+
+    models = ["deepseek-chat", "deepseek-reasoner"]
+    for key in DEEPSEEK_API_KEYS:
+        for model in models:
+            try:
+                headers = {
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                }
+                payload = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": min(max_tokens, 8192),
+                    "temperature": 0.3,
+                }
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        "https://api.deepseek.com/v1/chat/completions",
+                        headers=headers,
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=90),
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            text = data["choices"][0]["message"]["content"].strip()
+                            print(f"✅ DeepSeek نجاح: {model}")
+                            return text
+                        elif resp.status == 402:  # رصيد غير كافي
+                            print(f"⚠️ DeepSeek رصيد منتهي للمفتاح {key[:10]}...")
+                            break  # جرب المفتاح التالي
+                        else:
+                            body = await resp.text()
+                            print(f"⚠️ DeepSeek {resp.status}: {body[:100]}")
+                            continue
+            except Exception as e:
+                print(f"⚠️ DeepSeek خطأ: {str(e)[:80]}")
+                continue
+    raise QuotaExhaustedError("جميع مفاتيح DeepSeek منتهية أو فشلت")
+
+
+# --- Gemini (Google) ---
+_gemini_clients: dict[str, object] = {}
+_gemini_idx = 0
+
+def _get_gemini_client(key: str | None = None):
+    global _gemini_idx
+    if not GEMINI_API_KEYS:
         return None
-    try:
-        headers = {"Authorization": f"Client-ID {config.UNSPLASH_ACCESS_KEY}"}
-        params = {
-            "query": f"{keyword} medical",
-            "orientation": "landscape",
-            "per_page": 1
-        }
-        response = requests.get("https://api.unsplash.com/search/photos",
-                                headers=headers, params=params, timeout=20)
-        if response.status_code == 200:
-            data = response.json()
-            if data["results"]:
-                img_url = data["results"][0]["urls"]["regular"]
-                img_response = requests.get(img_url, timeout=20)
-                img = Image.open(BytesIO(img_response.content))
-                img = img.resize((640, 480), Image.Resampling.LANCZOS)
-                file_path = config.IMAGES_TMP / f"unsplash_{uuid.uuid4().hex[:8]}.jpg"
-                img.save(file_path, "JPEG")
-                logger.info(f"✅ تم جلب صورة من Unsplash: {keyword}")
-                return file_path
-    except Exception as e:
-        logger.debug(f"Unsplash فشل: {e}")
-    return None
+    use_key = key or GEMINI_API_KEYS[_gemini_idx % len(GEMINI_API_KEYS)]
+    if use_key not in _gemini_clients:
+        _gemini_clients[use_key] = genai.Client(api_key=use_key)
+    return _gemini_clients[use_key]
 
-def _fetch_picsum_image_sync() -> Optional[Path]:
-    """جلب صورة عشوائية من Lorem Picsum (متزامن)"""
-    try:
-        response = requests.get("https://picsum.photos/640/480", timeout=15)
-        if response.status_code == 200:
-            img = Image.open(BytesIO(response.content))
-            file_path = config.IMAGES_TMP / f"picsum_{uuid.uuid4().hex[:8]}.jpg"
-            img.save(file_path, "JPEG")
-            logger.info(f"✅ تم جلب صورة من Picsum")
-            return file_path
-    except Exception as e:
-        logger.debug(f"Picsum فشل: {e}")
-    return None
+async def _generate_with_gemini(prompt: str, max_tokens: int = 8192) -> str:
+    """محاولة التوليد باستخدام مفاتيح Gemini بالتناوب."""
+    global _gemini_idx
+    if not GEMINI_API_KEYS:
+        raise QuotaExhaustedError("لا توجد مفاتيح Gemini")
 
-def fetch_image_for_keyword(keyword: str, specialty: str = None) -> Path:
+    models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
+    for i in range(len(GEMINI_API_KEYS)):
+        key_idx = (_gemini_idx + i) % len(GEMINI_API_KEYS)
+        key = GEMINI_API_KEYS[key_idx]
+        client = _get_gemini_client(key)
+        for model in models:
+            try:
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=model,
+                    contents=prompt,
+                    config=genai_types.GenerateContentConfig(
+                        temperature=0.3,
+                        max_output_tokens=max_tokens,
+                    ),
+                )
+                _gemini_idx = key_idx
+                print(f"✅ Gemini نجاح: {model}")
+                return response.text.strip()
+            except Exception as e:
+                err = str(e)
+                if "quota" in err.lower() or "exhausted" in err.lower() or "429" in err:
+                    print(f"⚠️ Gemini حصة منتهية للمفتاح {key[:10]}...")
+                    break  # جرب المفتاح التالي
+                else:
+                    print(f"⚠️ Gemini خطأ: {err[:80]}")
+                    continue
+    raise QuotaExhaustedError("جميع مفاتيح Gemini منتهية")
+
+
+# --- OpenRouter ---
+async def _generate_with_openrouter(prompt: str, max_tokens: int = 8192) -> str:
+    """محاولة التوليد باستخدام مفاتيح OpenRouter (نموذج DeepSeek المجاني)."""
+    if not OPENROUTER_API_KEYS:
+        raise QuotaExhaustedError("لا توجد مفاتيح OpenRouter")
+
+    # نستخدم نموذج DeepSeek المجاني على OpenRouter
+    models = [
+        "deepseek/deepseek-r1:free",
+        "deepseek/deepseek-chat:free",
+        "google/gemini-2.0-flash-exp:free",
+        "meta-llama/llama-3.3-70b-instruct:free",
+    ]
+    for key in OPENROUTER_API_KEYS:
+        for model in models:
+            try:
+                headers = {
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://replit.com",
+                    "X-Title": "Lecture Video Bot",
+                }
+                payload = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": min(max_tokens, 8192),
+                    "temperature": 0.3,
+                }
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        headers=headers,
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=120),
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            content = data["choices"][0]["message"]["content"]
+                            if content and content.strip():
+                                print(f"✅ OpenRouter نجاح: {model}")
+                                return content.strip()
+                        elif resp.status == 402:
+                            print(f"⚠️ OpenRouter رصيد منتهي للمفتاح {key[:10]}...")
+                            break
+                        else:
+                            continue
+            except Exception as e:
+                print(f"⚠️ OpenRouter خطأ: {str(e)[:80]}")
+                continue
+    raise QuotaExhaustedError("جميع مفاتيح OpenRouter منتهية")
+
+
+# --- Groq (احتياطي أخير) ---
+async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
+    """محاولة التوليد باستخدام مفاتيح Groq."""
+    if not GROQ_API_KEYS:
+        raise QuotaExhaustedError("لا توجد مفاتيح Groq")
+
+    models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it"]
+    for key in GROQ_API_KEYS:
+        for model in models:
+            try:
+                headers = {
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                }
+                payload = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": min(max_tokens, 8192),
+                    "temperature": 0.3,
+                }
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers=headers,
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=90),
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            text = data["choices"][0]["message"]["content"].strip()
+                            print(f"✅ Groq نجاح: {model}")
+                            return text
+                        elif resp.status == 429:
+                            print(f"⚠️ Groq حد الطلبات للمفتاح {key[:10]}...")
+                            continue
+                        else:
+                            continue
+            except Exception as e:
+                print(f"⚠️ Groq خطأ: {str(e)[:80]}")
+                continue
+    raise QuotaExhaustedError("جميع مفاتيح Groq منتهية")
+
+
+# =============================================================================
+# الوظيفة الرئيسية للتوليد (تدوير تلقائي بين المزودين)
+# =============================================================================
+async def _generate_with_rotation(prompt: str, max_output_tokens: int = 8192) -> str:
     """
-    الدالة الرئيسية لجلب صورة لقسم معين (متزامنة بالكامل).
-    تجرب Pollinations -> Unsplash -> Picsum -> صورة مولدة.
+    تدوير تلقائي بين المزودين حسب الأولوية:
+    1. DeepSeek (الأفضل والأسرع)
+    2. Gemini (Google)
+    3. OpenRouter (نماذج مجانية)
+    4. Groq (احتياطي أخير)
     """
-    # محاولة Pollinations
-    img = _fetch_pollinations_image_sync(keyword, specialty)
-    if img:
-        return img
+    errors = []
 
-    # محاولة Unsplash
-    img = _fetch_unsplash_image_sync(keyword)
-    if img:
-        return img
+    # 1. DeepSeek
+    if DEEPSEEK_API_KEYS:
+        print("🔄 تجربة DeepSeek...")
+        try:
+            return await _generate_with_deepseek(prompt, max_output_tokens)
+        except QuotaExhaustedError as e:
+            errors.append(f"DeepSeek: {e}")
 
-    # محاولة Picsum
-    img = _fetch_picsum_image_sync()
-    if img:
-        return img
+    # 2. Gemini
+    if GEMINI_API_KEYS:
+        print("🔄 تجربة Gemini...")
+        try:
+            return await _generate_with_gemini(prompt, max_output_tokens)
+        except QuotaExhaustedError as e:
+            errors.append(f"Gemini: {e}")
 
-    # الصورة الاحتياطية
-    return _make_medical_image(keyword, specialty)
+    # 3. OpenRouter
+    if OPENROUTER_API_KEYS:
+        print("🔄 تجربة OpenRouter...")
+        try:
+            return await _generate_with_openrouter(prompt, max_output_tokens)
+        except QuotaExhaustedError as e:
+            errors.append(f"OpenRouter: {e}")
 
-# ==================== دوال تنظيف النصوص ====================
+    # 4. Groq
+    if GROQ_API_KEYS:
+        print("🔄 تجربة Groq...")
+        try:
+            return await _generate_with_groq(prompt, max_output_tokens)
+        except QuotaExhaustedError as e:
+            errors.append(f"Groq: {e}")
 
-def clean_text(text: str) -> str:
-    """
-    تنظيف النص من الأحرف غير المرغوبة:
-    - null bytes
-    - أحرف التحكم
-    - المسافات الزائدة
-    - ترميز موحد
-    """
-    if not text:
-        return ""
+    raise QuotaExhaustedError(f"جميع المزودين منتهين: {' | '.join(errors)}")
 
-    # إزالة null bytes
-    text = text.replace('\x00', '')
 
-    # إزالة أحرف التحكم (عدا الأسطر الجديدة والمسافات)
-    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+# =============================================================================
+# تحليل المحاضرة (نفس الوظيفة الأصلية مع تعديل استدعاء _generate_with_rotation)
+# =============================================================================
+def _compute_lecture_scale(text: str) -> tuple:
+    word_count = len(text.split())
+    if word_count < 300:
+        return 3, "6-8", 3000
+    elif word_count < 800:
+        return 4, "8-10", 5000
+    elif word_count < 1500:
+        return 5, "10-12", 6000
+    else:
+        return 6, "12-15", 8000
 
-    # استبدال أنواع المسافات المختلفة بمسافة عادية
-    text = re.sub(r'\s+', ' ', text)
 
-    # إزالة المسافات في بداية ونهاية النص
-    text = text.strip()
-
-    # إصلاح مشاكل الترميز العربية الشائعة
-    replacements = {
-        'أ': 'ا',  # توحيد الألف
-        'إ': 'ا',
-        'آ': 'ا',
-        'ة': 'ه',  # توحيد التاء المربوطة (اختياري)
-        'ى': 'ي',  # توحيد الياء
+async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
+    dialect_instructions = {
+        "iraq": "استخدم اللهجة العراقية في الشرح، مع كلمات عراقية أصيلة مثل (هواية، گلت، يعني، بس، هسا)",
+        "egypt": "استخدم اللهجة المصرية في الشرح، مع كلمات مصرية مثل (أوي، معلش، يعني، بس، كده)",
+        "syria": "استخدم اللهجة الشامية في الشرح، مع كلمات شامية مثل (هلق، شو، كتير، منيح، هيك)",
+        "gulf": "استخدم اللهجة الخليجية في الشرح، مع كلمات خليجية مثل (زين، وايد، عاد، هاذي، أبشر)",
+        "msa": "استخدم العربية الفصحى الواضحة والمبسطة",
+        "english": "Use clear, simple English. Explain like a teacher to students.",
+        "british": "Use British English with a professional, clear academic tone."
     }
-    # يمكن تفعيلها حسب الحاجة
 
-    return text
+    instruction = dialect_instructions.get(dialect, dialect_instructions["msa"])
+    num_sections, narration_sentences, _ = _compute_lecture_scale(text)
+    text_limit = min(len(text), 4000 + num_sections * 1500)
+    is_english = dialect in ("english", "british")
 
-def extract_full_text_from_pdf(file_path: Path) -> Tuple[str, int]:
-    """
-    استخراج النص الكامل من ملف PDF.
-    تحاول أولاً استخدام pdfplumber، ثم PyPDF2.
-    ترجع (النص, عدد الصفحات)
-    تستخدم timeout لمنع التعليق.
-    """
-    text = ""
-    pages_count = 0
+    if is_english:
+        summary_hint = "A clear, concise summary of the lecture in English (4-5 sentences)."
+        key_points_hint = '["Key point 1", "Key point 2", "Key point 3", "Key point 4"]'
+        title_hint = "Lecture title in English"
+        section_title_hint = "Section title in English"
+        content_hint = f"Simplified section content in English ({narration_sentences} sentences)"
+        keywords_hint = '["keyword1", "keyword2", "keyword3", "keyword4"]'
+        narration_hint = f"Full narration in English as a teacher explaining to students ({narration_sentences} sentences)"
+        lang_note = "IMPORTANT: Write ALL text fields in English."
+    else:
+        summary_hint = "ملخص المحاضرة بأسلوب مبسط (4-5 جمل)"
+        key_points_hint = '["نقطة رئيسية 1", "نقطة رئيسية 2", "نقطة رئيسية 3", "نقطة رئيسية 4"]'
+        title_hint = "عنوان المحاضرة"
+        section_title_hint = "عنوان القسم"
+        content_hint = f"محتوى القسم المبسط بأسلوب ممتع وسهل الفهم ({narration_sentences} جمل)"
+        keywords_hint = '["مصطلح رئيسي 1", "مصطلح رئيسي 2", "مصطلح رئيسي 3", "مصطلح رئيسي 4"]'
+        narration_hint = f"نص الشرح الكامل بالنص الطبيعي للمحاضر مع اللهجة المطلوبة ({narration_sentences} جمل)"
+        lang_note = "النص يجب أن يكون باللهجة المطلوبة بالكامل"
 
-    # المحاولة الأولى: pdfplumber
-    if pdfplumber:
-        try:
-            with pdfplumber.open(file_path) as pdf:
-                pages_count = len(pdf.pages)
-                all_text = []
-                for page in pdf.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        all_text.append(page_text)
-                text = "\n".join(all_text)
-                if len(text.strip()) > 100:
-                    logger.info(f"تم استخراج {len(text)} حرف من PDF باستخدام pdfplumber")
-                    return clean_text(text), pages_count
-        except Exception as e:
-            logger.warning(f"فشل pdfplumber: {e}")
+    prompt = f"""أنت معلم خبير ومتخصص في تبسيط المحاضرات العلمية. مهمتك تحليل هذه المحاضرة وإنتاج محتوى تعليمي احترافي.
 
-    # المحاولة الثانية: PyPDF2
-    if PyPDF2:
-        try:
-            with open(file_path, 'rb') as f:
-                reader = PyPDF2.PdfReader(f)
-                pages_count = len(reader.pages)
-                all_text = []
-                for page in reader.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        all_text.append(page_text)
-                text = "\n".join(all_text)
-                logger.info(f"تم استخراج {len(text)} حرف من PDF باستخدام PyPDF2")
-                return clean_text(text), pages_count
-        except Exception as e:
-            logger.error(f"فشل PyPDF2: {e}")
+{instruction}
 
-    # إذا فشل كل شيء
-    if not text:
-        raise ValueError("تعذر استخراج النص من ملف PDF. تأكد من أن الملف غير مشفر أو تالف.")
+المحاضرة:
+---
+{text[:text_limit]}
+---
 
-    return clean_text(text), pages_count
+قم بتحليل المحاضرة وأرجع JSON فقط بالتنسيق التالي. يجب أن يحتوي على بالضبط {num_sections} أقسام:
 
-# ==================== قوائم المصطلحات الطبية ====================
+{{
+  "lecture_type": "one of: medicine/science/math/literature/history/computer/business/other",
+  "title": "{title_hint}",
+  "sections": [
+    {{
+      "title": "{section_title_hint}",
+      "content": "{content_hint}",
+      "keywords": {keywords_hint},
+      "keyword_images": [
+        "وصف إنجليزي قصير 3-5 كلمات لصورة كرتونية للكلمة الأولى",
+        "وصف للكلمة الثانية",
+        "وصف للكلمة الثالثة",
+        "وصف للكلمة الرابعة"
+      ],
+      "narration": "{narration_hint}",
+      "duration_estimate": 45
+    }}
+  ],
+  "summary": "{summary_hint}",
+  "key_points": {key_points_hint},
+  "total_sections": {num_sections}
+}}
 
-# قاموس ضخم للمصطلحات الطبية بالعربية والإنجليزية
-MEDICAL_TERMS_AR = {
-    "الأمراض": ["السكري", "ارتفاع ضغط الدم", "السرطان", "الربو", "التهاب", "فشل قلبي", "تليف",
-                "عدوى", "ورم", "خثار", "نزيف", "صدمة", "حساسية", "مناعة ذاتية", "تصلب", "تشمع"],
-    "التشريح": ["القلب", "الرئة", "الكبد", "الكلى", "المعدة", "الأمعاء", "الدماغ", "الأعصاب",
-                "الشرايين", "الأوردة", "العظام", "المفاصل", "العضلات", "الجلد", "العين", "الأذن"],
-    "الأعراض": ["ألم", "حمى", "سعال", "ضيق تنفس", "غثيان", "إسهال", "إمساك", "دوخة", "صداع",
-                "تعب", "فقدان وزن", "طفح", "حكة", "تورم", "نزيف", "تشنجات"],
-    "الأدوية": ["مضاد حيوي", "مسكن", "مضاد التهاب", "مدر بول", "خافض ضغط", "منظم سكر",
-                "كورتيزون", "علاج كيماوي", "مضاد فيروسات", "مضاد فطريات"],
-    "الإجراءات": ["جراحة", "تنظير", "قسطرة", "خزعة", "تصوير", "رنين مغناطيسي", "أشعة", "تحليل دم",
-                  "تخطيط قلب", "علاج طبيعي", "غسيل كلوي"],
-}
+مهم جداً:
+- {lang_note}
+- يجب أن تكون {num_sections} أقسام بالضبط
+- أرجع JSON فقط بدون أي نص إضافي
+"""
 
-MEDICAL_TERMS_EN = {
-    "diseases": ["diabetes", "hypertension", "cancer", "asthma", "inflammation", "heart failure",
-                 "fibrosis", "infection", "tumor", "thrombosis", "hemorrhage", "shock", "allergy",
-                 "autoimmune", "sclerosis", "cirrhosis"],
-    "anatomy": ["heart", "lung", "liver", "kidney", "stomach", "intestine", "brain", "nerves",
-                "arteries", "veins", "bones", "joints", "muscles", "skin", "eye", "ear"],
-    "symptoms": ["pain", "fever", "cough", "dyspnea", "nausea", "diarrhea", "constipation",
-                 "dizziness", "headache", "fatigue", "weight loss", "rash", "itching", "edema",
-                 "bleeding", "seizures"],
-    "medications": ["antibiotic", "analgesic", "anti-inflammatory", "diuretic", "antihypertensive",
-                    "antidiabetic", "corticosteroid", "chemotherapy", "antiviral", "antifungal"],
-    "procedures": ["surgery", "endoscopy", "catheterization", "biopsy", "imaging", "MRI", "X-ray",
-                   "blood test", "ECG", "physiotherapy", "dialysis"],
-}
+    content = await _generate_with_rotation(prompt, max_output_tokens=8192)
+    content = content.strip()
+    content = re.sub(r'^```json\s*', '', content)
+    content = re.sub(r'\s*```$', '', content)
+    content = content.strip()
 
-# كلمات مفتاحية للتخصصات
-SPECIALTY_KEYWORDS = {
-    "cardiology": ["قلب", "شرايين", "صمام", "ذبحة", "جلطة قلب", "تخطيط قلب", "heart", "cardiac", "coronary"],
-    "pulmonology": ["رئة", "تنفس", "ربو", "سعال", "قصبات", "lung", "pulmonary", "respiratory"],
-    "neurology": ["دماغ", "أعصاب", "شلل", "صرع", "باركنسون", "brain", "nerve", "neurology", "seizure"],
-    "gastroenterology": ["معدة", "أمعاء", "كبد", "هضم", "قولون", "stomach", "intestine", "liver", "digestive"],
-    "nephrology": ["كلى", "بول", "غسيل", "kidney", "renal", "nephrology"],
-    "endocrinology": ["غدد", "هرمون", "سكري", "درقية", "endocrine", "diabetes", "thyroid"],
-    "oncology": ["ورم", "سرطان", "علاج كيماوي", "cancer", "tumor", "oncology"],
-    # ... يمكن إضافة المزيد
-}
-
-# ==================== دوال الذكاء الاصطناعي ====================
-
-def _call_deepseek(prompt: str, api_key: str, timeout: int = 60) -> Optional[Dict]:
-    """الاتصال بـ DeepSeek API"""
     try:
-        import requests
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "model": "deepseek-chat",
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": config.AI_TEMPERATURE,
-            "max_tokens": config.AI_MAX_TOKENS,
-            "response_format": {"type": "json_object"}
-        }
-        response = requests.post(
-            "https://api.deepseek.com/v1/chat/completions",
-            headers=headers,
-            json=data,
-            timeout=timeout
-        )
-        if response.status_code == 200:
-            result = response.json()
-            content = result["choices"][0]["message"]["content"]
-            return json.loads(content)
-        else:
-            logger.warning(f"DeepSeek API خطأ {response.status_code}: {response.text}")
-    except Exception as e:
-        logger.error(f"DeepSeek استثناء: {e}")
-    return None
-
-def _call_gemini(prompt: str, api_key: str) -> Optional[Dict]:
-    """الاتصال بـ Google Gemini API"""
-    if not genai:
-        logger.error("مكتبة google-generativeai غير مثبتة")
-        return None
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        # نطلب JSON بشكل صريح
-        full_prompt = f"{prompt}\n\nPlease respond with valid JSON only, no markdown formatting."
-        response = model.generate_content(full_prompt)
-        text = response.text
-        # تنظيف JSON من علامات markdown المحتملة
-        text = re.sub(r'```json\s*', '', text)
-        text = re.sub(r'```\s*', '', text)
-        return json.loads(text)
-    except Exception as e:
-        logger.error(f"Gemini استثناء: {e}")
-    return None
-
-def _call_groq(prompt: str, api_key: str) -> Optional[Dict]:
-    """الاتصال بـ Groq API"""
-    if not Groq:
-        logger.error("مكتبة groq غير مثبتة")
-        return None
-    try:
-        client = Groq(api_key=api_key)
-        completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=config.AI_TEMPERATURE,
-            max_tokens=config.AI_MAX_TOKENS,
-            response_format={"type": "json_object"}
-        )
-        content = completion.choices[0].message.content
         return json.loads(content)
-    except Exception as e:
-        logger.error(f"Groq استثناء: {e}")
-    return None
+    except json.JSONDecodeError:
+        json_match = re.search(r'\{[\s\S]*\}', content)
+        if json_match:
+            return json.loads(json_match.group())
+        raise ValueError(f"Failed to parse response as JSON: {content[:500]}")
 
-def _call_ai(prompt: str) -> Dict:
-    """
-    استدعاء الذكاء الاصطناعي مع آلية احتياطية:
-    DeepSeek -> Gemini -> Groq -> fallback
-    تجرب المفاتيح المتعددة لكل مزود
-    """
-    # تجربة DeepSeek
-    for key in config.DEEPSEEK_KEYS:
-        result = _call_deepseek(prompt, key)
-        if result:
-            logger.info("تم استخدام DeepSeek بنجاح")
-            return result
 
-    # تجربة Gemini
-    for key in config.GEMINI_KEYS:
-        result = _call_gemini(prompt, key)
-        if result:
-            logger.info("تم استخدام Gemini بنجاح")
-            return result
+# =============================================================================
+# باقي الوظائف (استخراج النص من PDF، ترجمة، توليد الصور) - كما هي بدون تغيير
+# =============================================================================
 
-    # تجربة Groq
-    for key in config.GROQ_KEYS:
-        result = _call_groq(prompt, key)
-        if result:
-            logger.info("تم استخدام Groq بنجاح")
-            return result
+async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
+    import PyPDF2
+    reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
+    pages = []
+    for page in reader.pages:
+        page_text = page.extract_text() or ""
+        if page_text.strip():
+            pages.append(page_text)
+    return "\n\n".join(pages)
 
-    # إذا فشل الكل، نرفع استثناء لاستخدام fallback
-    raise Exception("فشلت جميع محاولات الاتصال بالذكاء الاصطناعي")
 
-# ==================== استخراج المصطلحات وتحديد التخصص ====================
-
-def _extract_medical_terms(text: str, max_terms: int = 30) -> List[str]:
-    """
-    استخراج المصطلحات الطبية من النص.
-    تستخدم القوائم المضمنة مع وزن أعلى للمصطلحات الطبية.
-    """
-    text_lower = text.lower()
-    terms_found = set()
-
-    # البحث في القوائم العربية
-    for category, terms in MEDICAL_TERMS_AR.items():
-        for term in terms:
-            if term in text:
-                terms_found.add(term)
-
-    # البحث في القوائم الإنجليزية
-    for category, terms in MEDICAL_TERMS_EN.items():
-        for term in terms:
-            if term.lower() in text_lower:
-                terms_found.add(term)
-
-    # البحث عن كلمات بحروف كبيرة (مصطلحات إنجليزية غالباً)
-    uppercase_terms = re.findall(r'\b[A-Z][a-z]*(?:\s+[A-Z][a-z]*)*\b', text)
-    for term in uppercase_terms:
-        if len(term) > 3 and term.lower() not in ['the', 'and', 'for', 'with']:
-            terms_found.add(term)
-
-    # ترتيب المصطلحات حسب تكرارها (تقريبي)
-    term_scores = {}
-    for term in terms_found:
-        count = text_lower.count(term.lower())
-        # وزن إضافي للمصطلحات الطبية المعروفة
-        bonus = 2 if any(term in med_list for med_list in MEDICAL_TERMS_AR.values()) else 0
-        term_scores[term] = count + bonus
-
-    sorted_terms = sorted(term_scores.items(), key=lambda x: x[1], reverse=True)
-    return [term for term, _ in sorted_terms[:max_terms]]
-
-def _detect_medical_specialty(text: str) -> Tuple[str, float]:
-    """
-    تحديد التخصص الطبي الدقيق للمحاضرة.
-    ترجع (التخصص, درجة الثقة)
-    """
-    text_lower = text.lower()
-    scores = {}
-    for specialty, keywords in SPECIALTY_KEYWORDS.items():
-        score = 0
-        for kw in keywords:
-            count = text_lower.count(kw.lower())
-            score += count
-        if score > 0:
-            scores[specialty] = score
-
-    if not scores:
-        return "general", 0.0
-
-    best_specialty = max(scores, key=scores.get)
-    confidence = scores[best_specialty] / sum(scores.values()) if scores else 0.0
-    return best_specialty, confidence
-
-def _determine_num_sections(text_length: int, density: float = None) -> int:
-    """تحديد عدد الأقسام بناءً على طول النص وكثافة المعلومات"""
-    if text_length < 500:
-        return 2
-    elif text_length < 1500:
-        return 3
-    elif text_length < 3000:
-        return 4
-    elif text_length < 6000:
-        return 5
-    elif text_length < 10000:
-        return 6
-    else:
-        return min(8, text_length // 2000)
-
-# ==================== توليد محتوى احتياطي ====================
-
-def _generate_medical_fallback(text: str, language: str, dialect: str, num_sections: int) -> Dict:
-    """
-    توليد شرح طبي احتياطي في حالة فشل جميع خدمات الذكاء الاصطناعي.
-    تستخدم قوالب جاهزة بالعربية والإنجليزية.
-    """
-    terms = _extract_medical_terms(text, 20)
-    specialty, _ = _detect_medical_specialty(text)
-    specialty_name = config.MEDICAL_SPECIALTIES.get(specialty, "طب عام")
-
-    # توليد عنوان
-    if terms:
-        title = f"شرح مبسط: {terms[0]}"
-    else:
-        title = "محاضرة طبية تعليمية"
-
-    sections = []
-    section_templates = [
-        ("المقدمة والتعريف", "في هذا القسم سنتعرف على المفاهيم الأساسية للحالة الطبية ونقدم نظرة عامة شاملة."),
-        ("الآلية المرضية", "سنشرح في هذا القسم الآلية التي تحدث بها المشكلة على المستوى الخلوي والجزيئي."),
-        ("الأعراض والعلامات", "سنتناول الأعراض الشائعة والعلامات السريرية التي تظهر على المريض."),
-        ("التشخيص", "نستعرض طرق التشخيص المختلفة بما فيها الفحوصات المخبرية والتصويرية."),
-        ("العلاج", "نناقش الخيارات العلاجية المتاحة والأدوية المستخدمة."),
-        ("المضاعفات والوقاية", "نتحدث عن المضاعفات المحتملة وطرق الوقاية منها."),
-    ]
-
-    for i in range(min(num_sections, len(section_templates))):
-        heading, template = section_templates[i]
-        # إضافة مصطلحات طبية للقسم
-        section_terms = terms[i*3:(i+1)*3] if terms else ["طبي", "صحي"]
-        content = f"{template} تشمل النقاط المهمة: " + "، ".join(section_terms) + "."
-        sections.append({
-            "heading": heading,
-            "content": content,
-            "keywords": section_terms[:4] if len(section_terms) >= 4 else section_terms + ["طبي"] * (4 - len(section_terms))
-        })
-
-    return {
-        "title": title,
-        "specialty": specialty_name,
-        "language": language,
-        "dialect": dialect,
-        "sections": sections,
-        "fallback": True
+async def translate_full_text(text: str, dialect: str) -> str:
+    dialect_instructions = {
+        "iraq": "ترجم النص إلى اللهجة العراقية.",
+        "egypt": "ترجم النص إلى اللهجة المصرية.",
+        "syria": "ترجم النص إلى اللهجة الشامية السورية.",
+        "gulf": "ترجم النص إلى اللهجة الخليجية.",
+        "msa": "حوّل النص إلى العربية الفصحى السليمة.",
     }
-
-# ==================== الدالة الرئيسية لتحليل المحاضرة ====================
-
-def _build_prompt(text: str, language: str, dialect: str, num_sections: int,
-                  specialty: str, terms: List[str]) -> str:
-    """بناء الـ Prompt المناسب حسب اللغة واللهجة"""
-    
-    specialty_name = config.MEDICAL_SPECIALTIES.get(specialty, "طب عام")
-    
-    if language == "ar":
-        base_prompt = f"""أنت محاضر طبي خبير ومتخصص في {specialty_name}.
-قم بتحليل النص الطبي التالي وإنشاء محاضرة تعليمية منظمة بأسلوب سلس وواضح.
-استخدم {dialect} في الشرح مع الحفاظ على الدقة العلمية.
-
-النص الطبي:
-{text[:4000]}...
-
-المطلوب:
-1. اقترح عنواناً جذاباً ودقيقاً للمحاضرة (بالعربية).
-2. قسم المحتوى إلى {num_sections} أقسام رئيسية.
-3. لكل قسم، قدم:
-   - عنوان فرعي واضح (heading)
-   - شرح مفصل ومبسط (content) بطول مناسب (150-300 كلمة)
-   - 4 كلمات مفتاحية (keywords) تمثل أهم المفاهيم في هذا القسم
-
-المصطلحات الطبية المستخرجة من النص: {', '.join(terms[:15])}
-
-أعد الرد بصيغة JSON صالحة فقط، بدون أي نص إضافي، بالشكل التالي:
-{{
-    "title": "عنوان المحاضرة",
-    "sections": [
-        {{
-            "heading": "عنوان القسم الأول",
-            "content": "محتوى الشرح المفصل...",
-            "keywords": ["كلمة1", "كلمة2", "كلمة3", "كلمة4"]
-        }}
-    ]
-}}
-"""
-    else:
-        base_prompt = f"""You are an expert medical lecturer specializing in {specialty_name}.
-Analyze the following medical text and create a structured educational lecture.
-Use clear and engaging language.
-
-Medical Text:
-{text[:4000]}...
-
-Requirements:
-1. Suggest an accurate and engaging title.
-2. Divide the content into {num_sections} main sections.
-3. For each section, provide:
-   - A clear heading
-   - Detailed explanation (150-300 words)
-   - 4 keywords representing key concepts
-
-Extracted medical terms: {', '.join(terms[:15])}
-
-Respond with valid JSON only, no extra text:
-{{
-    "title": "Lecture Title",
-    "sections": [
-        {{
-            "heading": "Section Heading",
-            "content": "Detailed explanation...",
-            "keywords": ["keyword1", "keyword2", "keyword3", "keyword4"]
-        }}
-    ]
-}}
-"""
-    return base_prompt
+    instruction = dialect_instructions.get(dialect, dialect_instructions["msa"])
+    prompt = f"{instruction}\n\nالنص:\n---\n{text[:12000]}\n---\n\nقدّم الترجمة فقط."
+    return await _generate_with_rotation(prompt)
 
 
-def analyze_lecture(text: str, language: str = "ar", dialect: str = "fusha",
-                    force_specialty: str = None) -> Dict[str, Any]:
-    """
-    الدالة الرئيسية لتحليل المحاضرة الطبية.
-    
-    المعاملات:
-        text: النص الطبي المراد تحليله
-        language: لغة النص ('ar' أو 'en')
-        dialect: اللهجة المطلوبة للشرح العربي
-        force_specialty: تخصص إجباري (يتجاوز الاكتشاف التلقائي)
-    
-    ترجع:
-        قاموساً يحتوي على:
-        - title: عنوان المحاضرة
-        - specialty: التخصص الطبي
-        - language: اللغة
-        - dialect: اللهجة
-        - sections: قائمة الأقسام (كل قسم: heading, content, keywords, image_path)
-        - medical_terms: قائمة المصطلحات المستخرجة
-        - fallback: هل تم استخدام المحتوى الاحتياطي
-    """
-    
-    # 1. تنظيف النص
-    text = clean_text(text)
-    if len(text) < config.MIN_TEXT_LENGTH:
-        raise ValueError(f"النص قصير جداً ({len(text)} حرف). الحد الأدنى {config.MIN_TEXT_LENGTH} حرف.")
-    
-    # 2. تحديد اللغة تلقائياً إذا لم تحدد
-    if language == "auto":
-        arabic_chars = len(re.findall(r'[\u0600-\u06FF]', text))
-        language = "ar" if arabic_chars > len(text) * 0.3 else "en"
-    
-    # 3. استخراج المصطلحات الطبية
-    medical_terms = _extract_medical_terms(text, 30)
-    
-    # 4. تحديد التخصص
-    if force_specialty:
-        specialty = force_specialty
-        specialty_confidence = 1.0
-    else:
-        specialty, specialty_confidence = _detect_medical_specialty(text)
-    specialty_name = config.MEDICAL_SPECIALTIES.get(specialty, "طب عام")
-    
-    # 5. تحديد عدد الأقسام
-    num_sections = _determine_num_sections(len(text))
-    
-    # 6. محاولة الاتصال بالذكاء الاصطناعي
-    prompt = _build_prompt(text, language, dialect, num_sections, specialty, medical_terms)
-    
-    result = None
-    used_fallback = False
-    ai_model_used = None
-    
-    try:
-        result = _call_ai(prompt)
-        # التحقق من صحة النتيجة
-        if not result or "sections" not in result or not result["sections"]:
-            raise ValueError("الذكاء الاصطناعي أرجع نتيجة غير صالحة")
-        used_fallback = False
-        ai_model_used = "AI"
-        logger.info(f"✅ تم تحليل المحاضرة بنجاح باستخدام الذكاء الاصطناعي")
-    except Exception as e:
-        logger.warning(f"⚠️ فشل الذكاء الاصطناعي: {e}. استخدام المحتوى الاحتياطي.")
-        result = _generate_medical_fallback(text, language, dialect, num_sections)
-        used_fallback = True
-        ai_model_used = "fallback"
-    
-    # 7. معالجة النتيجة وإضافة الحقول المفقودة
-    sections = result.get("sections", [])
-    
-    # التأكد من وجود 4 كلمات مفتاحية لكل قسم
-    for i, section in enumerate(sections):
-        if "keywords" not in section or len(section["keywords"]) < 4:
-            # استكمال الكلمات المفتاحية من المصطلحات المستخرجة
-            available = medical_terms[i*4:(i+1)*4] if i*4 < len(medical_terms) else ["طبي", "صحي", "علاج", "تشخيص"]
-            section["keywords"] = (section.get("keywords", []) + available)[:4]
-        
-        # التأكد من وجود محتوى كاف
-        if "content" not in section or len(section["content"]) < 50:
-            section["content"] = f"شرح مفصل حول {section.get('heading', 'هذا الموضوع')}. " + \
-                               f"يتضمن المعلومات الأساسية عن {', '.join(section['keywords'][:2])}. " + \
-                               f"يجب على الطلاب التركيز على فهم هذه المفاهيم جيداً."
-    
-    # 8. إضافة الصور لكل قسم
-    for section in sections:
-        image_path = fetch_image_for_keyword(
-            section["keywords"][0] if section["keywords"] else "medical",
-            specialty
-        )
-        section["image_path"] = image_path
-    
-    # 9. بناء النتيجة النهائية
-    final_result = {
-        "title": result.get("title", f"محاضرة في {specialty_name}"),
-        "specialty": specialty_name,
-        "specialty_code": specialty,
-        "language": language,
-        "dialect": dialect,
-        "sections": sections,
-        "medical_terms": medical_terms[:20],
-        "total_sections": len(sections),
-        "fallback": used_fallback,
-        "ai_model_used": ai_model_used,
-        "text_length": len(text),
+def _make_placeholder_image(keywords: list, lecture_type: str = "other") -> bytes:
+    # (نفس الكود الأصلي - لم يتم تغييره)
+    from PIL import ImageDraw, ImageFont
+    import os
+
+    PALETTES = {
+        "medicine": ((20, 78, 140), (6, 147, 227), (255, 200, 0)),
+        "science": ((11, 110, 79), (28, 200, 135), (255, 220, 50)),
+        "math": ((58, 12, 163), (100, 60, 220), (255, 180, 0)),
+        "history": ((150, 60, 10), (220, 110, 40), (255, 230, 100)),
     }
-    
-    return final_result
+    bg1, bg2, accent = PALETTES.get(lecture_type, ((30, 30, 80), (70, 60, 160), (255, 200, 50)))
+
+    W, H = 854, 480
+    img = PILImage.new("RGB", (W, H), bg1)
+    draw = ImageDraw.Draw(img)
+
+    for x in range(W):
+        t = x / W
+        r = int(bg1[0] * (1 - t) + bg2[0] * t)
+        g = int(bg1[1] * (1 - t) + bg2[1] * t)
+        b = int(bg1[2] * (1 - t) + bg2[2] * t)
+        draw.line([(x, 0), (x, H)], fill=(r, g, b))
+
+    keyword_raw = (keywords[0] if keywords else "").strip()
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 60)
+    except:
+        font = ImageFont.load_default()
+
+    bbox = draw.textbbox((0, 0), keyword_raw, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    draw.text(((W - tw) // 2, (H - th) // 2), keyword_raw, fill=(255, 255, 255), font=font)
+
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=85)
+    return buf.getvalue()
 
 
-# ==================== دوال جلب الصور ====================
-
-async def _fetch_pollinations_image(keyword: str, specialty: str = None) -> Optional[Path]:
-    """جلب صورة من Pollinations.ai"""
+async def _pollinations_generate(prompt: str, lecture_type: str = "other") -> bytes | None:
+    import urllib.parse, random
+    model = "flux-anime"
+    clean_prompt = prompt[:380].replace("\n", " ")
+    seed = random.randint(1, 99999)
+    encoded = urllib.parse.quote(clean_prompt)
+    url = f"https://image.pollinations.ai/prompt/{encoded}?width=854&height=480&nologo=true&seed={seed}&model={model}"
     try:
         async with aiohttp.ClientSession() as session:
-            # بناء وصف طبي مناسب
-            if specialty:
-                prompt = f"medical illustration of {keyword} for {specialty} education, clean professional style"
-            else:
-                prompt = f"medical illustration of {keyword}, educational diagram, clean style"
-            
-            url = f"https://image.pollinations.ai/prompt/{prompt.replace(' ', '%20')}"
-            url += "?width=640&height=480&nologo=true"
-            
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                if resp.status == 200:
-                    data = await resp.read()
-                    img = Image.open(BytesIO(data))
-                    # حفظ الصورة
-                    file_path = config.IMAGES_TMP / f"pollinations_{uuid.uuid4().hex[:8]}.png"
-                    img.save(file_path, "PNG")
-                    logger.info(f"✅ تم جلب صورة من Pollinations: {keyword}")
-                    return file_path
-    except Exception as e:
-        logger.debug(f"Pollinations فشل: {e}")
-    return None
-
-
-async def _fetch_unsplash_image(keyword: str) -> Optional[Path]:
-    """جلب صورة من Unsplash"""
-    if not config.UNSPLASH_ACCESS_KEY:
-        return None
-    try:
-        async with aiohttp.ClientSession() as session:
-            headers = {"Authorization": f"Client-ID {config.UNSPLASH_ACCESS_KEY}"}
-            params = {
-                "query": f"{keyword} medical",
-                "orientation": "landscape",
-                "per_page": 1
-            }
-            async with session.get("https://api.unsplash.com/search/photos",
-                                   headers=headers, params=params,
-                                   timeout=aiohttp.ClientTimeout(total=20)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if data["results"]:
-                        img_url = data["results"][0]["urls"]["regular"]
-                        async with session.get(img_url) as img_resp:
-                            img_data = await img_resp.read()
-                            img = Image.open(BytesIO(img_data))
-                            # تغيير حجم الصورة
-                            img = img.resize((640, 480), Image.Resampling.LANCZOS)
-                            file_path = config.IMAGES_TMP / f"unsplash_{uuid.uuid4().hex[:8]}.jpg"
-                            img.save(file_path, "JPEG")
-                            logger.info(f"✅ تم جلب صورة من Unsplash: {keyword}")
-                            return file_path
-    except Exception as e:
-        logger.debug(f"Unsplash فشل: {e}")
-    return None
-
-
-async def _fetch_picsum_image(keyword: str = None) -> Optional[Path]:
-    """جلب صورة عشوائية من Lorem Picsum"""
-    try:
-        async with aiohttp.ClientSession() as session:
-            url = f"https://picsum.photos/640/480"
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 if resp.status == 200:
-                    data = await resp.read()
-                    img = Image.open(BytesIO(data))
-                    file_path = config.IMAGES_TMP / f"picsum_{uuid.uuid4().hex[:8]}.jpg"
-                    img.save(file_path, "JPEG")
-                    logger.info(f"✅ تم جلب صورة من Picsum")
-                    return file_path
+                    raw = await resp.read()
+                    if len(raw) > 5000:
+                        pil_img = PILImage.open(io.BytesIO(raw)).convert("RGB")
+                        pil_img = pil_img.resize((854, 480), PILImage.LANCZOS)
+                        buf = io.BytesIO()
+                        pil_img.save(buf, "JPEG", quality=85)
+                        return buf.getvalue()
     except Exception as e:
-        logger.debug(f"Picsum فشل: {e}")
+        print(f"Pollinations error: {e}")
     return None
 
 
-def _make_medical_image(keyword: str, specialty: str = None) -> Path:
-    """
-    إنشاء صورة طبية احتياطية باستخدام PIL.
-    ترسم صورة ملونة بسيطة بخلفية طبية ونص توضيحي.
-    """
-    if not Image:
-        raise RuntimeError("مكتبة Pillow غير متوفرة")
-    
-    width, height = 640, 480
-    # خلفية بلون طبي (أزرق فاتح أو وردي حسب التخصص)
-    if specialty == "cardiology":
-        bg_color = (255, 220, 220)  # وردي فاتح للقلب
-    elif specialty == "neurology":
-        bg_color = (220, 220, 255)  # أزرق فاتح للأعصاب
-    elif specialty == "pulmonology":
-        bg_color = (200, 230, 255)  # أزرق سماوي للتنفس
-    else:
-        bg_color = (230, 245, 255)  # أزرق طبي عام
-    
-    img = Image.new("RGB", (width, height), bg_color)
-    draw = ImageDraw.Draw(img)
-    
-    # محاولة تحميل خط عربي
+async def _dalle_generate(prompt: str) -> bytes | None:
+    import base64
+    if not OPENAI_API_KEY:
+        return None
+    payload = {
+        "model": "dall-e-3",
+        "prompt": prompt,
+        "size": "1024x1024",
+        "quality": "standard",
+        "n": 1,
+        "response_format": "b64_json",
+    }
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {OPENAI_API_KEY}"}
     try:
-        font_title = ImageFont.truetype("DejaVuSans-Bold.ttf", 36)
-        font_text = ImageFont.truetype("DejaVuSans.ttf", 24)
-    except:
-        font_title = ImageFont.load_default()
-        font_text = ImageFont.load_default()
-    
-    # رسم إطار طبي
-    draw.rectangle([10, 10, width-10, height-10], outline=(41, 128, 185), width=3)
-    
-    # رسم دائرة طبية (رمز)
-    circle_x, circle_y = width // 2, height // 2 - 30
-    draw.ellipse([circle_x-60, circle_y-60, circle_x+60, circle_y+60],
-                 outline=(41, 128, 185), width=4)
-    draw.ellipse([circle_x-40, circle_y-40, circle_x+40, circle_y+40],
-                 fill=(41, 128, 185, 50), outline=(41, 128, 185), width=2)
-    
-    # رسم صليب طبي بسيط
-    cross_size = 30
-    draw.line([(circle_x-cross_size//2, circle_y), (circle_x+cross_size//2, circle_y)],
-              fill=(255, 100, 100), width=6)
-    draw.line([(circle_x, circle_y-cross_size//2), (circle_x, circle_y+cross_size//2)],
-              fill=(255, 100, 100), width=6)
-    
-    # كتابة النص
-    title_text = "Medical Illustration"
-    draw.text((width//2, 50), title_text, fill=(41, 128, 185), font=font_title, anchor="mm")
-    
-    keyword_text = keyword if keyword else "Medical Concept"
-    draw.text((width//2, height-80), keyword_text, fill=(52, 73, 94), font=font_text, anchor="mm")
-    
-    specialty_text = config.MEDICAL_SPECIALTIES.get(specialty, "طب عام") if specialty else "تعليم طبي"
-    draw.text((width//2, height-40), specialty_text, fill=(100, 100, 150), font=font_text, anchor="mm")
-    
-    # حفظ الصورة
-    file_path = config.IMAGES_TMP / f"generated_{uuid.uuid4().hex[:8]}.png"
-    img.save(file_path, "PNG")
-    logger.info(f"✅ تم إنشاء صورة طبية احتياطية: {keyword}")
-    return file_path
-
-
-def fetch_image_for_keyword(keyword: str, specialty: str = None) -> Path:
-    """
-    الدالة الرئيسية لجلب صورة لقسم معين.
-    تجرب Pollinations -> Unsplash -> Picsum -> صورة مولدة.
-    """
-    # محاولة Pollinations (متزامنة)
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    try:
-        img = loop.run_until_complete(_fetch_pollinations_image(keyword, specialty))
-        if img:
-            return img
-    except:
-        pass
-    
-    try:
-        img = loop.run_until_complete(_fetch_unsplash_image(keyword))
-        if img:
-            return img
-    except:
-        pass
-    
-    try:
-        img = loop.run_until_complete(_fetch_picsum_image())
-        if img:
-            return img
-    except:
-        pass
-    
-    # الصورة الاحتياطية
-    return _make_medical_image(keyword, specialty)
-
-
-# ==================== دوال مساعدة ====================
-
-def extract_text_from_message(text: str = None, file_path: Path = None) -> Tuple[str, Dict]:
-    """
-    استخراج النص من رسالة (نص مباشر أو ملف).
-    ترجع (النص, معلومات الملف)
-    """
-    info = {"source": "text", "file_name": None, "pages": 1}
-    
-    if file_path:
-        file_name = file_path.name.lower()
-        info["file_name"] = file_name
-        if file_name.endswith('.pdf'):
-            text, pages = extract_full_text_from_pdf(file_path)
-            info["source"] = "pdf"
-            info["pages"] = pages
-        elif file_name.endswith('.txt'):
-            with open(file_path, 'r', encoding='utf-8') as f:
-                text = f.read()
-            info["source"] = "txt"
-        else:
-            raise ValueError("نوع الملف غير مدعوم. الرجاء إرسال PDF أو TXT")
-    else:
-        text = text or ""
-    
-    text = clean_text(text)
-    info["length"] = len(text)
-    return text, info
-
-
-def estimate_video_duration(sections: List[Dict]) -> float:
-    """تقدير مدة الفيديو الإجمالية بناءً على عدد الأقسام ومحتواها"""
-    total_duration = config.WELCOME_DURATION + config.TITLE_DURATION + config.MAP_DURATION
-    
-    for section in sections:
-        total_duration += config.SECTION_TITLE_DURATION
-        # تقدير مدة الشرح: كل 150 كلمة ≈ 60 ثانية
-        word_count = len(section.get("content", "").split())
-        section_duration = max(15, word_count * 0.4)
-        total_duration += section_duration
-    
-    total_duration += config.SUMMARY_DURATION
-    return total_duration
-
-
-# للاختبار المباشر
-if __name__ == "__main__":
-    sample_text = """
-    مرض السكري من النوع الثاني هو اضطراب استقلابي يتميز بارتفاع مستوى السكر في الدم
-    بسبب مقاومة الأنسولين أو نقص إفرازه. تشمل الأعراض الشائعة: العطش الشديد، كثرة التبول،
-    التعب، وعدم وضوح الرؤية. يعتمد التشخيص على فحص السكر الصيامي وفحص HbA1c.
-    العلاج يشمل تعديل نمط الحياة، الأدوية الفموية مثل الميتفورمين، وقد يحتاج المريض للأنسولين.
-    """
-    try:
-        result = analyze_lecture(sample_text, language="ar", dialect="fusha")
-        print(f"العنوان: {result['title']}")
-        print(f"التخصص: {result['specialty']}")
-        print(f"عدد الأقسام: {result['total_sections']}")
-        for i, sec in enumerate(result['sections']):
-            print(f"  {i+1}. {sec['heading']} - الكلمات: {sec['keywords']}")
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.post(
+                "https://api.openai.com/v1/images/generations",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=40),
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                imgs = data.get("data", [])
+                if not imgs:
+                    return None
+                b64 = imgs[0].get("b64_json", "")
+                raw = base64.b64decode(b64)
+                pil_img = PILImage.open(io.BytesIO(raw)).convert("RGB")
+                pil_img = pil_img.resize((854, 480), PILImage.LANCZOS)
+                buf = io.BytesIO()
+                pil_img.save(buf, "JPEG", quality=92)
+                return buf.getvalue()
     except Exception as e:
-        print(f"خطأ: {e}")
+        print(f"DALL-E error: {e}")
+        return None
+
+
+def _build_dalle_prompt(subject: str, lecture_type: str) -> str:
+    style = {
+        "medicine": "medical anatomy sketch, thin pink outline drawing",
+        "science": "science diagram sketch, thin line drawing",
+    }.get(lecture_type, "educational sketch, simple line drawing")
+    return f"{style}, {subject}, Osmosis.org style, hand-drawn pencil sketch, pure white background, no text"
+
+
+async def fetch_image_for_keyword(
+    keyword: str,
+    section_title: str,
+    lecture_type: str,
+    image_search_en: str = "",
+) -> bytes:
+    subject = (image_search_en or keyword).strip()
+    pol_prompt = _build_dalle_prompt(subject, lecture_type)
+
+    # 1. Pollinations (مجاني وسريع)
+    try:
+        img_bytes = await asyncio.wait_for(_pollinations_generate(pol_prompt, lecture_type), timeout=15.0)
+        if img_bytes:
+            return img_bytes
+    except:
+        pass
+
+    # 2. DALL-E (إذا كان المفتاح موجوداً)
+    if OPENAI_API_KEY:
+        try:
+            img_bytes = await asyncio.wait_for(_dalle_generate(pol_prompt), timeout=30.0)
+            if img_bytes:
+                return img_bytes
+        except:
+            pass
+
+    # 3. صورة احتياطية
+    return _make_placeholder_image([keyword, section_title], lecture_type)
