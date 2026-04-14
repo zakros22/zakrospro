@@ -12,7 +12,7 @@ import io
 import aiohttp
 import random
 from datetime import datetime
-from PIL import Image as PILImage, ImageDraw, ImageFont
+from PIL import Image as PILImage, ImageDraw, ImageFont, ImageFilter
 
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
@@ -33,7 +33,6 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID", "7021542402"))
 DEEPSEEK_KEYS = [k.strip() for k in os.getenv("DEEPSEEK_API_KEYS", "").split(",") if k.strip()]
 GEMINI_KEYS = [k.strip() for k in os.getenv("GOOGLE_API_KEYS", "").split(",") if k.strip()]
-ELEVENLABS_KEYS = [k.strip() for k in os.getenv("ELEVENLABS_API_KEYS", "").split(",") if k.strip()]
 
 TEMP_DIR = "/tmp/telegram_bot"
 os.makedirs(TEMP_DIR, exist_ok=True)
@@ -44,28 +43,7 @@ active_jobs = {}
 cancel_flags = {}
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  لوحات المفاتيح
-# ══════════════════════════════════════════════════════════════════════════════
-def main_keyboard():
-    return ReplyKeyboardMarkup(
-        [["📤 رفع محاضرة", "📊 رصيدي"], ["🔗 رابط الإحالة", "❓ مساعدة"]],
-        resize_keyboard=True
-    )
-
-DIALECT_KB = InlineKeyboardMarkup([
-    [InlineKeyboardButton("🇮🇶 عراقي", callback_data="dial_iraq"),
-     InlineKeyboardButton("🇪🇬 مصري", callback_data="dial_egypt")],
-    [InlineKeyboardButton("🇸🇾 شامي", callback_data="dial_syria"),
-     InlineKeyboardButton("🇸🇦 خليجي", callback_data="dial_gulf")],
-    [InlineKeyboardButton("📚 فصحى", callback_data="dial_msa")]
-])
-
-CANCEL_KB = InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="cancel_job")]])
-
-DIALECT_NAMES = {"iraq": "🇮🇶 عراقي", "egypt": "🇪🇬 مصري", "syria": "🇸🇾 شامي", "gulf": "🇸🇦 خليجي", "msa": "📚 فصحى"}
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  قاعدة بيانات بسيطة (مؤقتة)
+#  قاعدة بيانات SQLite بسيطة
 # ══════════════════════════════════════════════════════════════════════════════
 import sqlite3
 DB_PATH = os.path.join(TEMP_DIR, "bot.db")
@@ -105,6 +83,27 @@ def use_attempt(uid):
 init_db()
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  لوحات المفاتيح
+# ══════════════════════════════════════════════════════════════════════════════
+def main_keyboard():
+    return ReplyKeyboardMarkup(
+        [["📤 رفع محاضرة", "📊 رصيدي"], ["🔗 رابط الإحالة", "❓ مساعدة"]],
+        resize_keyboard=True
+    )
+
+DIALECT_KB = InlineKeyboardMarkup([
+    [InlineKeyboardButton("🇮🇶 عراقي", callback_data="dial_iraq"),
+     InlineKeyboardButton("🇪🇬 مصري", callback_data="dial_egypt")],
+    [InlineKeyboardButton("🇸🇾 شامي", callback_data="dial_syria"),
+     InlineKeyboardButton("🇸🇦 خليجي", callback_data="dial_gulf")],
+    [InlineKeyboardButton("📚 فصحى", callback_data="dial_msa")]
+])
+
+CANCEL_KB = InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="cancel_job")]])
+
+DIALECT_NAMES = {"iraq": "🇮🇶 عراقي", "egypt": "🇪🇬 مصري", "syria": "🇸🇾 شامي", "gulf": "🇸🇦 خليجي", "msa": "📚 فصحى"}
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  دوال مساعدة
 # ══════════════════════════════════════════════════════════════════════════════
 def pbar(pct, w=10):
@@ -123,7 +122,7 @@ async def safe_edit(msg, text, markup=None):
         pass
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  تحليل المحاضرة باستخدام DeepSeek أو Gemini
+#  استدعاء AI للتحليل
 # ══════════════════════════════════════════════════════════════════════════════
 async def call_ai(prompt):
     # DeepSeek أولاً
@@ -153,66 +152,89 @@ async def call_ai(prompt):
 
 def detect_subject(text):
     text_l = text.lower()
-    subjects = {"طب": "medicine", "رياضيات": "math", "فيزياء": "physics", "كيمياء": "chemistry", "هندسة": "engineering", "برمجة": "computer", "تاريخ": "history", "أدب": "literature", "اقتصاد": "business"}
+    subjects = {
+        "طب": "medicine", "مرض": "medicine", "جراحة": "medicine", "ولادة": "medicine", "قيصرية": "medicine",
+        "رياضيات": "math", "معادلة": "math", "هندسة": "engineering", "بناء": "engineering",
+        "فيزياء": "physics", "كيمياء": "chemistry", "برمجة": "computer", "تاريخ": "history"
+    }
     for ar, en in subjects.items():
         if ar in text_l or en in text_l:
             return en
     return "science"
 
 def local_analyze(text, dialect):
-    """تحليل محلي احتياطي سريع."""
-    # تنظيف النص
+    """تحليل محلي احتياطي."""
     text = re.sub(r'\s+', ' ', text).strip()
     
-    # تقسيم إلى جمل
-    sentences = re.split(r'(?<=[.!?؟])\s+', text)
-    
-    # تجميع الجمل في 3-4 أقسام
+    # تقسيم النص إلى أقسام بناءً على العناوين أو الفقرات
     sections = []
-    chunk_size = max(3, len(sentences) // 3)
+    lines = text.split('\n')
     
-    for i in range(0, min(len(sentences), chunk_size * 4), chunk_size):
-        chunk = ' '.join(sentences[i:i+chunk_size])
-        if len(chunk) > 100:
-            title = chunk.split('.')[0][:40]
-            sections.append({
-                "title": f"القسم {len(sections)+1}: {title}",
-                "narration": chunk[:600]
-            })
+    current_section = {"title": "مقدمة", "content": "", "keywords": []}
     
-    if not sections:
-        sections = [{"title": "المحتوى الرئيسي", "narration": text[:600]}]
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # اكتشاف العناوين (أسطر قصيرة أو تحتوي على كلمات مفتاحية)
+        if len(line) < 60 and (':' in line or any(kw in line.lower() for kw in ['مقدمه', 'مقدمة', 'تعريف', 'أنواع', 'أسباب', 'دواعي', 'مضاعفات', 'علاج', 'خلاصة'])):
+            if current_section["content"]:
+                sections.append(current_section)
+            current_section = {"title": line[:50], "content": "", "keywords": []}
+        else:
+            current_section["content"] += line + " "
+            
+        # استخراج كلمات مفتاحية
+        words = re.findall(r'[\u0600-\u06FF]{4,}|[A-Za-z]{4,}', line)
+        for w in words[:3]:
+            if w not in current_section["keywords"]:
+                current_section["keywords"].append(w)
+    
+    if current_section["content"]:
+        sections.append(current_section)
+    
+    # تنظيف
+    clean_sections = []
+    for i, sec in enumerate(sections[:5]):
+        clean_sections.append({
+            "title": sec["title"],
+            "narration": sec["content"][:600],
+            "keywords": sec["keywords"][:4]
+        })
+    
+    if not clean_sections:
+        clean_sections = [{"title": "المحتوى الرئيسي", "narration": text[:600], "keywords": ["مصطلح1", "مصطلح2"]}]
     
     return {
         "title": "ملخص المحاضرة",
-        "sections": sections[:4],
+        "sections": clean_sections,
         "lecture_type": detect_subject(text)
     }
 
 async def analyze_lecture(text, dialect):
-    """تحليل النص إلى أقسام."""
+    """تحليل النص إلى أقسام مع كلمات مفتاحية."""
     is_arabic = dialect != "english"
     subject = detect_subject(text)
-    
-    word_count = len(text.split())
-    num_sections = 3 if word_count < 600 else 4 if word_count < 1200 else 5
     
     text_sample = text[:3500]
     
     if is_arabic:
-        prompt = f"""حلل النص التالي إلى {num_sections} أقسام تعليمية. لكل قسم اكتب:
-1. عنوان واضح وجذاب
-2. شرح مبسط وممتع (200-300 كلمة) باللهجة {DIALECT_NAMES.get(dialect, 'الفصحى')}
+        prompt = f"""أنت محلل محتوى تعليمي. حلل النص التالي إلى 3-5 أقسام.
+
+المطلوب لكل قسم:
+1. title: عنوان القسم
+2. keywords: 3-4 كلمات مفتاحية (مصطلحات مهمة)
+3. narration: شرح مبسط للقسم (200-300 كلمة) باللهجة {DIALECT_NAMES.get(dialect, 'الفصحى')}
 
 النص:
 {text_sample}
 
 أرجع JSON فقط:
-{{"title": "عنوان المحاضرة", "sections": [{{"title": "عنوان القسم", "narration": "الشرح..."}}]}}"""
+{{"title": "عنوان المحاضرة", "sections": [{{"title": "عنوان القسم", "keywords": ["مصطلح1", "مصطلح2"], "narration": "الشرح..."}}]}}"""
     else:
-        prompt = f"""Analyze this text into {num_sections} sections. Return JSON:
-{{"title": "Title", "sections": [{{"title": "Section title", "narration": "Explanation..."}}]}}
-
+        prompt = f"""Analyze this text into 3-5 sections. Return JSON:
+{{"title": "Title", "sections": [{{"title": "Section", "keywords": ["term1", "term2"], "narration": "explanation..."}}]}}
 Text: {text_sample}"""
 
     try:
@@ -226,100 +248,159 @@ Text: {text_sample}"""
     except:
         pass
     
-    # تحليل محلي احتياطي
     return local_analyze(text, dialect)
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  توليد الصور الكرتونية
+#  إنشاء صورة كرت تعليمي احترافية (مثل الصور اللي أرسلتها)
 # ══════════════════════════════════════════════════════════════════════════════
-async def generate_cartoon_image(title, subject, is_arabic):
-    """توليد صورة كرتونية خرافية."""
-    
-    # وصف الصورة حسب المادة
-    styles = {
-        "medicine": "cute cartoon doctor in magical clinic, fantasy medical illustration",
-        "math": "cute math wizard with floating numbers, magical geometry",
-        "physics": "cute scientist with magical physics, floating planets",
-        "chemistry": "cute chemist with magical potions, colorful laboratory",
-        "engineering": "cute engineer building magical bridge, fantasy construction",
-        "computer": "cute robot with magical code, fantasy programming",
-        "history": "cute time traveler in ancient magical kingdom",
-        "literature": "cute writer with magical flying books",
-        "business": "cute merchant in magical marketplace",
-        "science": "cute scientist in magical laboratory"
-    }
-    style = styles.get(subject, "cute teacher in magical classroom, fantasy education")
-    
-    prompt = f"{style}, about {title[:40]}, whimsical storybook art, bright colors, simple clean design, no text"
-    
-    # Pollinations.ai
-    import urllib.parse
-    seed = random.randint(1, 99999)
-    url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt[:250])}?width=854&height=480&seed={seed}&model=flux&nologo=true"
-    
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.get(url, timeout=20) as r:
-                if r.status == 200:
-                    data = await r.read()
-                    if len(data) > 5000:
-                        img = PILImage.open(io.BytesIO(data)).convert("RGB")
-                        img = img.resize((854, 480), PILImage.LANCZOS)
-                        buf = io.BytesIO()
-                        img.save(buf, "JPEG", quality=90)
-                        return buf.getvalue()
-    except:
-        pass
-    
-    # صورة احتياطية
-    return create_fallback_image(title, subject, is_arabic)
-
-def create_fallback_image(title, subject, is_arabic):
-    colors = [(20,30,80), (70,60,160), (255,200,50)]
+def create_educational_card(section_title, keywords, subject, section_num, total_sections):
+    """إنشاء كرت تعليمي احترافي يشبه الصور المرسلة."""
     W, H = 854, 480
-    img = PILImage.new("RGB", (W,H), colors[0])
+    
+    # ألوان حسب المادة
+    colors = {
+        "medicine": ((180, 30, 60), (220, 50, 80), (255, 220, 200)),
+        "science": ((20, 80, 120), (40, 140, 200), (220, 255, 200)),
+        "math": ((80, 30, 140), (130, 60, 200), (255, 220, 100)),
+        "engineering": ((20, 70, 100), (60, 130, 180), (255, 230, 150)),
+        "physics": ((30, 40, 120), (70, 100, 200), (200, 220, 255)),
+        "chemistry": ((100, 20, 90), (180, 40, 150), (255, 200, 220)),
+        "computer": ((20, 60, 100), (60, 130, 180), (200, 255, 150)),
+        "other": ((40, 40, 120), (100, 100, 200), (255, 200, 100))
+    }
+    primary, secondary, accent = colors.get(subject, colors["other"])
+    
+    # إنشاء الصورة
+    img = PILImage.new("RGB", (W, H), (248, 248, 250))
     draw = ImageDraw.Draw(img)
     
-    for y in range(H):
-        t = y/H
-        r = int(colors[0][0]*(1-t) + colors[1][0]*t)
-        g = int(colors[0][1]*(1-t) + colors[1][1]*t)
-        b = int(colors[0][2]*(1-t) + colors[1][2]*t)
-        draw.line([(0,y), (W,y)], fill=(r,g,b))
+    # شريط علوي
+    draw.rectangle([(0, 0), (W, 8)], fill=primary)
     
-    for _ in range(15):
-        x, y = random.randint(20,W-20), random.randint(20,H-20)
-        s = random.randint(3,8)
-        draw.ellipse([x-s,y-s,x+s,y+s], fill=(255,255,200))
+    # رأس الكرت - خلفية ملونة
+    draw.rectangle([(0, 8), (W, 70)], fill=primary)
     
-    short = title[:30]
-    if is_arabic:
+    # رقم القسم
+    try:
+        font_num = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
+    except:
+        font_num = ImageFont.load_default()
+    draw.text((20, 15), f"{section_num}/{total_sections}", fill=(255,255,255,180), font=font_num)
+    
+    # عنوان القسم
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        title_display = get_display(arabic_reshaper.reshape(section_title[:40]))
+    except:
+        title_display = section_title[:40]
+    
+    try:
+        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 24)
+    except:
+        font_title = ImageFont.load_default()
+    
+    bbox = draw.textbbox((0,0), title_display, font=font_title)
+    tw = bbox[2] - bbox[0]
+    draw.text(((W-tw)//2, 25), title_display, fill=(255,255,255), font=font_title)
+    
+    # خط تحت العنوان
+    draw.rectangle([(W//4, 65), (W*3//4, 68)], fill=accent)
+    
+    # منطقة المحتوى - خلفية فاتحة
+    draw.rectangle([(20, 85), (W-20, H-20)], fill=(255, 255, 255), outline=secondary, width=2)
+    
+    # عنوان "مصطلحات رئيسية"
+    try:
+        font_label = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
+    except:
+        font_label = ImageFont.load_default()
+    
+    label = "📌 مصطلحات رئيسية:"
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        label_display = get_display(arabic_reshaper.reshape(label))
+    except:
+        label_display = label
+    
+    draw.text((40, 100), label_display, fill=primary, font=font_label)
+    
+    # المصطلحات
+    try:
+        font_kw = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 15)
+    except:
+        font_kw = ImageFont.load_default()
+    
+    y = 135
+    for i, kw in enumerate(keywords[:6]):
+        if not kw:
+            continue
+        
         try:
             import arabic_reshaper
             from bidi.algorithm import get_display
-            short = get_display(arabic_reshaper.reshape(short))
+            kw_display = get_display(arabic_reshaper.reshape(f"• {kw}"))
         except:
-            pass
+            kw_display = f"• {kw}"
+        
+        # توزيع المصطلحات في عمودين
+        if i % 2 == 0:
+            x = 50
+        else:
+            x = W//2 + 20
+        
+        draw.text((x, y), kw_display, fill=(60, 60, 80), font=font_kw)
+        
+        if i % 2 == 1:
+            y += 40
     
+    # رسم توضيحي بسيط حسب المادة
+    icon_y = H - 120
+    
+    if subject == "medicine":
+        # رسم رمز طبي
+        draw.ellipse([W-120, icon_y, W-40, icon_y+80], outline=primary, width=3)
+        draw.line([W-80, icon_y+20, W-80, icon_y+60], fill=primary, width=3)
+        draw.line([W-60, icon_y+40, W-100, icon_y+40], fill=primary, width=3)
+    elif subject == "math":
+        # رسم معادلة
+        draw.text((W-150, icon_y+20), "f(x) = x² + 2x + 1", fill=primary, font=font_kw)
+    elif subject == "science":
+        # رسم دورق
+        draw.ellipse([W-100, icon_y+20, W-50, icon_y+70], outline=primary, width=2)
+        draw.rectangle([W-85, icon_y-10, W-65, icon_y+20], outline=primary, width=2)
+    else:
+        # رسم نجمة
+        for i in range(5):
+            angle = i * 72 - 90
+            import math
+            x1 = W-80 + 30 * math.cos(math.radians(angle))
+            y1 = icon_y+40 + 30 * math.sin(math.radians(angle))
+            x2 = W-80 + 15 * math.cos(math.radians(angle+36))
+            y2 = icon_y+40 + 15 * math.sin(math.radians(angle+36))
+            draw.line([x1, y1, x2, y2], fill=accent, width=3)
+    
+    # شريط سفلي
+    draw.rectangle([(0, H-6), (W, H)], fill=primary)
+    
+    # علامة مائية
     try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 35)
+        font_wm = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 11)
     except:
-        font = ImageFont.load_default()
+        font_wm = ImageFont.load_default()
+    draw.text((W-130, H-20), "@zakros_probot", fill=(150, 150, 170), font=font_wm)
     
-    bbox = draw.textbbox((0,0), short, font=font)
-    tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
-    draw.text(((W-tw)//2, (H-th)//2), short, fill=(255,255,255), font=font)
-    draw.rectangle([15,15,W-15,H-15], outline=colors[2], width=4)
-    
-    buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=90)
-    return buf.getvalue()
+    # حفظ
+    fd, path = tempfile.mkstemp(suffix=".jpg")
+    os.close(fd)
+    img.save(path, "JPEG", quality=92)
+    return path
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  توليد الصوت
 # ══════════════════════════════════════════════════════════════════════════════
 async def generate_audio(text, dialect):
-    # gTTS مجاني
     try:
         from gtts import gTTS
         lang = "ar" if dialect != "english" else "en"
@@ -336,67 +417,16 @@ async def generate_audio(text, dialect):
         return None
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  إنشاء الفيديو
+#  إنشاء شريحة فيديو من الصورة
 # ══════════════════════════════════════════════════════════════════════════════
-def create_video_slide(img_bytes, title, idx, is_arabic):
-    """إنشاء شريحة فيديو: صورة تملىء الشاشة مع عنوان."""
-    W, H = 854, 480
-    accent = [(100,180,255), (100,220,160), (255,180,80), (220,120,255), (255,120,120)][idx % 5]
-    
-    # خلفية الصورة
-    if img_bytes:
-        try:
-            canvas = PILImage.open(io.BytesIO(img_bytes)).convert("RGB")
-            canvas = canvas.resize((W, H), PILImage.LANCZOS)
-        except:
-            canvas = PILImage.new("RGB", (W,H), (30,30,60))
-    else:
-        canvas = PILImage.new("RGB", (W,H), (30,30,60))
-    
-    draw = ImageDraw.Draw(canvas)
-    
-    # شريط العنوان في الأعلى
-    overlay = PILImage.new("RGBA", (W, 50), (0,0,0,180))
-    canvas.paste(overlay, (0, 0), overlay)
-    
-    # العنوان
-    short_title = title[:45]
-    if is_arabic:
-        try:
-            import arabic_reshaper
-            from bidi.algorithm import get_display
-            short_title = get_display(arabic_reshaper.reshape(short_title))
-        except:
-            pass
-    
-    try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22)
-    except:
-        font = ImageFont.load_default()
-    
-    draw = ImageDraw.Draw(canvas)
-    draw.rectangle([0, 0, W, 4], fill=accent)
-    bbox = draw.textbbox((0,0), short_title, font=font)
-    tw = bbox[2] - bbox[0]
-    draw.text(((W-tw)//2, 12), short_title, fill=(255,255,255), font=font)
-    
-    # علامة مائية
-    try:
-        font2 = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
-    except:
-        font2 = ImageFont.load_default()
-    draw.text((W-120, H-20), "@zakros_probot", fill=(200,200,200), font=font2)
-    
-    fd, path = tempfile.mkstemp(suffix=".jpg")
-    os.close(fd)
-    canvas.save(path, "JPEG", quality=90)
-    return path
+def create_video_frame(img_path):
+    """تجهيز الصورة للفيديو."""
+    return img_path
 
 def encode_video(segments, audio_paths, output):
     """تشفير الفيديو."""
     import subprocess
     
-    # إنشاء فيديو لكل شريحة
     video_segments = []
     for i, (img, dur) in enumerate(segments):
         seg_out = tempfile.mktemp(suffix=".mp4")
@@ -413,7 +443,6 @@ def encode_video(segments, audio_paths, output):
         ]
         subprocess.run(cmd, capture_output=True)
     
-    # دمج المقاطع
     lst = tempfile.mktemp(suffix=".txt")
     with open(lst, "w") as f:
         for v in video_segments:
@@ -421,7 +450,6 @@ def encode_video(segments, audio_paths, output):
     
     subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", output], capture_output=True)
     
-    # تنظيف
     for v in video_segments:
         try:
             os.remove(v)
@@ -443,7 +471,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"👋 *أهلاً {name}!*\n\n"
         f"🎓 أنا *بوت المحاضرات الذكي*\n"
-        f"أحوّل محاضرتك إلى فيديو تعليمي بصوت وصور كرتونية!\n\n"
+        f"أحوّل محاضرتك إلى فيديو تعليمي بصور احترافية وصوت!\n\n"
         f"📤 أرسل ملف PDF أو نص المحاضرة للبدء.\n\n"
         f"🎁 لديك *{user['attempts_left']}* محاولة مجانية.",
         parse_mode="Markdown",
@@ -454,9 +482,7 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     msg = update.message
     
-    user = get_user(uid)
-    if not user:
-        user = create_user(uid)
+    user = get_user(uid) or create_user(uid)
     
     if user["is_banned"]:
         await msg.reply_text("⛔ أنت محظور.")
@@ -470,7 +496,6 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("⏳ لديك معالجة جارية...")
         return
     
-    # استخراج النص
     text = None
     if msg.document:
         doc = msg.document
@@ -496,8 +521,8 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
     elif msg.text:
         text = msg.text.strip()
-        if len(text) < 100:
-            await msg.reply_text("⚠️ النص قصير جداً (أقل من 100 حرف)")
+        if len(text) < 50:
+            await msg.reply_text("⚠️ النص قصير جداً")
             return
     else:
         return
@@ -576,22 +601,26 @@ async def process_lecture(uid, text, dialect, msg, context, cancel_ev):
     data = await analyze_lecture(text, dialect)
     sections = data.get("sections", [])
     subject = data.get("lecture_type", "science")
-    is_arabic = dialect != "english"
+    lecture_title = data.get("title", "المحاضرة")
     
     if not sections:
         raise Exception("لم يتم استخراج أقسام")
     
     await update(20, f"✅ تم التحليل إلى {len(sections)} أقسام")
     
-    # 2. صور لكل قسم
+    # 2. إنشاء صور كروت تعليمية لكل قسم
     images = []
     for i, sec in enumerate(sections):
         if cancel_ev.is_set():
             raise asyncio.CancelledError()
-        await update(25 + i*10, f"🎨 رسم الصورة الكرتونية للقسم {i+1}...")
-        img = await generate_cartoon_image(sec.get("title", ""), subject, is_arabic)
-        images.append(img)
-        sec["_image"] = img
+        await update(25 + i*10, f"🎨 تصميم الكرت التعليمي للقسم {i+1}...")
+        
+        keywords = sec.get("keywords", [])
+        title = sec.get("title", f"القسم {i+1}")
+        
+        img_path = create_educational_card(title, keywords, subject, i+1, len(sections))
+        images.append(img_path)
+        sec["_image_path"] = img_path
     
     # 3. صوت لكل قسم
     audios = []
@@ -601,7 +630,8 @@ async def process_lecture(uid, text, dialect, msg, context, cancel_ev):
             raise asyncio.CancelledError()
         await update(55 + i*8, f"🎤 توليد الصوت للقسم {i+1}...")
         
-        audio_bytes = await generate_audio(sec.get("narration", ""), dialect)
+        narration = sec.get("narration", "")
+        audio_bytes = await generate_audio(narration, dialect)
         audios.append(audio_bytes)
         
         if audio_bytes:
@@ -613,20 +643,15 @@ async def process_lecture(uid, text, dialect, msg, context, cancel_ev):
         else:
             audio_paths.append(None)
     
-    # 4. إنشاء شرائح الفيديو
+    # 4. تجهيز الفيديو
     await update(85, "🎬 تجهيز الفيديو...")
     
     segments = []
-    tmp_images = []
-    
     for i, sec in enumerate(sections):
-        img_path = create_video_slide(sec["_image"], sec.get("title", f"قسم {i+1}"), i, is_arabic)
-        tmp_images.append(img_path)
-        
-        dur = max(len(sec.get("narration", "")) // 12, 10)
-        segments.append((img_path, dur))
+        dur = max(len(sec.get("narration", "")) // 12, 8)
+        segments.append((sec["_image_path"], dur))
     
-    # 5. تشفير الفيديو
+    # 5. تشفير
     await update(90, "🎥 تشفير الفيديو...")
     
     fd, video_path = tempfile.mkstemp(suffix=".mp4")
@@ -636,13 +661,13 @@ async def process_lecture(uid, text, dialect, msg, context, cancel_ev):
         None, encode_video, segments, audio_paths, video_path
     )
     
-    # 6. خصم المحاولة وإرسال
+    # 6. خصم وإرسال
     use_attempt(uid)
     user = get_user(uid)
     
     await update(99, "📤 جاري الإرسال...")
     
-    caption = f"🎬 *{data.get('title', 'المحاضرة')}*\n📚 {len(sections)} أقسام\n⏱️ {fmt_time(time.time()-t0)}\n💳 متبقي: {user['attempts_left']}"
+    caption = f"🎬 *{lecture_title}*\n📚 {len(sections)} أقسام\n⏱️ {fmt_time(time.time()-t0)}\n💳 متبقي: {user['attempts_left']}"
     
     with open(video_path, "rb") as vf:
         await context.bot.send_video(uid, vf, caption=caption, parse_mode="Markdown")
@@ -651,11 +676,22 @@ async def process_lecture(uid, text, dialect, msg, context, cancel_ev):
     await context.bot.send_message(uid, "✅ *تم بنجاح!* 🎉", parse_mode="Markdown", reply_markup=main_keyboard())
     
     # تنظيف
-    for p in tmp_images + audio_paths + [video_path]:
+    for sec in sections:
         try:
-            os.remove(p)
+            if "_image_path" in sec:
+                os.remove(sec["_image_path"])
         except:
             pass
+    for ap in audio_paths:
+        try:
+            if ap:
+                os.remove(ap)
+        except:
+            pass
+    try:
+        os.remove(video_path)
+    except:
+        pass
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -669,7 +705,7 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"💳 رصيدك: *{user['attempts_left']}* محاولة", parse_mode="Markdown")
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📖 أرسل PDF أو نص للمحاضرة وسأحوّله لفيديو تعليمي!")
+    await update.message.reply_text("📖 أرسل PDF أو نص للمحاضرة وسأحوّله لفيديو تعليمي بصور احترافية!")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  تشغيل البوت
