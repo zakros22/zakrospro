@@ -1,425 +1,431 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import json
-import re
-import io
 import asyncio
-import aiohttp
-import random
+import io
 import os
+import subprocess
+import tempfile
+from typing import Callable, Awaitable
 from PIL import Image as PILImage, ImageDraw, ImageFont
-from google import genai
-from google.genai import types as genai_types
-from config import (
-    DEEPSEEK_API_KEYS, GEMINI_API_KEYS, OPENROUTER_API_KEYS, GROQ_API_KEYS, OPENAI_API_KEY
-)
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  نظام تبادل المفاتيح
+#  الإعدادات
 # ══════════════════════════════════════════════════════════════════════════════
+TARGET_W, TARGET_H = 854, 480
+WATERMARK = "@zakros_probot"
 
-class QuotaExhaustedError(Exception):
-    pass
+# الخطوط
+FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+_FONTS_DIR = os.path.join(os.path.dirname(__file__), "fonts")
+FONT_AR_BOLD = os.path.join(_FONTS_DIR, "Amiri-Bold.ttf")
+FONT_AR_REG = os.path.join(_FONTS_DIR, "Amiri-Regular.ttf")
 
+# إعدادات التشفير
+_ENC_FACTOR = 0.4
+_MIN_ENC_SEC = 10.0
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  اكتشاف نوع المادة
-# ══════════════════════════════════════════════════════════════════════════════
+# مدد الشرائح
+_INTRO_DUR = 6.0
+_SECTION_TITLE_DUR = 3.0
+_SUMMARY_DUR = 6.0
 
-def _detect_subject(text: str) -> str:
-    text_lower = text.lower()
-    subjects = {
-        "medicine": ["طب", "مرض", "علاج", "طبيب", "مريض", "جراحة", "medicine", "disease", "treatment", "doctor"],
-        "physics": ["فيزياء", "قوة", "حركة", "طاقة", "كهرباء", "physics", "force", "energy"],
-        "chemistry": ["كيمياء", "تفاعل", "عنصر", "مركب", "chemistry", "reaction"],
-        "math": ["رياضيات", "معادلة", "حساب", "جبر", "math", "equation", "algebra"],
-        "engineering": ["هندسة", "بناء", "تصميم", "engineering", "design"],
-        "computer": ["برمجة", "حاسوب", "خوارزمية", "computer", "programming"],
-        "history": ["تاريخ", "حرب", "حضارة", "history", "war"],
-        "literature": ["أدب", "شعر", "رواية", "literature", "poetry"],
-        "business": ["إدارة", "اقتصاد", "تسويق", "business", "management"],
-        "science": ["علوم", "أحياء", "نبات", "science", "biology"],
-    }
-    for subject, keywords in subjects.items():
-        if any(kw in text_lower for kw in keywords):
-            return subject
-    return "other"
+# ألوان
+ACCENT_COLORS = [
+    (100, 180, 255), (100, 220, 160), (255, 180, 80),
+    (220, 120, 255), (255, 120, 120), (80, 220, 220),
+    (255, 200, 100), (160, 255, 160),
+]
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  دوال التوليد
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def _generate_with_deepseek(prompt: str) -> str:
-    if not DEEPSEEK_API_KEYS:
-        raise QuotaExhaustedError("لا توجد مفاتيح")
-    for key in DEEPSEEK_API_KEYS:
-        try:
-            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-            payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "max_tokens": 6000, "temperature": 0.5}
-            async with aiohttp.ClientSession() as session:
-                async with session.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=120) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return data["choices"][0]["message"]["content"].strip()
-        except:
-            continue
-    raise QuotaExhaustedError("DeepSeek فشل")
+def estimate_encoding_seconds(total_video_seconds: float) -> float:
+    return max(_MIN_ENC_SEC, total_video_seconds * _ENC_FACTOR)
 
 
-async def _generate_with_gemini(prompt: str) -> str:
-    if not GEMINI_API_KEYS:
-        raise QuotaExhaustedError("لا توجد مفاتيح")
-    for key in GEMINI_API_KEYS:
-        try:
-            client = genai.Client(api_key=key)
-            response = await asyncio.to_thread(client.models.generate_content, model="gemini-2.0-flash", contents=prompt, config=genai_types.GenerateContentConfig(temperature=0.5, max_output_tokens=6000))
-            return response.text.strip()
-        except:
-            continue
-    raise QuotaExhaustedError("Gemini فشل")
-
-
-async def _generate_with_openrouter(prompt: str) -> str:
-    if not OPENROUTER_API_KEYS:
-        raise QuotaExhaustedError("لا توجد مفاتيح")
-    for key in OPENROUTER_API_KEYS:
-        try:
-            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json", "HTTP-Referer": "https://lecture-bot.com"}
-            payload = {"model": "google/gemini-2.0-flash-exp:free", "messages": [{"role": "user", "content": prompt}], "max_tokens": 6000}
-            async with aiohttp.ClientSession() as session:
-                async with session.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=120) as resp:
-                    if resp.status == 200:
-                        return await resp.json()["choices"][0]["message"]["content"].strip()
-        except:
-            continue
-    raise QuotaExhaustedError("OpenRouter فشل")
-
-
-async def _generate_with_groq(prompt: str) -> str:
-    if not GROQ_API_KEYS:
-        raise QuotaExhaustedError("لا توجد مفاتيح")
-    for key in GROQ_API_KEYS:
-        try:
-            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-            payload = {"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}], "max_tokens": 6000}
-            async with aiohttp.ClientSession() as session:
-                async with session.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=90) as resp:
-                    if resp.status == 200:
-                        return await resp.json()["choices"][0]["message"]["content"].strip()
-        except:
-            continue
-    raise QuotaExhaustedError("Groq فشل")
-
-
-async def _generate_with_rotation(prompt: str) -> str:
-    for func in [_generate_with_deepseek, _generate_with_gemini, _generate_with_openrouter, _generate_with_groq]:
-        try:
-            return await func(prompt)
-        except:
-            continue
-    raise QuotaExhaustedError("جميع المزودين فشلوا")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  تحليل محلي احتياطي (سريع ومضمون)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _local_analyze(text: str, dialect: str) -> dict:
-    """تحليل محلي يضمن نتيجة دائماً."""
-    is_english = dialect in ("english", "british")
-    subject = _detect_subject(text)
-    
-    # تنظيف النص وتقسيمه
-    text = re.sub(r'\s+', ' ', text).strip()
-    
-    # تقسيم إلى فقرات
-    paragraphs = []
-    for p in text.split('\n'):
-        p = p.strip()
-        if len(p) > 100:
-            paragraphs.append(p)
-    
-    if len(paragraphs) < 3:
-        words = text.split()
-        chunk_size = max(250, len(words) // 4)
-        for i in range(0, len(words), chunk_size):
-            chunk = ' '.join(words[i:i+chunk_size])
-            if len(chunk) > 50:
-                paragraphs.append(chunk)
-    
-    # أخذ أول 4 فقرات كأقسام
-    sections = []
-    for i, para in enumerate(paragraphs[:4]):
-        # استخراج عنوان من أول جملة
-        first_sent = para.split('.')[0].split('؟')[0].split('!')[0][:50]
-        
-        if is_english:
-            title = f"Section {i+1}: {first_sent}"
-            narration = para[:600]
-        else:
-            title = f"القسم {i+1}: {first_sent}"
-            narration = para[:600]
-        
-        sections.append({
-            "title": title,
-            "narration": narration,
-            "duration_estimate": max(30, len(narration) // 15)
-        })
-    
-    if not sections:
-        if is_english:
-            sections = [{"title": "Main Content", "narration": text[:600], "duration_estimate": 45}]
-        else:
-            sections = [{"title": "المحتوى الرئيسي", "narration": text[:600], "duration_estimate": 45}]
-    
-    return {
-        "lecture_type": subject,
-        "title": "Lecture Summary" if is_english else "ملخص المحاضرة",
-        "sections": sections,
-        "summary": text[:300],
-        "total_sections": len(sections)
-    }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  تحليل المحاضرة الرئيسي
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
-    """تحليل المحاضرة - كل قسم له عنوان ونص شرح."""
-    
-    is_english_output = dialect in ("english", "british")
-    subject = _detect_subject(text)
-    
-    # عدد الأقسام حسب طول النص (بحد أقصى 5 أقسام)
-    word_count = len(text.split())
-    if word_count < 400:
-        num_sections = 2
-    elif word_count < 800:
-        num_sections = 3
-    elif word_count < 1500:
-        num_sections = 4
-    else:
-        num_sections = 5
-    
-    text_limit = min(len(text), 4000)
-    
-    # لهجة الشرح
-    dialect_names = {
-        "iraq": "العراقية", "egypt": "المصرية", "syria": "الشامية",
-        "gulf": "الخليجية", "msa": "الفصحى"
-    }
-    dialect_name = dialect_names.get(dialect, "الفصحى")
-    
-    if is_english_output:
-        prompt = f"""Analyze this text and create a structured lecture with exactly {num_sections} sections.
-
-For each section provide:
-1. A clear section title
-2. A simplified narration in English (explain like a teacher to students, mention key terms with simple definitions)
-
-Text:
-{text[:text_limit]}
-
-Return ONLY valid JSON:
-{{
-  "title": "Lecture title",
-  "sections": [
-    {{"title": "Section 1 title", "narration": "Simplified explanation..."}},
-    {{"title": "Section 2 title", "narration": "Simplified explanation..."}}
-  ]
-}}"""
-    else:
-        prompt = f"""حلل هذا النص وأنشئ محاضرة تعليمية مكونة من {num_sections} أقسام بالضبط.
-
-المطلوب لكل قسم:
-1. عنوان واضح للقسم
-2. شرح مبسط باللهجة {dialect_name}. اشرح كمعلم لطلابه. اذكر المصطلحات المهمة مع شرحها.
-
-النص:
-{text[:text_limit]}
-
-أرجع JSON فقط:
-{{
-  "title": "عنوان المحاضرة",
-  "sections": [
-    {{"title": "عنوان القسم الأول", "narration": "الشرح المبسط باللهجة المطلوبة..."}},
-    {{"title": "عنوان القسم الثاني", "narration": "الشرح المبسط..."}}
-  ]
-}}"""
-
-    try:
-        content = await _generate_with_rotation(prompt)
-        content = re.sub(r'^```json\s*', '', content.strip())
-        content = re.sub(r'\s*```$', '', content)
-        
-        result = json.loads(content)
-        result["lecture_type"] = subject
-        
-        # إضافة مدة تقديرية لكل قسم
-        for section in result["sections"]:
-            narration_len = len(section.get("narration", ""))
-            section["duration_estimate"] = max(25, narration_len // 12)
-        
-        print(f"✅ تم التحليل: {len(result['sections'])} أقسام")
-        return result
-        
-    except Exception as e:
-        print(f"⚠️ استخدام التحليل المحلي: {e}")
-        return _local_analyze(text, dialect)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  استخراج النص من PDF
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
-    try:
-        import PyPDF2
-        reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
-        pages = [page.extract_text() or "" for page in reader.pages]
-        text = "\n\n".join(pages)
-        if len(text.strip()) < 50:
-            raise ValueError("النص قصير جداً")
+def _prepare_arabic_text(text: str) -> str:
+    if not text:
         return text
-    except Exception as e:
-        raise ValueError(f"فشل قراءة PDF: {e}")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  توليد صورة كرتونية خرافية واحدة لكل قسم
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _build_section_image_prompt(section_title: str, lecture_type: str, is_arabic: bool) -> str:
-    """بناء وصف لصورة كرتونية خرافية تلخص القسم بأكمله."""
-    
-    style = {
-        "medicine": "cute medical fantasy, magical healing, whimsical doctor and patient",
-        "science": "magical laboratory, fairy tale science, glowing potions",
-        "math": "floating magical numbers, fairy tale geometry, cute math wizard",
-        "physics": "cosmic magic, fairy tale physics, magical forces",
-        "chemistry": "magical potions, colorful smoke, cute chemistry set",
-        "engineering": "fairy tale construction, magical bridge, whimsical machine",
-        "computer": "magical circuit, cute robot, fairy tale coding",
-        "history": "fairy tale ancient scene, magical history, whimsical past",
-        "literature": "magical book, fairy tale story, whimsical words",
-        "business": "magical marketplace, fairy tale merchant, cute coins",
-        "other": "fairy tale classroom, magical learning, whimsical education"
-    }.get(lecture_type, "fairy tale education, magical learning, cute cartoon")
-    
-    # استخدام عنوان القسم لوصف الصورة
-    clean_title = section_title[:60].replace('"', '').replace("'", "")
-    
-    if is_arabic:
-        # للعربية نستخدم وصف إنجليزي بسيط
-        prompt = f"cute fantasy cartoon illustration about {clean_title}, {style}, whimsical storybook style, bright magical colors, simple clean design, no text no words"
-    else:
-        prompt = f"cute fantasy cartoon illustration about {clean_title}, {style}, whimsical storybook style, bright magical colors, simple clean design, no text no words"
-    
-    return prompt
-
-
-async def _generate_cartoon_image(prompt: str) -> bytes | None:
-    """توليد صورة كرتونية."""
-    import urllib.parse
-    seed = random.randint(1, 99999)
-    encoded = urllib.parse.quote(prompt[:300])
-    url = f"https://image.pollinations.ai/prompt/{encoded}?width=854&height=480&nologo=true&seed={seed}&model=flux"
-    
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-                if resp.status == 200:
-                    raw = await resp.read()
-                    if len(raw) > 5000:
-                        img = PILImage.open(io.BytesIO(raw)).convert("RGB")
-                        img = img.resize((854, 480), PILImage.LANCZOS)
-                        buf = io.BytesIO()
-                        img.save(buf, "JPEG", quality=90)
-                        print(f"✅ صورة كرتونية: {len(buf.getvalue())//1024}KB")
-                        return buf.getvalue()
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        return get_display(arabic_reshaper.reshape(text))
     except:
-        pass
-    return None
+        return text
 
 
-def _create_placeholder_image(title: str, lecture_type: str, is_arabic: bool) -> bytes:
-    """صورة احتياطية جميلة."""
-    colors = {
-        "medicine": ((180, 30, 80), (220, 100, 150), (255, 220, 100)),
-        "science": ((30, 100, 150), (100, 180, 220), (200, 255, 150)),
-        "math": ((80, 30, 150), (150, 100, 220), (255, 200, 100)),
-        "physics": ((20, 50, 120), (80, 150, 250), (255, 150, 200)),
-        "chemistry": ((100, 20, 100), (200, 80, 180), (150, 255, 200)),
-        "other": ((40, 40, 120), (100, 100, 200), (255, 200, 100)),
-    }
-    bg1, bg2, accent = colors.get(lecture_type, colors["other"])
+def _get_font(size: int, bold: bool = False, arabic: bool = False):
+    if arabic:
+        path = FONT_AR_BOLD if bold else FONT_AR_REG
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except:
+                pass
+    path = FONT_BOLD if bold else FONT_REG
+    try:
+        return ImageFont.truetype(path, size)
+    except:
+        return ImageFont.load_default()
+
+
+def _draw_text_centered(draw, text: str, y: int, font, color, is_arabic: bool = False):
+    display = _prepare_arabic_text(text) if is_arabic else text
+    try:
+        bbox = draw.textbbox((0, 0), display, font=font)
+        tw = bbox[2] - bbox[0]
+    except:
+        tw = len(display) * (font.size // 2)
+    x = max((TARGET_W - tw) // 2, 10)
+    draw.text((x+2, y+2), display, fill=(0,0,0,140), font=font)
+    draw.text((x, y), display, fill=color, font=font)
+
+
+def _gradient_bg(c1, c2):
+    bg = PILImage.new("RGB", (TARGET_W, TARGET_H), c1)
+    draw = ImageDraw.Draw(bg)
+    for y in range(TARGET_H):
+        t = y / TARGET_H
+        r = int(c1[0]*(1-t) + c2[0]*t)
+        g = int(c1[1]*(1-t) + c2[1]*t)
+        b = int(c1[2]*(1-t) + c2[2]*t)
+        draw.line([(0,y), (TARGET_W,y)], fill=(r,g,b))
+    return bg
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  شريحة المقدمة
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _draw_intro_slide(lecture_data: dict, sections: list, is_arabic: bool) -> str:
+    fd, path = tempfile.mkstemp(prefix="intro_", suffix=".jpg")
+    os.close(fd)
     
-    W, H = 854, 480
-    img = PILImage.new("RGB", (W, H), bg1)
-    draw = ImageDraw.Draw(img)
+    bg = _gradient_bg((10, 20, 50), (5, 40, 70))
+    draw = ImageDraw.Draw(bg)
     
-    # تدرج
-    for y in range(H):
-        t = y / H
-        r = int(bg1[0] * (1-t) + bg2[0] * t)
-        g = int(bg1[1] * (1-t) + bg2[1] * t)
-        b = int(bg1[2] * (1-t) + bg2[2] * t)
-        draw.line([(0, y), (W, y)], fill=(r, g, b))
+    draw.rectangle([(0, 0), (TARGET_W, 5)], fill=(220, 170, 30))
     
-    # نجوم
-    for _ in range(20):
-        x, y = random.randint(20, W-20), random.randint(20, H-20)
-        s = random.randint(3, 8)
-        draw.ellipse([x-s, y-s, x+s, y+s], fill=(255, 255, 200))
+    title = lecture_data.get("title", "المحاضرة" if is_arabic else "Lecture")
+    font = _get_font(26, bold=True, arabic=is_arabic)
+    _draw_text_centered(draw, title, 20, font, (255, 220, 80), is_arabic)
     
-    # عنوان مبسط
-    short_title = title[:30]
-    if is_arabic:
+    subtitle = "خريطة المحاضرة" if is_arabic else "Lecture Map"
+    font2 = _get_font(16, arabic=is_arabic)
+    _draw_text_centered(draw, subtitle, 65, font2, (180, 200, 230), is_arabic)
+    
+    draw.rectangle([(40, 85), (TARGET_W-40, 87)], fill=(220, 170, 30))
+    
+    # عرض الأقسام
+    y = 110
+    for i, sec in enumerate(sections[:6]):
+        accent = ACCENT_COLORS[i % len(ACCENT_COLORS)]
+        sec_title = sec.get("title", f"قسم {i+1}")[:40]
+        display = _prepare_arabic_text(f"{i+1}. {sec_title}") if is_arabic else f"{i+1}. {sec_title}"
+        font3 = _get_font(15, arabic=is_arabic)
+        draw.text((50, y), display, fill=accent, font=font3)
+        y += 55
+    
+    # علامة مائية
+    wm_font = _get_font(12)
+    draw.text((TARGET_W//2 - 50, TARGET_H-25), WATERMARK, fill=(140, 160, 190), font=wm_font)
+    
+    bg.save(path, "JPEG", quality=85)
+    return path
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  شريحة عنوان القسم
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _draw_section_title_card(section: dict, idx: int, total: int, is_arabic: bool) -> str:
+    fd, path = tempfile.mkstemp(prefix=f"sec_title_{idx}_", suffix=".jpg")
+    os.close(fd)
+    
+    accent = ACCENT_COLORS[idx % len(ACCENT_COLORS)]
+    bg = _gradient_bg((8, 15, 40), tuple(max(0, c-60) for c in accent))
+    draw = ImageDraw.Draw(bg)
+    
+    draw.rectangle([(0, 0), (TARGET_W, 6)], fill=accent)
+    draw.rectangle([(0, TARGET_H-6), (TARGET_W, TARGET_H)], fill=accent)
+    
+    # رقم القسم
+    cx, cy, cr = TARGET_W//2, TARGET_H//2 - 60, 45
+    draw.ellipse([cx-cr, cy-cr, cx+cr, cy+cr], fill=accent)
+    
+    num_font = _get_font(40, bold=True)
+    num_str = str(idx + 1)
+    bbox = draw.textbbox((0,0), num_str, font=num_font)
+    nw, nh = bbox[2]-bbox[0], bbox[3]-bbox[1]
+    draw.text((cx-nw//2, cy-nh//2), num_str, fill=(10,15,35), font=num_font)
+    
+    # "القسم"
+    label = f"القسم {idx+1}" if is_arabic else f"Section {idx+1}"
+    label_font = _get_font(18, arabic=is_arabic)
+    _draw_text_centered(draw, label, cy+cr+10, label_font, (200,220,255), is_arabic)
+    
+    # عنوان القسم
+    title = section.get("title", f"قسم {idx+1}")[:50]
+    title_font = _get_font(28, bold=True, arabic=is_arabic)
+    _draw_text_centered(draw, title, cy+cr+45, title_font, accent, is_arabic)
+    
+    # علامة مائية
+    wm_font = _get_font(12)
+    draw.text((TARGET_W//2 - 50, TARGET_H-25), WATERMARK, fill=(140,160,190), font=wm_font)
+    
+    bg.save(path, "JPEG", quality=85)
+    return path
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  شريحة المحتوى - صورة واحدة مع شرح
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _draw_content_slide(image_bytes: bytes, section: dict, idx: int, is_arabic: bool) -> str:
+    """شريحة المحتوى: صورة واحدة كبيرة تغطي كل القسم."""
+    fd, path = tempfile.mkstemp(prefix=f"content_{idx}_", suffix=".jpg")
+    os.close(fd)
+    
+    accent = ACCENT_COLORS[idx % len(ACCENT_COLORS)]
+    
+    # خلفية الفصل
+    canvas = PILImage.new("RGB", (TARGET_W, TARGET_H), (22, 35, 55))
+    draw = ImageDraw.Draw(canvas)
+    
+    # إطار السبورة
+    BM, FRAME = 10, 6
+    BX1, BY1 = BM+FRAME, BM+FRAME
+    BX2, BY2 = TARGET_W-BM-FRAME, TARGET_H-BM-FRAME
+    
+    # ظل
+    draw.rounded_rectangle([(BX1+4, BY1+4), (BX2+4, BY2+4)], radius=6, fill=(40, 30, 20))
+    # إطار
+    draw.rounded_rectangle([(BX1, BY1), (BX2, BY2)], radius=6, fill=(80, 60, 40))
+    # سبورة
+    draw.rounded_rectangle([(BX1+3, BY1+3), (BX2-3, BY2-3)], radius=4, fill=(252, 250, 240))
+    
+    # شريط عنوان القسم
+    title = section.get("title", f"قسم {idx+1}")[:40]
+    display_title = _prepare_arabic_text(title) if is_arabic else title
+    title_font = _get_font(18, bold=True, arabic=is_arabic)
+    
+    draw.rectangle([(BX1+3, BY1+3), (BX2-3, BY1+35)], fill=accent)
+    try:
+        tb = draw.textbbox((0,0), display_title, font=title_font)
+        tw = tb[2] - tb[0]
+    except:
+        tw = len(display_title) * 10
+    tx = (TARGET_W - tw) // 2
+    draw.text((tx, BY1+8), display_title, fill=(255,255,255), font=title_font)
+    
+    # منطقة الصورة (تأخذ معظم المساحة)
+    IMG_TOP = BY1 + 40
+    IMG_BOT = BY2 - 15
+    IMG_H = IMG_BOT - IMG_TOP
+    
+    if image_bytes:
         try:
-            import arabic_reshaper
-            from bidi.algorithm import get_display
-            short_title = get_display(arabic_reshaper.reshape(short_title))
+            img = PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
+            iw, ih = img.size
+            scale = min((BX2-BX1-20)/iw, IMG_H/ih)
+            nw, nh = int(iw*scale), int(ih*scale)
+            img = img.resize((nw, nh), PILImage.LANCZOS)
+            px = BX1 + (BX2-BX1 - nw)//2
+            py = IMG_TOP + (IMG_H - nh)//2
+            canvas.paste(img, (px, py))
         except:
             pass
     
+    # علامة مائية
+    draw = ImageDraw.Draw(canvas)
+    wm_font = _get_font(10)
+    draw.text((TARGET_W//2 - 40, BY2-8), WATERMARK, fill=(170, 175, 185), font=wm_font)
+    
+    canvas.save(path, "JPEG", quality=92)
+    return path
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  شريحة الملخص
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _draw_summary_slide(sections: list, lecture_data: dict, is_arabic: bool) -> str:
+    fd, path = tempfile.mkstemp(prefix="summary_", suffix=".jpg")
+    os.close(fd)
+    
+    canvas = PILImage.new("RGB", (TARGET_W, TARGET_H), (22, 35, 55))
+    draw = ImageDraw.Draw(canvas)
+    
+    BM = 10
+    draw.rounded_rectangle([(BM, BM), (TARGET_W-BM, TARGET_H-BM)], radius=8, fill=(252, 250, 240))
+    
+    # عنوان
+    title = "📋 ملخص المحاضرة" if is_arabic else "📋 Summary"
+    title_font = _get_font(22, bold=True, arabic=is_arabic)
+    _draw_text_centered(draw, title, BM+15, title_font, (28, 44, 68), is_arabic)
+    
+    draw.rectangle([(BM+10, BM+45), (TARGET_W-BM-10, BM+47)], fill=(220, 175, 40))
+    
+    # عرض الأقسام
+    y = BM + 65
+    for i, sec in enumerate(sections[:6]):
+        accent = ACCENT_COLORS[i % len(ACCENT_COLORS)]
+        sec_title = sec.get("title", f"قسم {i+1}")[:35]
+        display = _prepare_arabic_text(f"✓ {sec_title}") if is_arabic else f"✓ {sec_title}"
+        font = _get_font(14, arabic=is_arabic)
+        draw.text((BM+20, y), display, fill=accent, font=font)
+        y += 45
+    
+    wm_font = _get_font(11)
+    draw.text((TARGET_W//2 - 40, TARGET_H-BM-15), WATERMARK, fill=(170, 175, 185), font=wm_font)
+    
+    canvas.save(path, "JPEG", quality=90)
+    return path
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  دوال FFmpeg
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _ffmpeg_segment(img_path: str, duration: float, audio_path: str | None,
+                    audio_start: float, out_path: str) -> None:
+    dur = f"{duration:.3f}"
+    aud = ["-ss", f"{audio_start:.3f}", "-t", dur, "-i", audio_path] if audio_path and os.path.exists(audio_path) else ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+    
+    cmd = [
+        "ffmpeg", "-y", "-loop", "1", "-t", dur, "-i", img_path, *aud,
+        "-vf", "scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2",
+        "-map", "0:v", "-map", "1:a",
+        "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
+        "-pix_fmt", "yuv420p", "-r", "10",
+        "-c:a", "aac", "-b:a", "96k", "-ar", "44100", "-ac", "2",
+        "-t", dur, out_path
+    ]
+    subprocess.run(cmd, capture_output=True)
+
+
+def _ffmpeg_concat(seg_paths: list[str], out: str) -> None:
+    fd, lst = tempfile.mkstemp(suffix=".txt")
     try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 35)
-    except:
-        font = ImageFont.load_default()
-    
-    bbox = draw.textbbox((0, 0), short_title, font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    draw.text(((W-tw)//2, (H-th)//2), short_title, fill=(255, 255, 255), font=font)
-    
-    draw.rectangle([15, 15, W-15, H-15], outline=accent, width=4)
-    
-    buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=90)
-    return buf.getvalue()
+        os.close(fd)
+        with open(lst, "w") as f:
+            for p in seg_paths:
+                f.write(f"file '{p}'\n")
+        subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", out], capture_output=True)
+    finally:
+        try:
+            os.remove(lst)
+        except:
+            pass
 
 
-async def fetch_image_for_keyword(
-    keyword: str,
-    section_title: str,
-    lecture_type: str,
-    image_search_en: str = "",
-) -> bytes:
-    """جلب صورة كرتونية واحدة للقسم بأكمله."""
+# ══════════════════════════════════════════════════════════════════════════════
+#  بناء المقاطع
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _build_segments(sections: list, audio_results: list, lecture_data: dict, is_arabic: bool):
+    segments, tmp_files = [], []
+    total = 0.0
     
-    # نستخدم عنوان القسم كاملاً لوصف الصورة
-    title_to_use = section_title if section_title else keyword
-    is_arabic = any('\u0600' <= c <= '\u06ff' for c in title_to_use)
+    # مقدمة
+    intro = _draw_intro_slide(lecture_data, sections, is_arabic)
+    tmp_files.append(intro)
+    segments.append({"img": intro, "audio": None, "audio_start": 0, "dur": _INTRO_DUR})
+    total += _INTRO_DUR
     
-    prompt = _build_section_image_prompt(title_to_use, lecture_type, is_arabic)
+    for i, (sec, aud) in enumerate(zip(sections, audio_results)):
+        # شريحة عنوان القسم
+        title_img = _draw_section_title_card(sec, i, len(sections), is_arabic)
+        tmp_files.append(title_img)
+        segments.append({"img": title_img, "audio": None, "audio_start": 0, "dur": _SECTION_TITLE_DUR})
+        total += _SECTION_TITLE_DUR
+        
+        # شريحة المحتوى (صورة واحدة للقسم كاملاً)
+        img_bytes = sec.get("_image_bytes")
+        content_img = _draw_content_slide(img_bytes, sec, i, is_arabic)
+        tmp_files.append(content_img)
+        
+        # تجهيز الصوت
+        apath = None
+        if aud.get("audio"):
+            afd, apath = tempfile.mkstemp(prefix=f"aud_{i}_", suffix=".mp3")
+            os.close(afd)
+            with open(apath, "wb") as f:
+                f.write(aud["audio"])
+            tmp_files.append(apath)
+        
+        dur = max(aud.get("duration", 30), 10)
+        segments.append({
+            "img": content_img,
+            "audio": apath,
+            "audio_start": 0,
+            "dur": dur,
+        })
+        total += dur
     
-    # محاولة التوليد
-    img = await _generate_cartoon_image(prompt)
-    if img:
-        return img
+    # ملخص
+    summary = _draw_summary_slide(sections, lecture_data, is_arabic)
+    tmp_files.append(summary)
+    segments.append({"img": summary, "audio": None, "audio_start": 0, "dur": _SUMMARY_DUR})
+    total += _SUMMARY_DUR
     
-    # صورة احتياطية
-    return _create_placeholder_image(title_to_use, lecture_type, is_arabic)
+    return segments, tmp_files, total
+
+
+def _encode_all(segments: list, out: str) -> None:
+    seg_paths = []
+    try:
+        for i, seg in enumerate(segments):
+            fd, p = tempfile.mkstemp(prefix=f"seg_{i}_", suffix=".mp4")
+            os.close(fd)
+            seg_paths.append(p)
+            _ffmpeg_segment(seg["img"], seg["dur"], seg["audio"], seg["audio_start"], p)
+        _ffmpeg_concat(seg_paths, out)
+    finally:
+        for p in seg_paths:
+            try:
+                os.remove(p)
+            except:
+                pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  الدالة الرئيسية
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def create_video_from_sections(
+    sections: list,
+    audio_results: list,
+    lecture_data: dict,
+    output_path: str,
+    dialect: str = "msa",
+    progress_cb: Callable[[float, float], Awaitable[None]] | None = None,
+) -> float:
+    is_arabic = dialect not in ("english", "british")
+    loop = asyncio.get_event_loop()
+    
+    segments, tmp_files, total_secs = await loop.run_in_executor(
+        None, _build_segments, sections, audio_results, lecture_data, is_arabic
+    )
+    
+    est = estimate_encoding_seconds(total_secs)
+    task = loop.run_in_executor(None, _encode_all, segments, output_path)
+    
+    start = loop.time()
+    while not task.done():
+        await asyncio.sleep(2)
+        if progress_cb:
+            try:
+                await progress_cb(loop.time() - start, est)
+            except:
+                pass
+    await task
+    
+    for p in tmp_files:
+        try:
+            if os.path.exists(p):
+                os.remove(p)
+        except:
+            pass
+    
+    return total_secs
