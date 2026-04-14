@@ -7,7 +7,7 @@
 import os
 import sqlite3
 import logging
-from config import FREE_ATTEMPTS, REFERRAL_POINTS_PER_INVITE, REFERRAL_POINTS_PER_ATTEMPT, PAID_ATTEMPTS
+from config import FREE_ATTEMPTS, PAID_ATTEMPTS, REFERRAL_POINTS_PER_INVITE, REFERRAL_POINTS_PER_ATTEMPT
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,7 @@ if DATABASE_URL and DATABASE_URL.startswith("postgresql"):
     
     USING_POSTGRES = True
     PLACEHOLDER = "%s"
+    logger.info("🗄️ استخدام PostgreSQL")
 else:
     USING_POSTGRES = False
     PLACEHOLDER = "?"
@@ -36,7 +37,7 @@ else:
         conn.row_factory = sqlite3.Row
         return conn
     
-    logger.info("🗄️ استخدام SQLite كقاعدة بيانات")
+    logger.info("🗄️ استخدام SQLite")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -48,6 +49,7 @@ def init_db():
     cur = conn.cursor()
     
     if USING_POSTGRES:
+        # جدول المستخدمين
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -63,6 +65,7 @@ def init_db():
             )
         """)
         
+        # جدول المدفوعات
         cur.execute("""
             CREATE TABLE IF NOT EXISTS payments (
                 id SERIAL PRIMARY KEY,
@@ -76,6 +79,7 @@ def init_db():
             )
         """)
         
+        # جدول الإحالات
         cur.execute("""
             CREATE TABLE IF NOT EXISTS referrals (
                 id SERIAL PRIMARY KEY,
@@ -86,6 +90,7 @@ def init_db():
             )
         """)
         
+        # جدول طلبات الفيديو
         cur.execute("""
             CREATE TABLE IF NOT EXISTS video_requests (
                 id SERIAL PRIMARY KEY,
@@ -98,6 +103,7 @@ def init_db():
             )
         """)
     else:
+        # جدول المستخدمين
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -113,6 +119,7 @@ def init_db():
             )
         """)
         
+        # جدول المدفوعات
         cur.execute("""
             CREATE TABLE IF NOT EXISTS payments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,6 +133,7 @@ def init_db():
             )
         """)
         
+        # جدول الإحالات
         cur.execute("""
             CREATE TABLE IF NOT EXISTS referrals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,6 +144,7 @@ def init_db():
             )
         """)
         
+        # جدول طلبات الفيديو
         cur.execute("""
             CREATE TABLE IF NOT EXISTS video_requests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -158,6 +167,7 @@ def init_db():
 #  دوال المستخدمين
 # ══════════════════════════════════════════════════════════════════════════════
 def get_user(user_id: int):
+    """جلب بيانات المستخدم."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(f"SELECT * FROM users WHERE user_id = {PLACEHOLDER}", (user_id,))
@@ -178,6 +188,7 @@ def get_user(user_id: int):
 
 
 def create_user(user_id: int, username: str = "", full_name: str = "", referred_by: int = None):
+    """إنشاء مستخدم جديد."""
     conn = get_connection()
     cur = conn.cursor()
     
@@ -214,6 +225,7 @@ def create_user(user_id: int, username: str = "", full_name: str = "", referred_
 
 
 def decrement_attempts(user_id: int) -> int:
+    """خصم محاولة وإضافة فيديو."""
     conn = get_connection()
     cur = conn.cursor()
     
@@ -243,6 +255,7 @@ def decrement_attempts(user_id: int) -> int:
 
 
 def add_attempts(user_id: int, count: int) -> int:
+    """إضافة محاولات."""
     conn = get_connection()
     cur = conn.cursor()
     
@@ -270,6 +283,7 @@ def add_attempts(user_id: int, count: int) -> int:
 
 
 def subtract_attempts(user_id: int, count: int) -> int:
+    """خصم محاولات."""
     conn = get_connection()
     cur = conn.cursor()
     
@@ -297,6 +311,7 @@ def subtract_attempts(user_id: int, count: int) -> int:
 
 
 def set_attempts(user_id: int, count: int):
+    """تعيين عدد المحاولات."""
     conn = get_connection()
     cur = conn.cursor()
     
@@ -311,6 +326,7 @@ def set_attempts(user_id: int, count: int):
 
 
 def increment_total_videos(user_id: int):
+    """زيادة عداد الفيديوهات."""
     conn = get_connection()
     cur = conn.cursor()
     
@@ -325,6 +341,7 @@ def increment_total_videos(user_id: int):
 
 
 def ban_user(user_id: int, banned: bool = True):
+    """حظر أو رفع الحظر عن مستخدم."""
     conn = get_connection()
     cur = conn.cursor()
     ban_val = banned if USING_POSTGRES else (1 if banned else 0)
@@ -335,11 +352,13 @@ def ban_user(user_id: int, banned: bool = True):
 
 
 def is_banned(user_id: int) -> bool:
+    """التحقق مما إذا كان المستخدم محظوراً."""
     user = get_user(user_id)
     return user.get('is_banned', False) if user else False
 
 
 def get_all_users(limit: int = 50, offset: int = 0):
+    """جلب قائمة المستخدمين."""
     conn = get_connection()
     cur = conn.cursor()
     
@@ -366,6 +385,7 @@ def get_all_users(limit: int = 50, offset: int = 0):
 
 
 def get_stats():
+    """جلب إحصائيات عامة."""
     conn = get_connection()
     cur = conn.cursor()
     
@@ -404,6 +424,7 @@ def get_stats():
 #  دوال المدفوعات
 # ══════════════════════════════════════════════════════════════════════════════
 def create_payment(user_id: int, method: str, amount: float, reference: str = None) -> int:
+    """إنشاء طلب دفع جديد."""
     conn = get_connection()
     cur = conn.cursor()
     
@@ -428,6 +449,7 @@ def create_payment(user_id: int, method: str, amount: float, reference: str = No
 
 
 def approve_payment(payment_id: int):
+    """الموافقة على دفع وإضافة المحاولات."""
     conn = get_connection()
     cur = conn.cursor()
     
@@ -457,6 +479,7 @@ def approve_payment(payment_id: int):
 
 
 def mark_payment_approved_without_adding(payment_id: int):
+    """تحديث حالة الدفع إلى approved بدون إضافة محاولات."""
     conn = get_connection()
     cur = conn.cursor()
     
@@ -471,6 +494,7 @@ def mark_payment_approved_without_adding(payment_id: int):
 
 
 def get_pending_payments():
+    """جلب المدفوعات المعلقة."""
     conn = get_connection()
     cur = conn.cursor()
     
@@ -512,6 +536,7 @@ def get_pending_payments():
 #  دوال الإحالات
 # ══════════════════════════════════════════════════════════════════════════════
 def record_referral(referrer_id: int, referred_id: int) -> dict:
+    """تسجيل إحالة جديدة."""
     conn = get_connection()
     cur = conn.cursor()
     
@@ -578,6 +603,7 @@ def record_referral(referrer_id: int, referred_id: int) -> dict:
 
 
 def get_referral_stats(user_id: int) -> dict:
+    """جلب إحصائيات الإحالة لمستخدم."""
     conn = get_connection()
     cur = conn.cursor()
     
@@ -602,6 +628,7 @@ def get_referral_stats(user_id: int) -> dict:
 #  دوال طلبات الفيديو
 # ══════════════════════════════════════════════════════════════════════════════
 def save_video_request(user_id: int, input_type: str, dialect: str) -> int:
+    """حفظ طلب فيديو جديد."""
     conn = get_connection()
     cur = conn.cursor()
     
@@ -626,6 +653,7 @@ def save_video_request(user_id: int, input_type: str, dialect: str) -> int:
 
 
 def update_video_request(req_id: int, status: str, video_path: str = None):
+    """تحديث حالة طلب فيديو."""
     conn = get_connection()
     cur = conn.cursor()
     
