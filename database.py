@@ -7,9 +7,16 @@
 import os
 import sqlite3
 import logging
-from config import FREE_ATTEMPTS, PAID_ATTEMPTS, REFERRAL_POINTS_PER_INVITE, REFERRAL_POINTS_PER_ATTEMPT
+from config import (
+    FREE_ATTEMPTS, 
+    PAID_ATTEMPTS, 
+    REFERRAL_POINTS_PER_INVITE, 
+    REFERRAL_POINTS_PER_ATTEMPT
+)
 
 logger = logging.getLogger(__name__)
+
+# ... باقي الكود كما هو ...
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  اختيار نوع قاعدة البيانات
