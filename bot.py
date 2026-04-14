@@ -709,34 +709,6 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID: return
     await update.message.reply_text("🎛️ لوحة التحكم", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("تحديث", callback_data="admin_refresh")]]))
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  دالة run_bot
-# ══════════════════════════════════════════════════════════════════════════════
-async def run_bot(shutdown_event: asyncio.Event, set_bot_app_cb=None):
-    init_db()
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin_cmd))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_content))
-    app.add_handler(MessageHandler(filters.Document.ALL, receive_content))
-    app.add_handler(CallbackQueryHandler(callback_handler))
-    
-    webhook_url = os.getenv("WEBHOOK_URL", "").rstrip("/")
-    
-    async with app:
-        await app.start()
-        if webhook_url:
-            await app.bot.set_webhook(f"{webhook_url}/telegram")
-            logger.info(f"✅ Webhook: {webhook_url}")
-            if set_bot_app_cb: set_bot_app_cb(app)
-            await shutdown_event.wait()
-        else:
-            logger.info("🔄 Polling")
-            await app.updater.start_polling()
-            await shutdown_event.wait()
-            await app.updater.stop()
-     
         
         def setup_handlers(app: Application):
     """إعداد جميع معالجات البوت."""
