@@ -28,15 +28,9 @@ async def main():
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         print("❌ ERROR: TELEGRAM_BOT_TOKEN not set", file=sys.stderr)
-        print("⚠️ Running web server only...", file=sys.stderr)
-        from web_server import start_web_server
-        await start_web_server()
-        await asyncio.Event().wait()
-        return
+        sys.exit(1)
 
-    from web_server import start_web_server
-    web_task = asyncio.create_task(start_web_server())
-    
+    # استيراد الدالة الرئيسية للبوت
     from bot import main as bot_main
 
     restart_delay = 5
@@ -56,20 +50,10 @@ async def main():
 
         except asyncio.CancelledError:
             print("\n[main] Bot cancelled — shutting down...")
-            web_task.cancel()
-            try:
-                await web_task
-            except:
-                pass
             break
 
         except KeyboardInterrupt:
             print("\n[main] Keyboard interrupt — shutting down...")
-            web_task.cancel()
-            try:
-                await web_task
-            except:
-                pass
             break
 
         except Exception as exc:
