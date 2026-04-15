@@ -1,12 +1,13 @@
+import asyncio
 import os
 import sys
 import gc
 
+# ══════════════════════════════════════════════════════════════════════════════
 # تقليل استهلاك الذاكرة
+# ══════════════════════════════════════════════════════════════════════════════
 os.environ["PYTHONOPTIMIZE"] = "2"
 os.environ["MALLOC_TRIM_THRESHOLD_"] = "65536"
-
-# تفعيل جمع القمامة التلقائي
 gc.enable()
 gc.set_threshold(100, 5, 5)
 
@@ -38,7 +39,6 @@ async def main():
         print("❌ ERROR: TELEGRAM_BOT_TOKEN not set", file=sys.stderr)
         sys.exit(1)
 
-    # استيراد الدالة الرئيسية للبوت
     from bot import main as bot_main
 
     restart_delay = 5
@@ -71,6 +71,10 @@ async def main():
             print(f"⏳ Restarting in {delay}s...", file=sys.stderr)
             import traceback
             traceback.print_exc()
+            
+            # تنظيف الذاكرة بعد الانهيار
+            gc.collect()
+            
             await asyncio.sleep(delay)
 
 
