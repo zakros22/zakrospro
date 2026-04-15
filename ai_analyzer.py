@@ -7,60 +7,46 @@ from PIL import Image as PILImage
 from google import genai
 from google.genai import types as genai_types
 from config import (
-    DEEPSEEK_API_KEYS, GOOGLE_API_KEYS, GROQ_API_KEYS, 
-    OPENROUTER_API_KEYS, STABILITY_API_KEYS, REPLICATE_API_TOKEN
+    DEEPSEEK_API_KEYS, GOOGLE_API_KEYS, GROQ_API_KEYS, OPENROUTER_API_KEYS
 )
+from image_generator import fetch_image_for_keyword, generate_educational_image
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🔑 KEY POOLS & ROTATION — لكل خدمة مؤشر خاص
+# 🔑 KEY POOLS & ROTATION
 # ══════════════════════════════════════════════════════════════════════════════
-
-# DeepSeek
 _deepseek_pool = list(DEEPSEEK_API_KEYS)
 _deepseek_idx = 0
 _deepseek_exhausted = set()
 
-# Gemini
 _gemini_pool = list(GOOGLE_API_KEYS)
 _gemini_idx = 0
 _gemini_exhausted = set()
 _gemini_clients = {}
 
-# Groq
 _groq_pool = list(GROQ_API_KEYS)
 _groq_idx = 0
 _groq_exhausted = set()
 
-# OpenRouter
 _or_pool = list(OPENROUTER_API_KEYS)
 _or_idx = 0
 _or_exhausted = set()
 
-# Stability AI (للصور)
-_stability_pool = list(STABILITY_API_KEYS)
-_stability_idx = 0
-_stability_exhausted = set()
-
 
 class QuotaExhaustedError(Exception):
-    """تستخدم عندما تنفد كل المفاتيح من جميع الخدمات"""
     pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 1️⃣ DEEPSEEK — الواجهة الأولى
+# 1️⃣ DEEPSEEK
 # ══════════════════════════════════════════════════════════════════════════════
-
 DEEPSEEK_MODELS = ["deepseek-chat", "deepseek-reasoner"]
 
 async def _generate_with_deepseek(prompt: str, max_tokens: int = 8192) -> str:
-    """استدعاء DeepSeek API (OpenAI-compatible)"""
     global _deepseek_idx, _deepseek_exhausted
     
     if not _deepseek_pool:
-        raise QuotaExhaustedError("No DeepSeek keys configured")
+        raise QuotaExhaustedError("No DeepSeek keys")
     
-    # تدوير المفاتيح
     for _ in range(len(_deepseek_pool)):
         key_idx = _deepseek_idx % len(_deepseek_pool)
         key = _deepseek_pool[key_idx]
@@ -71,10 +57,7 @@ async def _generate_with_deepseek(prompt: str, max_tokens: int = 8192) -> str:
             
         for model in DEEPSEEK_MODELS:
             try:
-                headers = {
-                    "Authorization": f"Bearer {key}",
-                    "Content-Type": "application/json",
-                }
+                headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
                 payload = {
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
@@ -84,37 +67,24 @@ async def _generate_with_deepseek(prompt: str, max_tokens: int = 8192) -> str:
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
                         "https://api.deepseek.com/v1/chat/completions",
-                        headers=headers,
-                        json=payload,
-                        timeout=aiohttp.ClientTimeout(total=90),
+                        headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=90)
                     ) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            text = data["choices"][0]["message"]["content"].strip()
                             print(f"✅ DeepSeek success: {model}")
-                            return text
+                            return data["choices"][0]["message"]["content"].strip()
                         elif resp.status in (429, 402, 403):
-                            body = await resp.text()
-                            if "quota" in body.lower() or "insufficient" in body.lower():
-                                print(f"⚠️ DeepSeek key exhausted: {key[:12]}...")
-                                _deepseek_exhausted.add(key)
-                                break  # جرب المفتاح التالي
-                            continue
-                        else:
-                            body = await resp.text()
-                            print(f"⚠️ DeepSeek {model} {resp.status}: {body[:80]}")
-                            continue
+                            _deepseek_exhausted.add(key)
+                            break
             except Exception as e:
-                print(f"⚠️ DeepSeek {model} error: {e!s:.80}")
+                print(f"⚠️ DeepSeek error: {e}")
                 continue
-                
     raise QuotaExhaustedError("All DeepSeek keys exhausted")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 2️⃣ GEMINI — الواجهة الثانية
+# 2️⃣ GEMINI
 # ══════════════════════════════════════════════════════════════════════════════
-
 def _get_gemini_client(key: str):
     if key not in _gemini_clients:
         _gemini_clients[key] = genai.Client(api_key=key)
@@ -122,13 +92,12 @@ def _get_gemini_client(key: str):
 
 
 async def _generate_with_gemini(prompt: str, max_tokens: int = 8192) -> str:
-    """استدعاء Gemini API مع تدوير المفاتيح"""
     global _gemini_idx, _gemini_exhausted
     
     if not _gemini_pool:
-        raise QuotaExhaustedError("No Gemini keys configured")
+        raise QuotaExhaustedError("No Gemini keys")
     
-    gemini_models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
+    models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
     
     for _ in range(len(_gemini_pool)):
         key_idx = _gemini_idx % len(_gemini_pool)
@@ -140,43 +109,34 @@ async def _generate_with_gemini(prompt: str, max_tokens: int = 8192) -> str:
             
         client = _get_gemini_client(key)
         
-        for model in gemini_models:
+        for model in models:
             try:
                 response = await asyncio.to_thread(
                     client.models.generate_content,
-                    model=model,
-                    contents=prompt,
-                    config=genai_types.GenerateContentConfig(
-                        temperature=0.3,
-                        max_output_tokens=max_tokens,
-                    ),
+                    model=model, contents=prompt,
+                    config=genai_types.GenerateContentConfig(temperature=0.3, max_output_tokens=max_tokens),
                 )
                 print(f"✅ Gemini success: {model}")
                 return response.text.strip()
             except Exception as e:
                 err = str(e)
-                if "quota" in err.lower() or "exhausted" in err.lower() or "429" in err:
-                    print(f"⚠️ Gemini key exhausted: {key[:12]}...")
+                if "quota" in err.lower() or "429" in err:
                     _gemini_exhausted.add(key)
                     break
-                print(f"⚠️ Gemini {model} error: {err[:80]}")
                 continue
-                
     raise QuotaExhaustedError("All Gemini keys exhausted")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 3️⃣ GROQ — الواجهة الثالثة
+# 3️⃣ GROQ
 # ══════════════════════════════════════════════════════════════════════════════
-
 GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it", "mixtral-8x7b-32768"]
 
 async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
-    """استدعاء Groq API مع تدوير المفاتيح"""
     global _groq_idx, _groq_exhausted
     
     if not _groq_pool:
-        raise QuotaExhaustedError("No Groq keys configured")
+        raise QuotaExhaustedError("No Groq keys")
     
     for _ in range(len(_groq_pool)):
         key_idx = _groq_idx % len(_groq_pool)
@@ -188,10 +148,7 @@ async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
             
         for model in GROQ_MODELS:
             try:
-                headers = {
-                    "Authorization": f"Bearer {key}",
-                    "Content-Type": "application/json",
-                }
+                headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
                 payload = {
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
@@ -201,51 +158,35 @@ async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
                         "https://api.groq.com/openai/v1/chat/completions",
-                        headers=headers,
-                        json=payload,
-                        timeout=aiohttp.ClientTimeout(total=90),
+                        headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=90)
                     ) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            text = data["choices"][0]["message"]["content"].strip()
                             print(f"✅ Groq success: {model}")
-                            return text
+                            return data["choices"][0]["message"]["content"].strip()
                         elif resp.status in (429, 403):
-                            body = await resp.text()
-                            if "quota" in body.lower() or "limit" in body.lower():
-                                print(f"⚠️ Groq key exhausted: {key[:12]}...")
-                                _groq_exhausted.add(key)
-                                break
-                            continue
-                        else:
-                            body = await resp.text()
-                            print(f"⚠️ Groq {model} {resp.status}: {body[:80]}")
-                            continue
+                            _groq_exhausted.add(key)
+                            break
             except Exception as e:
-                print(f"⚠️ Groq {model} error: {e!s:.80}")
                 continue
-                
     raise QuotaExhaustedError("All Groq keys exhausted")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 4️⃣ OPENROUTER — الواجهة الرابعة (نماذج مجانية)
+# 4️⃣ OPENROUTER
 # ══════════════════════════════════════════════════════════════════════════════
-
 OR_MODELS = [
     "deepseek/deepseek-chat:free",
     "google/gemini-2.0-flash-exp:free",
     "meta-llama/llama-3.3-70b-instruct:free",
     "qwen/qwen2.5-72b-instruct:free",
-    "mistralai/mistral-7b-instruct:free",
 ]
 
 async def _generate_with_openrouter(prompt: str, max_tokens: int = 8192) -> str:
-    """استدعاء OpenRouter مع تدوير المفاتيح"""
     global _or_idx, _or_exhausted
     
     if not _or_pool:
-        raise QuotaExhaustedError("No OpenRouter keys configured")
+        raise QuotaExhaustedError("No OpenRouter keys")
     
     for _ in range(len(_or_pool)):
         key_idx = _or_idx % len(_or_pool)
@@ -261,7 +202,7 @@ async def _generate_with_openrouter(prompt: str, max_tokens: int = 8192) -> str:
                     "Authorization": f"Bearer {key}",
                     "Content-Type": "application/json",
                     "HTTP-Referer": "https://replit.com",
-                    "X-Title": "Lecture Video Bot",
+                    "X-Title": "Lecture Bot",
                 }
                 payload = {
                     "model": model,
@@ -272,45 +213,32 @@ async def _generate_with_openrouter(prompt: str, max_tokens: int = 8192) -> str:
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
                         "https://openrouter.ai/api/v1/chat/completions",
-                        headers=headers,
-                        json=payload,
-                        timeout=aiohttp.ClientTimeout(total=120),
+                        headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=120)
                     ) as resp:
                         if resp.status == 200:
                             data = await resp.json()
                             content = data["choices"][0]["message"]["content"]
-                            if content and content.strip():
+                            if content:
                                 print(f"✅ OpenRouter success: {model}")
                                 return content.strip()
                         elif resp.status in (429, 402, 403):
-                            body = await resp.text()
-                            if "quota" in body.lower() or "credits" in body.lower():
-                                print(f"⚠️ OpenRouter key exhausted: {key[:12]}...")
-                                _or_exhausted.add(key)
-                                break
-                            continue
-                        else:
-                            body = await resp.text()
-                            print(f"⚠️ OpenRouter {model} {resp.status}: {body[:100]}")
-                            continue
-            except Exception as e:
-                print(f"⚠️ OpenRouter {model} error: {e!s:.80}")
+                            _or_exhausted.add(key)
+                            break
+            except Exception:
                 continue
-                
     raise QuotaExhaustedError("All OpenRouter keys exhausted")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🔄 دالة التوليد الرئيسية — تجرب كل الخدمات بالترتيب
+# 🔄 دالة التوليد الرئيسية
 # ══════════════════════════════════════════════════════════════════════════════
-
 async def _generate_with_rotation(prompt: str, max_tokens: int = 8192) -> str:
     """
     تجرب الخدمات بالترتيب:
-    1. DeepSeek (مع تدوير 9 مفاتيح)
-    2. Gemini (مع تدوير 9 مفاتيح)
-    3. Groq (مع تدوير 9 مفاتيح)
-    4. OpenRouter (مع تدوير 9 مفاتيح + نماذج مجانية)
+    1. DeepSeek
+    2. Gemini
+    3. Groq
+    4. OpenRouter
     """
     errors = []
     
@@ -320,7 +248,7 @@ async def _generate_with_rotation(prompt: str, max_tokens: int = 8192) -> str:
             return await _generate_with_deepseek(prompt, max_tokens)
         except QuotaExhaustedError as e:
             errors.append(f"DeepSeek: {e}")
-            print("🔄 DeepSeek exhausted — switching to Gemini...")
+            print("🔄 Switching to Gemini...")
     
     # 2️⃣ Gemini
     if _gemini_pool:
@@ -328,7 +256,7 @@ async def _generate_with_rotation(prompt: str, max_tokens: int = 8192) -> str:
             return await _generate_with_gemini(prompt, max_tokens)
         except QuotaExhaustedError as e:
             errors.append(f"Gemini: {e}")
-            print("🔄 Gemini exhausted — switching to Groq...")
+            print("🔄 Switching to Groq...")
     
     # 3️⃣ Groq
     if _groq_pool:
@@ -336,7 +264,7 @@ async def _generate_with_rotation(prompt: str, max_tokens: int = 8192) -> str:
             return await _generate_with_groq(prompt, max_tokens)
         except QuotaExhaustedError as e:
             errors.append(f"Groq: {e}")
-            print("🔄 Groq exhausted — switching to OpenRouter...")
+            print("🔄 Switching to OpenRouter...")
     
     # 4️⃣ OpenRouter
     if _or_pool:
@@ -345,7 +273,6 @@ async def _generate_with_rotation(prompt: str, max_tokens: int = 8192) -> str:
         except QuotaExhaustedError as e:
             errors.append(f"OpenRouter: {e}")
     
-    # كل شيء فشل
     raise QuotaExhaustedError(f"All services exhausted: {' | '.join(errors)}")
 
 
@@ -394,7 +321,7 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         section_title_hint = "Section title in English"
         content_hint = f"Simplified section content in English ({narration_sentences} sentences)"
         keywords_hint = '["keyword1", "keyword2", "keyword3", "keyword4"]'
-        narration_hint = f"Full narration in English ({narration_sentences} sentences)"
+        narration_hint = f"Full narration in English as a teacher explaining to students ({narration_sentences} sentences)"
         lang_note = "IMPORTANT: Write ALL text fields in English."
     else:
         summary_hint = "ملخص المحاضرة بأسلوب مبسط (4-5 جمل)"
@@ -403,8 +330,8 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         section_title_hint = "عنوان القسم"
         content_hint = f"محتوى القسم المبسط بأسلوب ممتع وسهل الفهم ({narration_sentences} جمل)"
         keywords_hint = '["مصطلح رئيسي 1", "مصطلح رئيسي 2", "مصطلح رئيسي 3", "مصطلح رئيسي 4"]'
-        narration_hint = f"نص الشرح الكامل بالنص الطبيعي للمحاضر مع اللهجة المطلوبة ({narration_sentences} جمل)"
-        lang_note = "النص يجب أن يكون باللهجة المطلوبة بالكامل"
+        narration_hint = f"نص الشرح الكامل بالنص الطبيعي للمحاضر مع اللهجة المطلوبة، اجعله ممتعاً وشيقاً ({narration_sentences} جمل)"
+        lang_note = "النص يجب أن يكون باللهجة المطلوبة بالكامل مع الحفاظ على الأسلوب التعليمي"
 
     prompt = f"""أنت معلم خبير ومتخصص في تبسيط المحاضرات العلمية. مهمتك تحليل هذه المحاضرة وإنتاج محتوى تعليمي احترافي.
 
@@ -426,10 +353,10 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
       "content": "{content_hint}",
       "keywords": {keywords_hint},
       "keyword_images": [
-        "simple cartoon visual for keyword1 — 3-5 English words",
-        "simple cartoon visual for keyword2 — 3-5 English words",
-        "simple cartoon visual for keyword3 — 3-5 English words",
-        "simple cartoon visual for keyword4 — 3-5 English words"
+        "cartoon visual 1 — 3-5 English words describing a simple cartoon that shows exactly what the narration says about keyword1",
+        "cartoon visual 2 — matches what narration says about keyword2",
+        "cartoon visual 3 — matches what narration says about keyword3",
+        "cartoon visual 4 — matches what narration says about keyword4"
       ],
       "narration": "{narration_hint}",
       "duration_estimate": 45
@@ -445,12 +372,12 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
 - يجب أن تكون {num_sections} أقسام بالضبط لا أكثر ولا أقل
 - اجعل الشرح (narration) طبيعياً وطويلاً كأن معلم خبير يشرح أمام الطلاب مباشرة
 - كل قسم يجب أن يكون شرحاً وافياً ({narration_sentences} جمل)
-- keywords: 4 مصطلحات أساسية تمثل أجزاء الشرح
-- keyword_images: وصف إنجليزي لصورة كرتونية بسيطة لكل كلمة مفتاحية (3-5 كلمات)
+- keywords: 4 مصطلحات/كلمات مفتاحية أساسية
+- keyword_images: مصفوفة من 4 عناصر - وصف إنجليزي لصورة كرتونية بسيطة (3-5 كلمات)
 - أرجع JSON فقط بدون أي نص إضافي
 """
 
-    content = await _generate_with_rotation(prompt, max_output_tokens=8192)
+    content = await _generate_with_rotation(prompt, max_tokens=8192)
     content = content.strip()
     content = re.sub(r'^```json\s*', '', content)
     content = re.sub(r'\s*```$', '', content)
@@ -483,243 +410,6 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
     return "\n\n".join(pages)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 🖼️ توليد الصور — طرق متعددة مجانية
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def _pollinations_generate(prompt: str) -> bytes | None:
-    """Pollinations.ai — مجاني بالكامل"""
-    import urllib.parse
-    import random
-    
-    clean_prompt = prompt[:380].replace("\n", " ")
-    seed = random.randint(1, 99999)
-    encoded = urllib.parse.quote(clean_prompt)
-    url = f"https://image.pollinations.ai/prompt/{encoded}?width=854&height=480&nologo=true&seed={seed}"
-    
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                if resp.status == 200:
-                    raw = await resp.read()
-                    if len(raw) > 5000:
-                        pil_img = PILImage.open(io.BytesIO(raw)).convert("RGB")
-                        pil_img = pil_img.resize((854, 480), PILImage.LANCZOS)
-                        buf = io.BytesIO()
-                        pil_img.save(buf, "JPEG", quality=85)
-                        print(f"✅ Pollinations image OK")
-                        return buf.getvalue()
-    except Exception as e:
-        print(f"⚠️ Pollinations error: {e}")
-    return None
-
-
-async def _stability_generate(prompt: str) -> bytes | None:
-    """Stability AI — جودة عالية مع تدوير مفاتيح"""
-    global _stability_idx, _stability_exhausted
-    
-    if not _stability_pool:
-        return None
-        
-    for _ in range(len(_stability_pool)):
-        key_idx = _stability_idx % len(_stability_pool)
-        key = _stability_pool[key_idx]
-        _stability_idx += 1
-        
-        if key in _stability_exhausted:
-            continue
-            
-        try:
-            headers = {
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-            }
-            payload = {
-                "text_prompts": [{"text": f"educational cartoon illustration, {prompt}"}],
-                "cfg_scale": 7,
-                "height": 512,
-                "width": 896,
-                "samples": 1,
-                "steps": 30,
-            }
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image",
-                    headers=headers,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        import base64
-                        b64 = data["artifacts"][0]["base64"]
-                        raw = base64.b64decode(b64)
-                        pil_img = PILImage.open(io.BytesIO(raw)).convert("RGB")
-                        pil_img = pil_img.resize((854, 480), PILImage.LANCZOS)
-                        buf = io.BytesIO()
-                        pil_img.save(buf, "JPEG", quality=90)
-                        print(f"✅ Stability AI image OK")
-                        return buf.getvalue()
-                    elif resp.status in (429, 403, 401):
-                        print(f"⚠️ Stability key exhausted: {key[:12]}...")
-                        _stability_exhausted.add(key)
-                        continue
-        except Exception as e:
-            print(f"⚠️ Stability error: {e}")
-            continue
-    return None
-
-
-async def _replicate_generate(prompt: str) -> bytes | None:
-    """Replicate — Flux model (جودة خرافية)"""
-    if not REPLICATE_API_TOKEN:
-        return None
-        
-    try:
-        headers = {
-            "Authorization": f"Token {REPLICATE_API_TOKEN}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "version": "black-forest-labs/flux-schnell",
-            "input": {
-                "prompt": f"educational cartoon illustration, clean style, {prompt}",
-                "width": 896,
-                "height": 512,
-                "num_outputs": 1,
-            }
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://api.replicate.com/v1/predictions",
-                headers=headers,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=60),
-            ) as resp:
-                if resp.status == 201:
-                    data = await resp.json()
-                    pred_id = data["id"]
-                    
-                    # انتظار النتيجة
-                    for _ in range(20):
-                        await asyncio.sleep(3)
-                        async with session.get(
-                            f"https://api.replicate.com/v1/predictions/{pred_id}",
-                            headers=headers,
-                        ) as check:
-                            if check.status == 200:
-                                result = await check.json()
-                                if result["status"] == "succeeded":
-                                    img_url = result["output"][0]
-                                    async with session.get(img_url) as img_resp:
-                                        if img_resp.status == 200:
-                                            raw = await img_resp.read()
-                                            pil_img = PILImage.open(io.BytesIO(raw)).convert("RGB")
-                                            pil_img = pil_img.resize((854, 480), PILImage.LANCZOS)
-                                            buf = io.BytesIO()
-                                            pil_img.save(buf, "JPEG", quality=90)
-                                            print(f"✅ Replicate Flux image OK")
-                                            return buf.getvalue()
-                                elif result["status"] == "failed":
-                                    break
-    except Exception as e:
-        print(f"⚠️ Replicate error: {e}")
-    return None
-
-
-def _make_placeholder_image(keywords: list, lecture_type: str = "other") -> bytes:
-    """صورة احتياطية احترافية"""
-    from PIL import ImageDraw, ImageFont
-    import os
-
-    PALETTES = {
-        "medicine": ((20, 78, 140), (6, 147, 227), (255, 200, 0)),
-        "science": ((11, 110, 79), (28, 200, 135), (255, 220, 50)),
-        "math": ((58, 12, 163), (100, 60, 220), (255, 180, 0)),
-        "history": ((150, 60, 10), (220, 110, 40), (255, 230, 100)),
-        "computer": ((0, 80, 120), (0, 160, 200), (255, 200, 50)),
-        "business": ((0, 80, 40), (0, 160, 80), (255, 220, 0)),
-        "other": ((30, 30, 80), (70, 60, 160), (255, 200, 50)),
-    }
-    bg1, bg2, accent = PALETTES.get(lecture_type, PALETTES["other"])
-
-    W, H = 854, 480
-    img = PILImage.new("RGB", (W, H), bg1)
-    draw = ImageDraw.Draw(img)
-
-    for x in range(W):
-        t = x / W
-        r = int(bg1[0] * (1 - t) + bg2[0] * t)
-        g = int(bg1[1] * (1 - t) + bg2[1] * t)
-        b = int(bg1[2] * (1 - t) + bg2[2] * t)
-        draw.line([(x, 0), (x, H)], fill=(r, g, b))
-
-    keyword = (keywords[0] if keywords else "").strip()
-    
-    try:
-        font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        font = ImageFont.truetype(font_path, 48)
-    except:
-        font = ImageFont.load_default()
-
-    # ظل
-    draw.text((W//2 + 3, H//2 + 3), keyword, fill=(0, 0, 0, 100), font=font, anchor="mm")
-    # نص رئيسي
-    draw.text((W//2, H//2), keyword, fill=(255, 255, 255), font=font, anchor="mm")
-    
-    # خط تحت الكلمة
-    draw.rectangle([W//2 - 150, H//2 + 50, W//2 + 150, H//2 + 56], fill=accent)
-
-    buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=92)
-    return buf.getvalue()
-
-
-async def fetch_image_for_keyword(
-    keyword: str,
-    section_title: str,
-    lecture_type: str,
-    image_search_en: str = "",
-) -> bytes:
-    """جلب صورة للكلمة المفتاحية — تجربة عدة طرق مجانية"""
-    
-    prompt = image_search_en or keyword
-    full_prompt = f"educational cartoon illustration, simple clean style, {prompt}, {lecture_type}"
-    
-    # 1. Pollinations (مجاني)
-    img = await _pollinations_generate(full_prompt)
-    if img:
-        return img
-        
-    # 2. Stability AI (إذا وجدت مفاتيح)
-    img = await _stability_generate(full_prompt)
-    if img:
-        return img
-        
-    # 3. Replicate Flux (جودة عالية)
-    img = await _replicate_generate(full_prompt)
-    if img:
-        return img
-        
-    # 4. صورة احتياطية
-    return _make_placeholder_image([keyword, section_title], lecture_type)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 🎨 توليد صورة تعليمية (متوافقة مع الواجهة القديمة)
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def generate_educational_image(
-    prompt: str,
-    lecture_type: str,
-    keywords: list = None,
-    image_search: str = None,
-    image_search_fallbacks: list = None,
-) -> bytes:
-    """توليد صورة تعليمية"""
-    kws = (keywords or [])[:4]
-    subject = (image_search or (kws[0] if kws else prompt[:40])).strip()
-    return await fetch_image_for_keyword(subject, "", lecture_type, subject)
 # ══════════════════════════════════════════════════════════════════════════════
 # 🌐 استخراج النص من رابط URL
 # ══════════════════════════════════════════════════════════════════════════════
@@ -780,22 +470,18 @@ async def extract_text_from_url(url: str) -> str:
                 
                 html = await resp.text()
 
-        # استخراج النص من HTML
         soup = BeautifulSoup(html, 'html.parser')
         
-        # إزالة العناصر غير المرغوبة
         for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'noscript', 'meta', 'link']):
             tag.decompose()
 
         text = soup.get_text(separator='\n', strip=True)
-        
-        # تنظيف النص
         lines = [line.strip() for line in text.split('\n') if line.strip() and len(line.strip()) > 20]
         
         if not lines:
             raise ValueError("لم يتم العثور على نص كافٍ في الرابط")
         
-        result = '\n'.join(lines[:200])  # حد أقصى 200 سطر
+        result = '\n'.join(lines[:200])
         
         if len(result) < 100:
             raise ValueError("النص المستخرج قصير جداً")
