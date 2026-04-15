@@ -1,5 +1,10 @@
 import asyncio
+# ══════════════════════════════════════════════════════════════════════════════
+# تقليل استهلاك الذاكرة لـ Heroku
+# ══════════════════════════════════════════════════════════════════════════════
 import os
+os.environ["WEB_CONCURRENCY"] = "1"
+os.environ["PYTHONOPTIMIZE"] = "2"
 import logging
 import tempfile
 import time
