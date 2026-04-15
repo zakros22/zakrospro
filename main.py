@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-بوت المحاضرات الذكي - وضع Polling (الأسهل والأضمن)
+بوت المحاضرات الذكي - Webhook Mode
 """
 
 import asyncio
 import os
 import sys
 import logging
+from aiohttp import web
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  إعداد التسجيل
@@ -19,83 +20,115 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  التحقق من التوكن
+#  المتغيرات
 # ══════════════════════════════════════════════════════════════════════════════
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+PORT = int(os.getenv("PORT", 5000))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
 
 if not TOKEN:
-    logger.error("❌ TELEGRAM_BOT_TOKEN غير موجود في متغيرات البيئة")
-    logger.error("   تأكد من إضافته في Heroku: Settings -> Config Vars")
+    logger.error("❌ TELEGRAM_BOT_TOKEN غير موجود")
     sys.exit(1)
 
-logger.info(f"✅ تم العثور على التوكن: {TOKEN[:10]}...")
+if not WEBHOOK_URL:
+    logger.error("❌ WEBHOOK_URL غير موجود")
+    sys.exit(1)
+
+logger.info(f"✅ TOKEN: {TOKEN[:10]}...")
+logger.info(f"✅ WEBHOOK_URL: {WEBHOOK_URL}")
+logger.info(f"✅ PORT: {PORT}")
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  استيراد المكتبات
+#  استيراد البوت
 # ══════════════════════════════════════════════════════════════════════════════
-try:
-    from telegram.ext import Application
-    from bot import setup_handlers
-    logger.info("✅ تم استيراد المكتبات بنجاح")
-except ImportError as e:
-    logger.error(f"❌ خطأ في استيراد المكتبات: {e}")
-    logger.error("   تأكد من تثبيت: pip install -r requirements.txt")
-    sys.exit(1)
+from telegram import Update
+from telegram.ext import Application
+from bot import setup_handlers
+
+# المتغير العام للبوت
+bot_app = None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  معالجات HTTP
+# ══════════════════════════════════════════════════════════════════════════════
+async def handle_index(request):
+    """الصفحة الرئيسية."""
+    return web.Response(text="✅ البوت يعمل", content_type="text/html")
+
+
+async def handle_health(request):
+    """فحص الصحة."""
+    return web.json_response({"status": "ok"})
+
+
+async def handle_webhook(request):
+    """استقبال تحديثات تيليجرام."""
+    global bot_app
+    
+    if bot_app is None:
+        return web.Response(status=503, text="Bot not ready")
+    
+    try:
+        data = await request.json()
+        update = Update.de_json(data, bot_app.bot)
+        await bot_app.process_update(update)
+    except Exception as e:
+        logger.error(f"❌ خطأ: {e}")
+    
+    return web.Response(status=200)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  الدالة الرئيسية
 # ══════════════════════════════════════════════════════════════════════════════
 async def main():
-    """تشغيل البوت في وضع Polling."""
-
+    global bot_app
+    
     print("=" * 50)
-    print("🎓 بوت المحاضرات الذكي - Polling Mode")
+    print("🎓 بوت المحاضرات الذكي - Webhook")
     print("=" * 50)
-
-    # إنشاء تطبيق البوت
-    logger.info("🔄 جاري إنشاء البوت...")
-    app = Application.builder().token(TOKEN).build()
-    logger.info("✅ تم إنشاء تطبيق البوت")
-
-    # إضافة المعالجات
-    setup_handlers(app)
-    logger.info("✅ تم إعداد جميع المعالجات")
-
+    
+    # إنشاء البوت
+    bot_app = Application.builder().token(TOKEN).build()
+    setup_handlers(bot_app)
+    
     # بدء البوت
-    await app.initialize()
-    await app.start()
+    await bot_app.initialize()
+    await bot_app.start()
     logger.info("✅ تم بدء البوت")
-
-    # حذف أي Webhook قديم (للتأكد من عدم وجود تعارض)
-    logger.info("🔄 جاري حذف أي Webhook قديم...")
-    await app.bot.delete_webhook(drop_pending_updates=True)
-    logger.info("✅ تم حذف Webhook")
-
-    # بدء Polling
-    logger.info("🔄 جاري بدء Polling...")
-    await app.updater.start_polling(
-        drop_pending_updates=True,
-        allowed_updates=["message", "callback_query"]
-    )
-    logger.info("✅ Polling يعمل الآن")
-
-    print("=" * 50)
-    print("✅✅✅ البوت جاهز لاستقبال الرسائل! ✅✅✅")
-    print("=" * 50)
-
-    # انتظار إلى الأبد
+    
+    # حذف Webhook قديم
+    await bot_app.bot.delete_webhook(drop_pending_updates=True)
+    
+    # تعيين Webhook جديد
+    webhook_path = f"{WEBHOOK_URL}/telegram"
+    await bot_app.bot.set_webhook(url=webhook_path, drop_pending_updates=True)
+    logger.info(f"✅ Webhook تم تعيينه: {webhook_path}")
+    
+    # بدء خادم HTTP
+    app = web.Application()
+    app.router.add_get("/", handle_index)
+    app.router.add_get("/health", handle_health)
+    app.router.add_post("/telegram", handle_webhook)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    
+    logger.info(f"🌐 خادم يعمل على المنفذ {PORT}")
+    logger.info("✅✅✅ البوت جاهز لاستقبال الرسائل! ✅✅✅")
+    
+    # انتظار
     await asyncio.Event().wait()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  نقطة البداية
-# ══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("👋 تم إيقاف البوت بواسطة المستخدم")
+        logger.info("👋 تم الإيقاف")
     except Exception as e:
-        logger.error(f"❌ خطأ غير متوقع: {e}", exc_info=True)
+        logger.error(f"❌ خطأ: {e}")
         sys.exit(1)
