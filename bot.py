@@ -47,11 +47,12 @@ from database import (
 from ai_analyzer import (
     analyze_lecture,
     extract_full_text_from_pdf,
-    fetch_image_for_keyword,
+    extract_text_from_url,
     QuotaExhaustedError,
 )
 from voice_generator import generate_sections_audio, keys_status
 from video_creator import create_video_from_sections, estimate_encoding_seconds
+from image_generator import fetch_image_for_keyword, get_image_keys_status
 from admin_panel import (
     is_owner,
     handle_admin_command,
@@ -63,6 +64,7 @@ from admin_panel import (
     handle_unban,
     handle_broadcast,
     handle_approve_payment_command,
+    handle_user_info,
 )
 from payment_handler import (
     get_payment_keyboard,
@@ -291,7 +293,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 💳 /balance - رصيدي
+# 💳 رصيدي
 # ══════════════════════════════════════════════════════════════════════════════
 async def my_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await ensure_user(update)
@@ -300,7 +302,7 @@ async def my_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"💳 *رصيدك*\n\n"
         f"🎬 المحاولات المتبقية: *{user['attempts_left']}*\n"
-        f"📊 إجمالي الفيديوهات: {user['total_videos']}\n\n"
+        f"📊 إجمالي الفيديوهات: {user.get('total_videos', 0)}\n\n"
         "للحصول على محاولات إضافية:",
         parse_mode="Markdown",
         reply_markup=get_payment_keyboard(user["user_id"]),
@@ -308,7 +310,7 @@ async def my_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🔗 /referral - رابط الإحالة
+# 🔗 /referral
 # ══════════════════════════════════════════════════════════════════════════════
 async def referral_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await ensure_user(update)
@@ -332,7 +334,7 @@ async def referral_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🛡️ /admin - لوحة التحكم
+# 🛡️ /admin
 # ══════════════════════════════════════════════════════════════════════════════
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_owner(update.effective_user.id):
@@ -350,7 +352,6 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     uid = update.effective_user.id
     msg = update.message
-    state = user_states.get(uid, {})
 
     # Admin special replies
     if is_owner(uid):
@@ -413,12 +414,10 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     elif msg.text and len(msg.text.strip()) >= 100:
-        # قد يكون رابط
         text = msg.text.strip()
         if text.startswith("http://") or text.startswith("https://"):
             await msg.reply_text("🔗 جاري استخراج النص من الرابط...")
             try:
-                from ai_analyzer import extract_text_from_url
                 lecture_text = await extract_text_from_url(text)
                 filename = "article"
             except Exception as e:
@@ -601,9 +600,7 @@ async def _process_lecture(
 
     async with _Q_SEM:
         try:
-            # ══════════════════════════════════════════════════════════════════
             # 1️⃣ تحليل المحاضرة
-            # ══════════════════════════════════════════════════════════════════
             _check_cancelled()
             await upd(5, "🔍 قراءة المحاضرة وتحليل المحتوى...")
             
@@ -616,9 +613,7 @@ async def _process_lecture(
             lecture_type = lecture_data.get("lecture_type", "other")
             await upd(20, f"✅ تم التحليل — {len(sections)} أقسام")
 
-            # ══════════════════════════════════════════════════════════════════
             # 2️⃣ جلب الصور
-            # ══════════════════════════════════════════════════════════════════
             _check_cancelled()
             await upd(22, "🎨 جلب الصور التعليمية...")
             
@@ -651,9 +646,7 @@ async def _process_lecture(
             await _run_or_cancel(uid, asyncio.gather(*[_fetch_one_section_images(s) for s in sections]))
             await upd(45, "✅ تم جلب الصور")
 
-            # ══════════════════════════════════════════════════════════════════
             # 3️⃣ توليد الصوت
-            # ══════════════════════════════════════════════════════════════════
             _check_cancelled()
             await upd(47, "🎤 توليد الصوت البشري...")
             
@@ -664,9 +657,7 @@ async def _process_lecture(
             voice_note = " (gTTS)" if used_fallback else " (ElevenLabs)"
             await upd(70, f"✅ تم توليد الصوت{voice_note}")
 
-            # ══════════════════════════════════════════════════════════════════
             # 4️⃣ إنشاء الفيديو
-            # ══════════════════════════════════════════════════════════════════
             _check_cancelled()
             await upd(72, "🎬 إنتاج الفيديو...")
             
@@ -702,12 +693,10 @@ async def _process_lecture(
             
             await upd(99, "✅ اكتمل الفيديو، جاري الإرسال...")
 
-            # ══════════════════════════════════════════════════════════════════
             # 5️⃣ خصم محاولة وإرسال الفيديو
-            # ══════════════════════════════════════════════════════════════════
             decrement_attempts(uid)
             increment_total_videos(uid)
-            update_video_request(req_id, "done", video_path)
+            update_video_request(req_id, "done", video_path, processing_time=time.time() - t_start, sections_count=len(sections))
             
             elapsed_total = time.time() - t_start
             title = lecture_data.get("title", filename)
@@ -753,7 +742,7 @@ async def _process_lecture(
             await context.bot.send_message(uid, "⛔ تم الإلغاء.", reply_markup=main_keyboard())
 
         except QuotaExhaustedError as e:
-            update_video_request(req_id, "quota_error")
+            update_video_request(req_id, "quota_error", error_message=str(e))
             await _safe_edit(
                 prog_msg,
                 "⏳ *الخدمة مشغولة حالياً*\n\n"
@@ -770,20 +759,17 @@ async def _process_lecture(
             except Exception:
                 pass
             
-            err_detail = str(e).replace("QUOTA_EXHAUSTED:", "").strip()
             try:
                 await context.bot.send_message(
                     OWNER_ID,
-                    f"⚠️ *تنبيه Quota*\n\n"
-                    f"المستخدم: `{uid}`\n"
-                    f"التفاصيل: `{err_detail[:400]}`",
+                    f"⚠️ *تنبيه Quota*\n\nالمستخدم: `{uid}`\n`{str(e)[:400]}`",
                     parse_mode="Markdown",
                 )
             except Exception:
                 pass
 
         except Exception as e:
-            update_video_request(req_id, "failed")
+            update_video_request(req_id, "failed", error_message=str(e))
             logger.error(f"Video generation failed for user {uid}: {e}", exc_info=True)
             await _safe_edit(
                 prog_msg,
@@ -808,16 +794,29 @@ async def _process_lecture(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🚀 الدالة الرئيسية
+# 🚀 الدالة الرئيسية - POLLING MODE
 # ══════════════════════════════════════════════════════════════════════════════
 async def main():
     init_db()
-    logger.info("🤖 Lecture video bot starting...")
+    logger.info("🤖 Zakros Lecture Bot starting...")
     
     # عرض حالة المفاتيح
-    el_status = keys_status()
-    logger.info(f"🔑 ElevenLabs keys: {el_status['active']}/{el_status['total']} active")
+    try:
+        el_status = keys_status()
+        logger.info(f"🔑 ElevenLabs keys: {el_status['active']}/{el_status['total']} active")
+    except Exception as e:
+        logger.info(f"🔑 ElevenLabs: not configured")
+    
+    try:
+        img_status = get_image_keys_status()
+        stability = img_status.get('stability', {})
+        logger.info(f"🖼️ Stability keys: {stability.get('active', 0)}/{stability.get('total', 0)} active")
+        logger.info(f"🖼️ Replicate: {'✅' if img_status.get('replicate', {}).get('available') else '❌'}")
+        logger.info(f"🖼️ Pollinations: {'✅ (free)' if img_status.get('pollinations', {}).get('available') else '❌'}")
+    except Exception as e:
+        logger.info(f"🖼️ Image services: not configured")
 
+    # بناء التطبيق
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     # Command handlers
@@ -826,12 +825,12 @@ async def main():
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CommandHandler("referral", referral_cmd))
     app.add_handler(CommandHandler("admin", admin_cmd))
-    app.add_handler(CommandHandler("add", handle_add_attempts))
-    app.add_handler(CommandHandler("set", handle_set_attempts))
+    app.add_handler(CommandHandler("addattempts", handle_add_attempts))
+    app.add_handler(CommandHandler("setattempts", handle_set_attempts))
     app.add_handler(CommandHandler("ban", handle_ban))
     app.add_handler(CommandHandler("unban", handle_unban))
     app.add_handler(CommandHandler("broadcast", handle_broadcast))
-    app.add_handler(CommandHandler("approve", handle_approve_payment_command))
+    app.add_handler(CommandHandler("userinfo", handle_user_info))
 
     # Payment handlers
     app.add_handler(PreCheckoutQueryHandler(handle_pre_checkout))
@@ -848,49 +847,32 @@ async def main():
         )
     )
 
-    logger.info("✅ Bot ready")
-
-    # Webhook or Polling
-    webhook_url = os.getenv("WEBHOOK_URL", "").rstrip("/")
+    logger.info("✅ Bot handlers registered")
+    logger.info("🔄 Starting polling mode...")
     
-    if not webhook_url:
-        replit_domains = os.getenv("REPLIT_DOMAINS", "")
-        for domain in replit_domains.split(","):
-            domain = domain.strip()
-            if domain.endswith(".replit.app"):
-                webhook_url = f"https://{domain}"
-                logger.info(f"🔍 Auto-detected production domain: {webhook_url}")
-                break
-
-    async with app:
-        await app.start()
-
-        if webhook_url:
-            full_url = f"{webhook_url}/telegram"
-            await app.bot.set_webhook(
-                url=full_url,
-                drop_pending_updates=True,
-                allowed_updates=["message", "callback_query", "pre_checkout_query", "successful_payment"],
-            )
-            logger.info(f"✅ Webhook mode active → {full_url}")
-
-            try:
-                import web_server as _ws
-                _ws.set_bot_app(app)
-            except Exception as e:
-                logger.warning(f"Could not register webhook handler: {e}")
-
-            await asyncio.Event().wait()
-        else:
-            logger.info("🔄 Polling mode active (development)")
-            await app.updater.start_polling(
-                drop_pending_updates=True,
-                allowed_updates=["message", "callback_query", "pre_checkout_query", "successful_payment"],
-            )
-            await asyncio.Event().wait()
-            await app.updater.stop()
-
+    # حذف أي webhook قديم وبدء polling
+    await app.initialize()
+    await app.bot.delete_webhook(drop_pending_updates=True)
+    await app.start()
+    
+    logger.info("✅ Bot is running! Polling mode active.")
+    logger.info("📡 Waiting for messages...")
+    
+    # بدء polling
+    await app.updater.start_polling(
+        drop_pending_updates=True,
+        allowed_updates=["message", "callback_query", "pre_checkout_query", "successful_payment"],
+    )
+    
+    # انتظار حتى يتم إيقاف البوت
+    try:
+        await asyncio.Event().wait()
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        logger.info("🛑 Shutting down...")
+    finally:
+        await app.updater.stop()
         await app.stop()
+        await app.shutdown()
 
 
 if __name__ == "__main__":
