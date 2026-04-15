@@ -1,6 +1,14 @@
-import asyncio
 import os
 import sys
+import gc
+
+# تقليل استهلاك الذاكرة
+os.environ["PYTHONOPTIMIZE"] = "2"
+os.environ["MALLOC_TRIM_THRESHOLD_"] = "65536"
+
+# تفعيل جمع القمامة التلقائي
+gc.enable()
+gc.set_threshold(100, 5, 5)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # تصحيح PIL.Image.ANTIALIAS
