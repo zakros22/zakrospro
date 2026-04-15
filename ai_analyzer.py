@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 تحليل المحاضرات باستخدام الذكاء الاصطناعي
-يدعم: DeepSeek, Gemini, OpenRouter, Groq, DuckDuckGo
+يدعم: DeepSeek, Gemini, OpenRouter, Groq
 مع تحليل محلي احتياطي
 """
 
@@ -12,116 +12,29 @@ import io
 import asyncio
 import aiohttp
 import logging
-from google import genai
-from google.genai import types as genai_types
-from config import (
-    DEEPSEEK_API_KEYS, GEMINI_API_KEYS, OPENROUTER_API_KEYS, GROQ_API_KEYS
-)
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  استيراد المفاتيح من config
+# ══════════════════════════════════════════════════════════════════════════════
+try:
+    from config import (
+        DEEPSEEK_API_KEYS, GEMINI_API_KEYS, 
+        OPENROUTER_API_KEYS, GROQ_API_KEYS
+    )
+except ImportError:
+    DEEPSEEK_API_KEYS = []
+    GEMINI_API_KEYS = []
+    OPENROUTER_API_KEYS = []
+    GROQ_API_KEYS = []
+    logger.warning("⚠️ لم يتم العثور على مفاتيح API في config.py")
+
 
 class QuotaExhaustedError(Exception):
-    """يُرفع عند نفاد جميع المفاتيح من جميع المزودين."""
+    """يُرفع عند نفاد جميع المفاتيح."""
     pass
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  أنماط الشرح حسب المادة الدراسية
-# ══════════════════════════════════════════════════════════════════════════════
-TEACHING_STYLES_AR = {
-    "medicine": """
-أنت طبيب استشاري خبير تشرح لطلاب الطب. أسلوبك:
-- ابدأ بحالة سريرية واقعية: "تخيل معي مريضاً جاء للعيادة يشكو من..."
-- اشرح الآلية بتشبيهات حياتية: "تخيل أن الخلية مثل قلعة والهرمون مثل المفتاح..."
-- اذكر المصطلحات الطبية مع شرحها بالعامية
-- اختتم بـ "الخلاصة السريرية" في 3 نقاط ذهبية
-""",
-    "science": """
-أنت عالم تشرح العلوم بأسلوب تجريبي ممتع:
-- ابدأ بتجربة ذهنية: "لو كنت في مختبر ورأيت..."
-- اشرح الظاهرة بتشبيه من الحياة اليومية
-- اذكر تطبيقات عملية من الواقع
-- اختتم بـ "سر التجربة" - معلومة تثير الفضول
-""",
-    "math": """
-أنت أستاذ رياضيات عبقري تشرح بالألغاز والتحديات:
-- ابدأ بـ "تحدي اليوم": مسألة بسيطة تقود للمفهوم
-- اشرح القاعدة كأنها "سر من أسرار الأرقام"
-- استخدم رسوماً ذهنية: "تخيل الأعداد كأنها قطع ليغو..."
-- اختتم بـ "خدعة رياضية" يمكن للطالب استخدامها
-""",
-    "physics": """
-أنت فيزيائي عبقري تشرح قوانين الكون بأسلوب سحري:
-- ابدأ بـ "ظاهرة غامضة": لماذا يحدث كذا؟
-- اشرح القانون كأنه "تعويذة سحرية" تتحكم بالطبيعة
-- استخدم تشبيهات من عالم الخيال والأفلام
-- اختتم بـ "تطبيق خارق" يذهل الطالب
-""",
-    "chemistry": """
-أنت كيميائي ساحر تشرح التفاعلات كأنها وصفات سحرية:
-- ابدأ بـ "جرعة اليوم": تفاعل كيميائي مذهل
-- اشرح التفاعل كأنه "رقصة بين الذرات"
-- استخدم ألواناً وروائح في الوصف
-- اختتم بـ "سر المختبر" - معلومة خطيرة لكن مفيدة
-""",
-    "engineering": """
-أنت مهندس عبقري تشرح كيفية بناء الأشياء العظيمة:
-- ابدأ بـ "تحدي البناء": كيف نبني جسراً/برجاً/طائرة؟
-- اشرح المبدأ الهندسي بقصة من التاريخ الهندسي
-- اذكر أخطاء شهيرة وكيف تم تجنبها
-- اختتم بـ "نصيحة المهندس الذهبية"
-""",
-    "computer": """
-أنت خبير برمجة وذكاء اصطناعي تشرح بأسلوب الـ "هاكر" الأخلاقي:
-- ابدأ بـ "مشكلة تقنية" تحتاج حلاً ذكياً
-- اشرح الخوارزمية كأنها "وصفة طبخ برمجية"
-- استخدم تشبيهات من عالم الإنترنت والتطبيقات
-- اختتم بـ "خدعة برمجية" تدهش المستخدم
-""",
-    "history": """
-أنت راوي قصص تاريخي محترف تجعل الماضي حياً:
-- ابدأ بـ "تخيل أنك في عام..." وانقل الطالب للزمن الماضي
-- اروي الأحداث كأنها فيلم سينمائي بشخصيات وأبطال
-- اربط الماضي بالحاضر: "وهذا ما نراه اليوم في..."
-- اختتم بـ "درس التاريخ" - ماذا نتعلم من هذه القصة؟
-""",
-    "literature": """
-أنت أديب وناقد فني تشرح جماليات النصوص:
-- ابدأ بـ "لوحة فنية" من النص الأدبي
-- حلل الأسلوب كأنك تكشف أسرار السحر في الكلمات
-- اربط النص بمشاعر إنسانية عميقة
-- اختتم بـ "اقتباس من ذهب" يلخص الدرس
-""",
-    "business": """
-أنت رجل أعمال ناجح ومستشار إداري خبير:
-- ابدأ بـ "قصة نجاح/فشل" من عالم الشركات الحقيقي
-- اشرح المفهوم الإداري كأنه "لعبة استراتيجية"
-- استخدم أرقاماً وإحصائيات واقعية
-- اختتم بـ "نصيحة المليونير" - خطوة عملية للنجاح
-""",
-    "other": """
-أنت معلم مبدع تشرح بأسلوب القصص والتشبيهات:
-- ابدأ بقصة أو موقف يثير الفضول
-- اشرح المفهوم بتشبيه من الحياة اليومية
-- اذكر تطبيقات عملية وأمثلة واقعية
-- اختتم بخلاصة في 3 نقاط سهلة التذكر
-""",
-}
-
-TEACHING_STYLES_EN = {
-    "medicine": "You are an expert medical consultant. Start with a patient case, explain with analogies, end with clinical pearls.",
-    "science": "You are a passionate scientist. Start with a thought experiment, explain with everyday analogies, end with a science secret.",
-    "math": "You are a math wizard. Start with a puzzle, explain as secrets of numbers, end with a math trick.",
-    "physics": "You are a physicist explaining the universe's magic. Use fantasy analogies.",
-    "chemistry": "You are a chemistry wizard with magical potions. Explain reactions as dances of atoms.",
-    "engineering": "You are a master builder. Explain through engineering stories.",
-    "computer": "You are a coding wizard. Explain algorithms as cooking recipes.",
-    "history": "You are a time-traveling storyteller. Bring the past to life.",
-    "literature": "You are a literary critic revealing the art of words.",
-    "business": "You are a successful entrepreneur sharing business wisdom.",
-    "other": "You are a creative teacher using stories and analogies.",
-}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -132,16 +45,16 @@ def detect_subject(text: str) -> str:
     text_lower = text.lower()
     
     subjects = {
-        "medicine": ["طب", "مرض", "علاج", "طبيب", "مريض", "جراحة", "ولادة", "قيصرية", "تشريح", "دواء", "مستشفى", "medicine", "disease", "treatment", "doctor", "patient", "surgery"],
-        "physics": ["فيزياء", "قوة", "حركة", "طاقة", "كهرباء", "مغناطيس", "جاذبية", "نيوتن", "physics", "force", "motion", "energy", "electricity", "gravity"],
-        "chemistry": ["كيمياء", "تفاعل", "عنصر", "مركب", "حمض", "قاعدة", "جزيء", "ذرة", "chemistry", "reaction", "element", "compound", "acid", "base"],
-        "math": ["رياضيات", "معادلة", "حساب", "جبر", "هندسة", "تكامل", "تفاضل", "إحصاء", "math", "equation", "algebra", "calculus", "geometry"],
-        "engineering": ["هندسة", "بناء", "جسر", "تصميم", "إنشاء", "ميكانيكا", "كهرباء", "engineering", "construction", "design", "bridge", "mechanical"],
-        "computer": ["برمجة", "حاسوب", "خوارزمية", "برنامج", "كود", "بايثون", "جافا", "computer", "programming", "algorithm", "code", "python", "java"],
-        "history": ["تاريخ", "حرب", "معركة", "حضارة", "إمبراطورية", "خلافة", "قديم", "history", "war", "battle", "civilization", "empire", "ancient"],
-        "literature": ["أدب", "شعر", "رواية", "قصة", "كاتب", "شاعر", "نثر", "بلاغة", "literature", "poetry", "novel", "story", "writer", "poet"],
-        "business": ["إدارة", "اقتصاد", "تسويق", "شركة", "استثمار", "أسهم", "تمويل", "business", "management", "marketing", "company", "investment", "finance"],
-        "science": ["علوم", "أحياء", "نبات", "حيوان", "خلية", "وراثة", "بيئة", "science", "biology", "plant", "animal", "cell", "genetics", "environment"],
+        "medicine": ["طب", "مرض", "علاج", "طبيب", "مريض", "جراحة", "ولادة", "قيصرية", "تشريح", "دواء"],
+        "physics": ["فيزياء", "قوة", "حركة", "طاقة", "كهرباء", "مغناطيس", "جاذبية"],
+        "chemistry": ["كيمياء", "تفاعل", "عنصر", "مركب", "حمض", "قاعدة", "جزيء", "ذرة"],
+        "math": ["رياضيات", "معادلة", "حساب", "جبر", "هندسة", "تكامل", "تفاضل"],
+        "engineering": ["هندسة", "بناء", "جسر", "تصميم", "إنشاء", "ميكانيكا"],
+        "computer": ["برمجة", "حاسوب", "خوارزمية", "برنامج", "كود", "بايثون"],
+        "history": ["تاريخ", "حرب", "معركة", "حضارة", "إمبراطورية", "خلافة"],
+        "literature": ["أدب", "شعر", "رواية", "قصة", "كاتب", "شاعر"],
+        "business": ["إدارة", "اقتصاد", "تسويق", "شركة", "استثمار", "أسهم"],
+        "science": ["علوم", "أحياء", "نبات", "حيوان", "خلية", "وراثة"],
     }
     
     scores = {}
@@ -156,22 +69,26 @@ def detect_subject(text: str) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  دوال التوليد حسب المزود
+#  استدعاء DeepSeek
 # ══════════════════════════════════════════════════════════════════════════════
-async def _generate_deepseek(prompt: str, max_tokens: int = 6000) -> str:
-    """توليد باستخدام DeepSeek."""
+async def call_deepseek(prompt: str, max_tokens: int = 4000) -> str:
+    """استدعاء DeepSeek API."""
     if not DEEPSEEK_API_KEYS:
         raise QuotaExhaustedError("لا توجد مفاتيح DeepSeek")
     
     for key in DEEPSEEK_API_KEYS:
         try:
-            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+            headers = {
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json"
+            }
             payload = {
                 "model": "deepseek-chat",
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": max_tokens,
                 "temperature": 0.5
             }
+            
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     "https://api.deepseek.com/v1/chat/completions",
@@ -181,26 +98,33 @@ async def _generate_deepseek(prompt: str, max_tokens: int = 6000) -> str:
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        logger.info("✅ DeepSeek نجاح")
+                        logger.info(f"✅ DeepSeek نجاح")
                         return data["choices"][0]["message"]["content"].strip()
                     elif resp.status == 402:
-                        logger.warning(f"⚠️ DeepSeek رصيد منتهي للمفتاح {key[:15]}...")
+                        logger.warning(f"⚠️ DeepSeek رصيد منتهي")
                         continue
                     else:
-                        body = await resp.text()
-                        logger.warning(f"⚠️ DeepSeek {resp.status}: {body[:100]}")
                         continue
         except Exception as e:
-            logger.warning(f"⚠️ DeepSeek خطأ: {str(e)[:80]}")
+            logger.warning(f"⚠️ DeepSeek خطأ: {str(e)[:50]}")
             continue
     
     raise QuotaExhaustedError("جميع مفاتيح DeepSeek منتهية")
 
 
-async def _generate_gemini(prompt: str, max_tokens: int = 6000) -> str:
-    """توليد باستخدام Gemini."""
+# ══════════════════════════════════════════════════════════════════════════════
+#  استدعاء Gemini
+# ══════════════════════════════════════════════════════════════════════════════
+async def call_gemini(prompt: str, max_tokens: int = 4000) -> str:
+    """استدعاء Gemini API."""
     if not GEMINI_API_KEYS:
         raise QuotaExhaustedError("لا توجد مفاتيح Gemini")
+    
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError:
+        raise QuotaExhaustedError("مكتبة google-genai غير مثبتة")
     
     for key in GEMINI_API_KEYS:
         try:
@@ -209,27 +133,30 @@ async def _generate_gemini(prompt: str, max_tokens: int = 6000) -> str:
                 client.models.generate_content,
                 model="gemini-2.0-flash",
                 contents=prompt,
-                config=genai_types.GenerateContentConfig(
+                config=types.GenerateContentConfig(
                     temperature=0.5,
                     max_output_tokens=max_tokens
                 )
             )
-            logger.info("✅ Gemini نجاح")
+            logger.info(f"✅ Gemini نجاح")
             return response.text.strip()
         except Exception as e:
             err = str(e)
             if "quota" in err.lower() or "429" in err:
-                logger.warning(f"⚠️ Gemini حصة منتهية للمفتاح {key[:15]}...")
+                logger.warning(f"⚠️ Gemini حصة منتهية")
                 continue
             else:
-                logger.warning(f"⚠️ Gemini خطأ: {err[:80]}")
+                logger.warning(f"⚠️ Gemini خطأ: {err[:50]}")
                 continue
     
     raise QuotaExhaustedError("جميع مفاتيح Gemini منتهية")
 
 
-async def _generate_openrouter(prompt: str, max_tokens: int = 6000) -> str:
-    """توليد باستخدام OpenRouter."""
+# ══════════════════════════════════════════════════════════════════════════════
+#  استدعاء OpenRouter
+# ══════════════════════════════════════════════════════════════════════════════
+async def call_openrouter(prompt: str, max_tokens: int = 4000) -> str:
+    """استدعاء OpenRouter API."""
     if not OPENROUTER_API_KEYS:
         raise QuotaExhaustedError("لا توجد مفاتيح OpenRouter")
     
@@ -237,7 +164,6 @@ async def _generate_openrouter(prompt: str, max_tokens: int = 6000) -> str:
         "deepseek/deepseek-chat:free",
         "google/gemini-2.0-flash-exp:free",
         "meta-llama/llama-3.3-70b-instruct:free",
-        "qwen/qwen-2.5-72b-instruct:free",
     ]
     
     for key in OPENROUTER_API_KEYS:
@@ -247,14 +173,15 @@ async def _generate_openrouter(prompt: str, max_tokens: int = 6000) -> str:
                     "Authorization": f"Bearer {key}",
                     "Content-Type": "application/json",
                     "HTTP-Referer": "https://lecture-bot.com",
-                    "X-Title": "Lecture Video Bot",
+                    "X-Title": "Lecture Bot"
                 }
                 payload = {
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": max_tokens,
-                    "temperature": 0.5,
+                    "temperature": 0.5
                 }
+                
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
                         "https://openrouter.ai/api/v1/chat/completions",
@@ -264,42 +191,40 @@ async def _generate_openrouter(prompt: str, max_tokens: int = 6000) -> str:
                     ) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            content = data["choices"][0]["message"]["content"]
-                            if content and content.strip():
-                                logger.info(f"✅ OpenRouter نجاح: {model}")
-                                return content.strip()
-                        elif resp.status == 402:
-                            logger.warning(f"⚠️ OpenRouter رصيد منتهي للمفتاح {key[:15]}...")
-                            break
+                            logger.info(f"✅ OpenRouter نجاح: {model}")
+                            return data["choices"][0]["message"]["content"].strip()
                         else:
                             continue
-            except Exception as e:
-                logger.warning(f"⚠️ OpenRouter خطأ: {str(e)[:80]}")
+            except Exception:
                 continue
     
     raise QuotaExhaustedError("جميع مفاتيح OpenRouter منتهية")
 
 
-async def _generate_groq(prompt: str, max_tokens: int = 6000) -> str:
-    """توليد باستخدام Groq."""
+# ══════════════════════════════════════════════════════════════════════════════
+#  استدعاء Groq
+# ══════════════════════════════════════════════════════════════════════════════
+async def call_groq(prompt: str, max_tokens: int = 4000) -> str:
+    """استدعاء Groq API."""
     if not GROQ_API_KEYS:
         raise QuotaExhaustedError("لا توجد مفاتيح Groq")
     
-    models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it"]
+    models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
     
     for key in GROQ_API_KEYS:
         for model in models:
             try:
                 headers = {
                     "Authorization": f"Bearer {key}",
-                    "Content-Type": "application/json",
+                    "Content-Type": "application/json"
                 }
                 payload = {
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": max_tokens,
-                    "temperature": 0.5,
+                    "temperature": 0.5
                 }
+                
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
                         "https://api.groq.com/openai/v1/chat/completions",
@@ -311,79 +236,33 @@ async def _generate_groq(prompt: str, max_tokens: int = 6000) -> str:
                             data = await resp.json()
                             logger.info(f"✅ Groq نجاح: {model}")
                             return data["choices"][0]["message"]["content"].strip()
-                        elif resp.status == 429:
-                            logger.warning(f"⚠️ Groq حد الطلبات للمفتاح {key[:15]}...")
-                            continue
                         else:
                             continue
-            except Exception as e:
-                logger.warning(f"⚠️ Groq خطأ: {str(e)[:80]}")
+            except Exception:
                 continue
     
     raise QuotaExhaustedError("جميع مفاتيح Groq منتهية")
 
 
-async def _generate_duckduckgo(prompt: str, max_tokens: int = 6000) -> str:
-    """توليد باستخدام DuckDuckGo AI (مجاني)."""
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Content-Type": "application/json",
-            "Origin": "https://duckduckgo.com",
-            "Referer": "https://duckduckgo.com/",
-        }
-        
-        payload = {
-            "model": "gpt-4o-mini",
-            "messages": [{"role": "user", "content": prompt[:4000]}],
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://duckduckgo.com/duckchat/v1/chat",
-                headers=headers,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=90)
-            ) as resp:
-                if resp.status == 200:
-                    full_response = ""
-                    async for line in resp.content:
-                        if line:
-                            try:
-                                line_text = line.decode('utf-8').strip()
-                                if line_text.startswith('data: '):
-                                    data = json.loads(line_text[6:])
-                                    if data.get("message"):
-                                        full_response += data["message"]
-                            except:
-                                pass
-                    
-                    if full_response.strip():
-                        logger.info("✅ DuckDuckGo نجاح")
-                        return full_response.strip()
-        
-        raise Exception("DuckDuckGo failed")
-    except Exception as e:
-        raise QuotaExhaustedError(f"DuckDuckGo: {e}")
-
-
-async def call_ai(prompt: str, max_tokens: int = 6000) -> str:
+# ══════════════════════════════════════════════════════════════════════════════
+#  الدالة الرئيسية لاستدعاء AI مع تناوب المزودين
+# ══════════════════════════════════════════════════════════════════════════════
+async def call_ai(prompt: str, max_tokens: int = 4000) -> str:
     """
     استدعاء AI مع تناوب تلقائي بين المزودين.
-    الأولوية: DeepSeek → Gemini → OpenRouter → Groq → DuckDuckGo
+    الأولوية: DeepSeek → Gemini → OpenRouter → Groq
     """
     providers = [
-        ("DeepSeek", lambda: _generate_deepseek(prompt, max_tokens)),
-        ("Gemini", lambda: _generate_gemini(prompt, max_tokens)),
-        ("OpenRouter", lambda: _generate_openrouter(prompt, max_tokens)),
-        ("Groq", lambda: _generate_groq(prompt, max_tokens)),
-        ("DuckDuckGo", lambda: _generate_duckduckgo(prompt, max_tokens)),
+        ("DeepSeek", call_deepseek),
+        ("Gemini", call_gemini),
+        ("OpenRouter", call_openrouter),
+        ("Groq", call_groq),
     ]
     
     for name, func in providers:
         logger.info(f"🔄 تجربة {name}...")
         try:
-            return await func()
+            return await func(prompt, max_tokens)
         except QuotaExhaustedError as e:
             logger.warning(f"⚠️ {name} فشل: {e}")
             continue
@@ -392,10 +271,13 @@ async def call_ai(prompt: str, max_tokens: int = 6000) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  تحليل محلي احتياطي
+#  تحليل محلي احتياطي (بدون API)
 # ══════════════════════════════════════════════════════════════════════════════
-def local_analyze(text: str, dialect: str) -> dict:
-    """تحليل محلي احتياطي يضمن دائماً نتيجة."""
+def local_analyze(text: str, dialect: str = "msa") -> Dict:
+    """
+    تحليل محلي احتياطي يضمن دائماً نتيجة.
+    يستخدم عندما تفشل جميع الـ APIs.
+    """
     is_arabic = dialect not in ("english", "british")
     subject = detect_subject(text)
     
@@ -454,78 +336,75 @@ def local_analyze(text: str, dialect: str) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  الدالة الرئيسية للتحليل
+#  حساب عدد الأقسام المناسب
 # ══════════════════════════════════════════════════════════════════════════════
-def _compute_lecture_scale(text: str) -> tuple:
-    """حساب عدد الأقسام المناسب."""
+def compute_sections_count(text: str) -> tuple:
+    """حساب عدد الأقسام المناسب حسب طول النص."""
     word_count = len(text.split())
     if word_count < 400:
         return 2, "6-8", 3000
     elif word_count < 800:
-        return 3, "8-10", 5000
+        return 3, "8-10", 4000
     elif word_count < 1500:
-        return 4, "10-12", 6000
+        return 4, "10-12", 5000
     else:
-        return 5, "12-15", 8000
+        return 5, "12-15", 6000
 
 
-async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
+# ══════════════════════════════════════════════════════════════════════════════
+#  الدالة الرئيسية لتحليل المحاضرة
+# ══════════════════════════════════════════════════════════════════════════════
+async def analyze_lecture(text: str, dialect: str = "msa") -> Dict:
     """
     تحليل المحاضرة إلى أقسام مع كلمات مفتاحية وشرح.
     
     Args:
         text: نص المحاضرة
-        dialect: اللهجة المطلوبة
+        dialect: اللهجة المطلوبة (iraq, egypt, syria, gulf, msa, english)
     
     Returns:
         dict: بيانات المحاضرة المحللة
     """
     is_arabic = dialect not in ("english", "british")
     subject = detect_subject(text)
+    num_sections, narration_sentences, max_tokens = compute_sections_count(text)
     
-    # اختيار أسلوب الشرح
-    if is_arabic:
-        teaching_style = TEACHING_STYLES_AR.get(subject, TEACHING_STYLES_AR["other"])
-        dialect_names = {
-            "iraq": "العراقية", "egypt": "المصرية", "syria": "الشامية",
-            "gulf": "الخليجية", "msa": "الفصحى"
-        }
-        dialect_name = dialect_names.get(dialect, "الفصحى")
-        dialect_instruction = f"استخدم اللهجة {dialect_name} في الشرح."
-    else:
-        teaching_style = TEACHING_STYLES_EN.get(subject, TEACHING_STYLES_EN["other"])
-        dialect_instruction = "Use clear professional English."
+    # تحديد لهجة الشرح
+    dialect_names = {
+        "iraq": "العراقية", "egypt": "المصرية", "syria": "الشامية",
+        "gulf": "الخليجية", "msa": "الفصحى"
+    }
+    dialect_name = dialect_names.get(dialect, "الفصحى")
     
-    num_sections, narration_sentences, max_tokens = _compute_lecture_scale(text)
-    text_limit = min(len(text), 4000 + num_sections * 500)
+    text_limit = min(len(text), 4000)
     
     # بناء prompt
     if is_arabic:
-        prompt = f"""{teaching_style}
+        prompt = f"""أنت معلم خبير في تبسيط المحاضرات.
 
-{dialect_instruction}
+حلل النص التالي إلى {num_sections} أقسام تعليمية.
 
 النص:
 ---
 {text[:text_limit]}
 ---
 
-حلل النص إلى {num_sections} أقسام تعليمية. لكل قسم قدم:
+لكل قسم قدم:
 1. title: عنوان واضح وجذاب للقسم
-2. keywords: 3-5 كلمات مفتاحية (مصطلحات مهمة في هذا القسم)
-3. narration: شرح مبسط وممتع ({narration_sentences} جمل) باللهجة المطلوبة
+2. keywords: 3-5 كلمات مفتاحية (مصطلحات مهمة)
+3. narration: شرح مبسط وممتع ({narration_sentences} جمل) باللهجة {dialect_name}
 
 أرجع JSON فقط:
-{{"title": "عنوان المحاضرة", "sections": [{{"title": "عنوان القسم", "keywords": ["مصطلح1", "مصطلح2", "مصطلح3"], "narration": "الشرح..."}}], "summary": "ملخص عام (3-4 جمل)"}}"""
+{{"title": "عنوان المحاضرة", "sections": [{{"title": "عنوان القسم", "keywords": ["مصطلح1", "مصطلح2"], "narration": "الشرح..."}}], "summary": "ملخص عام (3-4 جمل)"}}"""
     else:
-        prompt = f"""{teaching_style}
+        prompt = f"""You are an expert teacher.
 
-{dialect_instruction}
+Analyze this text into {num_sections} sections.
 
 Text:
 {text[:text_limit]}
 
-Analyze into {num_sections} sections. For each section provide:
+For each section provide:
 1. title: Clear section title
 2. keywords: 3-5 key terms
 3. narration: Simplified explanation ({narration_sentences} sentences)
@@ -536,6 +415,8 @@ Return ONLY JSON:
     try:
         # محاولة استخدام AI
         response = await call_ai(prompt, max_tokens)
+        
+        # تنظيف الاستجابة
         response = re.sub(r'^```json\s*', '', response.strip())
         response = re.sub(r'\s*```$', '', response)
         
@@ -571,12 +452,8 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
         
         text = "\n\n".join(pages)
         if len(text.strip()) < 50:
-            raise ValueError("النص المستخرج قصير جداً - تأكد من أن الملف يحتوي على نص")
+            raise ValueError("النص المستخرج قصير جداً")
         
         return text
     except Exception as e:
         raise ValueError(f"فشل استخراج النص من PDF: {e}")
-
-
-# تصدير QuotaExhaustedError
-__all__ = ['analyze_lecture', 'extract_full_text_from_pdf', 'QuotaExhaustedError']
