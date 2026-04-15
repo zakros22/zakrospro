@@ -720,3 +720,89 @@ async def generate_educational_image(
     kws = (keywords or [])[:4]
     subject = (image_search or (kws[0] if kws else prompt[:40])).strip()
     return await fetch_image_for_keyword(subject, "", lecture_type, subject)
+# ══════════════════════════════════════════════════════════════════════════════
+# 🌐 استخراج النص من رابط URL
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _is_safe_url(url: str) -> bool:
+    """التحقق من أن الرابط آمن (يمنع SSRF)"""
+    import ipaddress
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ('http', 'https'):
+            return False
+
+        hostname = parsed.hostname or ''
+        if not hostname:
+            return False
+
+        blocked_hosts = {
+            'localhost', '127.0.0.1', '0.0.0.0', '::1',
+            'metadata.google.internal', '169.254.169.254'
+        }
+        if hostname.lower() in blocked_hosts:
+            return False
+
+        try:
+            ip = ipaddress.ip_address(hostname)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                return False
+        except ValueError:
+            pass
+
+        return True
+    except Exception:
+        return False
+
+
+async def extract_text_from_url(url: str) -> str:
+    """استخراج النص من رابط مقال أو صفحة ويب"""
+    from bs4 import BeautifulSoup
+
+    if not _is_safe_url(url):
+        raise ValueError("الرابط غير مسموح به. فقط روابط HTTP/HTTPS العامة مسموحة.")
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                if resp.status != 200:
+                    raise ValueError(f"فشل في جلب الرابط: HTTP {resp.status}")
+                
+                content_type = resp.headers.get('Content-Type', '')
+                if 'text' not in content_type and 'html' not in content_type:
+                    raise ValueError("الرابط لا يحتوي على نص أو HTML")
+                
+                html = await resp.text()
+
+        # استخراج النص من HTML
+        soup = BeautifulSoup(html, 'html.parser')
+        
+        # إزالة العناصر غير المرغوبة
+        for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'noscript', 'meta', 'link']):
+            tag.decompose()
+
+        text = soup.get_text(separator='\n', strip=True)
+        
+        # تنظيف النص
+        lines = [line.strip() for line in text.split('\n') if line.strip() and len(line.strip()) > 20]
+        
+        if not lines:
+            raise ValueError("لم يتم العثور على نص كافٍ في الرابط")
+        
+        result = '\n'.join(lines[:200])  # حد أقصى 200 سطر
+        
+        if len(result) < 100:
+            raise ValueError("النص المستخرج قصير جداً")
+        
+        return result
+        
+    except aiohttp.ClientError as e:
+        raise ValueError(f"خطأ في الاتصال بالرابط: {e}")
+    except Exception as e:
+        raise ValueError(f"خطأ في استخراج النص: {e}")
