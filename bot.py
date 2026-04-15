@@ -1,13 +1,9 @@
 import asyncio
-# ══════════════════════════════════════════════════════════════════════════════
-# تقليل استهلاك الذاكرة لـ Heroku
-# ══════════════════════════════════════════════════════════════════════════════
 import os
-os.environ["WEB_CONCURRENCY"] = "1"
-os.environ["PYTHONOPTIMIZE"] = "2"
 import logging
 import tempfile
 import time
+import gc
 from datetime import datetime
 
 from telegram import (
@@ -42,8 +38,6 @@ from database import (
     decrement_attempts,
     add_attempts,
     increment_total_videos,
-    get_stats,
-    get_all_users,
     save_video_request,
     update_video_request,
     record_referral,
@@ -57,7 +51,7 @@ from ai_analyzer import (
 )
 from voice_generator import generate_sections_audio, keys_status
 from video_creator import create_video_from_sections, estimate_encoding_seconds
-from image_generator import fetch_image_for_keyword, get_image_keys_status
+from image_generator import fetch_image_for_keyword
 from admin_panel import (
     is_owner,
     handle_admin_command,
@@ -83,8 +77,10 @@ from payment_handler import (
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 📝 إعدادات التسجيل
+# 📝 إعدادات التسجيل وتقليل الذاكرة
 # ══════════════════════════════════════════════════════════════════════════════
+os.environ["PYTHONOPTIMIZE"] = "2"
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -97,9 +93,9 @@ logger = logging.getLogger(__name__)
 user_states: dict[int, dict] = {}
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 📊 Queue Management (حد أقصى 2 معالجة متزامنة)
+# 📊 Queue Management (معالجة واحدة فقط لتوفير الذاكرة)
 # ══════════════════════════════════════════════════════════════════════════════
-_Q_SEM = asyncio.Semaphore(2)
+_Q_SEM = asyncio.Semaphore(1)
 _active_jobs: dict[int, str] = {}
 _active_tasks: dict[int, asyncio.Task] = {}
 _cancel_flags: dict[int, asyncio.Event] = {}
@@ -448,7 +444,7 @@ async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not lecture_text or len(lecture_text.strip()) < 50:
-        await msg.reply_text("❌ لم أتمكن من استخراج نص كافٍ. تأكد من أن المحتوى يحتوي على نص.")
+        await msg.reply_text("❌ لم أتمكن من استخراج نص كافٍ.")
         return
 
     # التحقق من المحاولات
@@ -526,10 +522,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔗 *رابط الإحالة الخاص بك*\n\n"
             f"`{ref_link}`\n\n"
             f"👥 أصدقاء دعوتهم: *{stats['total_referrals']}*\n"
-            f"⭐ نقاطك: *{stats['current_points']}*\n\n"
-            f"📌 *كيف يعمل؟*\n"
-            f"• شارك رابطك مع أصدقائك\n"
-            f"• لكل 10 أصدقاء يسجلون = محاولة مجانية 🎉",
+            f"⭐ نقاطك: *{stats['current_points']}*",
             parse_mode="Markdown",
         )
         return
@@ -543,10 +536,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         user = get_user(uid)
-        if not user:
-            await q.edit_message_text("⚠️ خطأ، أعد المحاولة.")
-            return
-        if user["attempts_left"] <= 0:
+        if not user or user["attempts_left"] <= 0:
             await q.edit_message_text("❌ لا تملك محاولات كافية.")
             return
 
@@ -618,11 +608,11 @@ async def _process_lecture(
             lecture_type = lecture_data.get("lecture_type", "other")
             await upd(20, f"✅ تم التحليل — {len(sections)} أقسام")
 
-            # 2️⃣ جلب الصور
+            # 2️⃣ جلب الصور (صورتين فقط بالتوازي لتوفير الذاكرة)
             _check_cancelled()
             await upd(22, "🎨 جلب الصور التعليمية...")
             
-            _img_sem = asyncio.Semaphore(4)
+            _img_sem = asyncio.Semaphore(2)
             
             async def _fetch_one_section_images(section: dict):
                 async with _img_sem:
@@ -741,7 +731,7 @@ async def _process_lecture(
         except asyncio.CancelledError:
             update_video_request(req_id, "cancelled")
             try:
-                await prog_msg.edit_text("⛔ تم إلغاء المعالجة.\n\nأرسل محاضرة جديدة متى شئت.")
+                await prog_msg.edit_text("⛔ تم إلغاء المعالجة.")
             except Exception:
                 pass
             await context.bot.send_message(uid, "⛔ تم الإلغاء.", reply_markup=main_keyboard())
@@ -751,41 +741,19 @@ async def _process_lecture(
             await _safe_edit(
                 prog_msg,
                 "⏳ *الخدمة مشغولة حالياً*\n\n"
-                "حدث ضغط على خوادم الذكاء الاصطناعي.\n"
-                "✅ لم يتم خصم محاولتك — حاول مرة أخرى بعد دقائق قليلة.",
+                "✅ لم يتم خصم محاولتك — حاول مرة أخرى بعد دقائق.",
                 parse_mode="Markdown",
             )
-            try:
-                await context.bot.send_message(
-                    uid,
-                    "أرسل المحاضرة مرة أخرى بعد قليل وسيعمل معك 🙂",
-                    reply_markup=main_keyboard(),
-                )
-            except Exception:
-                pass
-            
-            try:
-                await context.bot.send_message(
-                    OWNER_ID,
-                    f"⚠️ *تنبيه Quota*\n\nالمستخدم: `{uid}`\n`{str(e)[:400]}`",
-                    parse_mode="Markdown",
-                )
-            except Exception:
-                pass
+            await context.bot.send_message(uid, "حاول مرة أخرى بعد قليل 🙂", reply_markup=main_keyboard())
 
         except Exception as e:
             update_video_request(req_id, "failed", error_message=str(e))
-            logger.error(f"Video generation failed for user {uid}: {e}", exc_info=True)
+            logger.error(f"Video generation failed: {e}")
             await _safe_edit(
                 prog_msg,
-                f"❌ *حدث خطأ أثناء المعالجة*\n\n`{str(e)[:300]}`\n\n"
-                "لم يتم خصم محاولتك، حاول مرة أخرى.",
+                f"❌ *حدث خطأ*\n\n`{str(e)[:200]}`\n\nلم يتم خصم محاولتك.",
             )
-            await context.bot.send_message(
-                uid,
-                "يمكنك المحاولة مجدداً أو التواصل مع الدعم.",
-                reply_markup=main_keyboard(),
-            )
+            await context.bot.send_message(uid, "يمكنك المحاولة مجدداً.", reply_markup=main_keyboard())
 
         finally:
             _active_jobs.pop(uid, None)
@@ -796,23 +764,10 @@ async def _process_lecture(
                     os.remove(video_path)
                 except Exception:
                     pass
+            # تنظيف الذاكرة
+            gc.collect()
 
-import gc
 
-# في نهاية دالة _process_lecture بعد إرسال الفيديو، أضف:
-finally:
-    _active_jobs.pop(uid, None)
-    _active_tasks.pop(uid, None)
-    _cancel_flags.pop(uid, None)
-    if video_path and os.path.exists(video_path):
-        try:
-            os.remove(video_path)
-        except:
-            pass
-    
-    # تنظيف الذاكرة
-    gc.collect()
-    
 # ══════════════════════════════════════════════════════════════════════════════
 # 🚀 الدالة الرئيسية - POLLING MODE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -823,20 +778,10 @@ async def main():
     # عرض حالة المفاتيح
     try:
         el_status = keys_status()
-        logger.info(f"🔑 ElevenLabs keys: {el_status['active']}/{el_status['total']} active")
-    except Exception as e:
-        logger.info(f"🔑 ElevenLabs: not configured")
-    
-    try:
-        img_status = get_image_keys_status()
-        stability = img_status.get('stability', {})
-        logger.info(f"🖼️ Stability keys: {stability.get('active', 0)}/{stability.get('total', 0)} active")
-        logger.info(f"🖼️ Replicate: {'✅' if img_status.get('replicate', {}).get('available') else '❌'}")
-        logger.info(f"🖼️ Pollinations: {'✅ (free)' if img_status.get('pollinations', {}).get('available') else '❌'}")
-    except Exception as e:
-        logger.info(f"🖼️ Image services: not configured")
+        logger.info(f"🔑 ElevenLabs: {el_status['active']}/{el_status['total']} active")
+    except Exception:
+        logger.info("🔑 ElevenLabs: not configured")
 
-    # بناء التطبيق
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     # Command handlers
@@ -870,21 +815,17 @@ async def main():
     logger.info("✅ Bot handlers registered")
     logger.info("🔄 Starting polling mode...")
     
-    # حذف أي webhook قديم وبدء polling
     await app.initialize()
     await app.bot.delete_webhook(drop_pending_updates=True)
     await app.start()
     
     logger.info("✅ Bot is running! Polling mode active.")
-    logger.info("📡 Waiting for messages...")
     
-    # بدء polling
     await app.updater.start_polling(
         drop_pending_updates=True,
         allowed_updates=["message", "callback_query", "pre_checkout_query", "successful_payment"],
     )
     
-    # انتظار حتى يتم إيقاف البوت
     try:
         await asyncio.Event().wait()
     except (KeyboardInterrupt, asyncio.CancelledError):
