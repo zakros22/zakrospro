@@ -60,7 +60,7 @@ class QuotaExhaustedError(Exception):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 1️⃣ DEEPSEEK
+# 1️⃣ DEEPSEEK - 9 مفاتيح
 # ══════════════════════════════════════════════════════════════════════════════
 DEEPSEEK_MODELS = ["deepseek-chat", "deepseek-reasoner"]
 
@@ -105,7 +105,7 @@ async def _generate_with_deepseek(prompt: str, max_tokens: int = 8192) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 2️⃣ GEMINI
+# 2️⃣ GEMINI - 9 مفاتيح
 # ══════════════════════════════════════════════════════════════════════════════
 def _get_gemini_client(key: str):
     if not GEMINI_AVAILABLE:
@@ -157,9 +157,9 @@ async def _generate_with_gemini(prompt: str, max_tokens: int = 8192) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 3️⃣ GROQ
+# 3️⃣ GROQ - 9 مفاتيح
 # ══════════════════════════════════════════════════════════════════════════════
-GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it"]
+GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it", "mixtral-8x7b-32768"]
 
 async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
     if not _groq_pool:
@@ -202,13 +202,15 @@ async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 4️⃣ OPENROUTER
+# 4️⃣ OPENROUTER - 9 مفاتيح
 # ══════════════════════════════════════════════════════════════════════════════
 OR_MODELS = [
     "deepseek/deepseek-chat:free",
     "google/gemini-2.0-flash-exp:free",
     "meta-llama/llama-3.3-70b-instruct:free",
     "qwen/qwen2.5-72b-instruct:free",
+    "mistralai/mistral-7b-instruct:free",
+    "nousresearch/hermes-3-llama-3.1-405b:free",
 ]
 
 async def _generate_with_openrouter(prompt: str, max_tokens: int = 8192) -> str:
@@ -259,7 +261,7 @@ async def _generate_with_openrouter(prompt: str, max_tokens: int = 8192) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 5️⃣ بدائل مجانية
+# 5️⃣ بدائل مجانية - 6 خدمات مختلفة
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _generate_with_duckduckgo(prompt: str) -> str:
@@ -315,27 +317,131 @@ async def _generate_with_blackbox(prompt: str) -> str:
     raise Exception("Blackbox failed")
 
 
+async def _generate_with_huggingface(prompt: str) -> str:
+    """Hugging Face Inference API - مجاني (بدون مفتاح للنماذج المجانية)"""
+    try:
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "inputs": prompt[:2000],
+            "parameters": {"max_new_tokens": 2000, "temperature": 0.3}
+        }
+        # استخدام نموذج مجاني
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2",
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=90),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if isinstance(data, list) and data:
+                        return data[0].get("generated_text", "")
+    except Exception as e:
+        print(f"⚠️ HuggingFace error: {e}")
+    raise Exception("HuggingFace failed")
+
+
+async def _generate_with_cohere(prompt: str) -> str:
+    """Cohere - نموذج مجاني (إذا ماكو مفتاح، نستخدم endpoint العام)"""
+    try:
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        payload = {
+            "message": prompt[:4000],
+            "model": "command-r",
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://coral.cohere.com/api/chat",
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("text", "")
+    except Exception as e:
+        print(f"⚠️ Cohere error: {e}")
+    raise Exception("Cohere failed")
+
+
+async def _generate_with_perplexity(prompt: str) -> str:
+    """Perplexity API - محاولة استخدام النموذج المجاني"""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "query": prompt[:2000],
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://www.perplexity.ai/api/chat",
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("answer", "")
+    except Exception as e:
+        print(f"⚠️ Perplexity error: {e}")
+    raise Exception("Perplexity failed")
+
+
+async def _generate_with_youcom(prompt: str) -> str:
+    """You.com API - مجاني"""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "query": prompt[:2000],
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"https://you.com/api/chat?q={prompt[:500]}",
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.text()
+    except Exception as e:
+        print(f"⚠️ You.com error: {e}")
+    raise Exception("You.com failed")
+
+
 async def _generate_with_free_fallback(prompt: str) -> str:
-    """تجربة البدائل المجانية"""
+    """تجربة جميع البدائل المجانية"""
     print("🆓 Trying free alternatives...")
     
-    try:
-        result = await _generate_with_duckduckgo(prompt)
-        if result and len(result) > 100:
-            print("✅ DuckDuckGo success (free)")
-            return result
-    except Exception:
-        pass
+    # قائمة البدائل المجانية
+    fallbacks = [
+        ("DuckDuckGo", _generate_with_duckduckgo),
+        ("Blackbox AI", _generate_with_blackbox),
+        ("HuggingFace", _generate_with_huggingface),
+        ("Cohere", _generate_with_cohere),
+        ("Perplexity", _generate_with_perplexity),
+        ("You.com", _generate_with_youcom),
+    ]
     
-    try:
-        result = await _generate_with_blackbox(prompt)
-        if result and len(result) > 100:
-            print("✅ Blackbox AI success (free)")
-            return result
-    except Exception:
-        pass
+    for name, func in fallbacks:
+        try:
+            print(f"🔄 Trying {name}...")
+            result = await func(prompt)
+            if result and len(result) > 100:
+                print(f"✅ {name} success (free)")
+                return result
+        except Exception as e:
+            print(f"⚠️ {name} failed: {str(e)[:50]}")
+            continue
     
-    raise QuotaExhaustedError("All free alternatives failed")
+    raise QuotaExhaustedError("All 6 free alternatives failed")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -344,7 +450,11 @@ async def _generate_with_free_fallback(prompt: str) -> str:
 async def _generate_with_rotation(prompt: str, max_tokens: int = 8192) -> str:
     """
     تجرب الخدمات بالترتيب:
-    1. DeepSeek → 2. Gemini → 3. Groq → 4. OpenRouter → 5. Free alternatives
+    1. DeepSeek (9 مفاتيح)
+    2. Gemini (9 مفاتيح)
+    3. Groq (9 مفاتيح)
+    4. OpenRouter (9 مفاتيح)
+    5. 6 بدائل مجانية
     """
     errors = []
     
@@ -384,8 +494,8 @@ async def _generate_with_rotation(prompt: str, max_tokens: int = 8192) -> str:
             errors.append(f"OpenRouter: {e}")
             print("⚠️ OpenRouter exhausted — switching to free alternatives...")
     
-    # 5️⃣ Free alternatives
-    print("🔄 Trying free alternatives...")
+    # 5️⃣ 6 بدائل مجانية
+    print("🔄 Trying 6 free alternatives...")
     try:
         return await _generate_with_free_fallback(prompt)
     except QuotaExhaustedError as e:
@@ -416,13 +526,10 @@ def _compute_lecture_scale(text: str) -> tuple:
 def _clean_json_response(content: str) -> str:
     """تنظيف استجابة JSON من أي نص إضافي"""
     content = content.strip()
-    
-    # إزالة علامات markdown
     content = re.sub(r'^```json\s*', '', content)
     content = re.sub(r'^```\s*', '', content)
     content = re.sub(r'\s*```$', '', content)
     
-    # البحث عن أول { وآخر }
     start_idx = content.find('{')
     end_idx = content.rfind('}')
     
@@ -436,47 +543,29 @@ def _extract_valid_json(content: str) -> dict:
     """استخراج JSON صالح من النص"""
     content = _clean_json_response(content)
     
-    # المحاولة الأولى: تحليل مباشر
     try:
         return json.loads(content)
-    except json.JSONDecodeError as e:
-        print(f"⚠️ JSON parse error: {e}")
+    except json.JSONDecodeError:
+        pass
     
-    # المحاولة الثانية: إصلاح المشاكل الشائعة
     try:
-        # إصلاح الفواصل الزائدة
         fixed = re.sub(r',\s*}', '}', content)
         fixed = re.sub(r',\s*]', ']', fixed)
-        # إصلاح علامات التنصيص
-        fixed = fixed.replace('"', '"').replace('"', '"')
-        fixed = fixed.replace(''', "'").replace(''', "'")
         return json.loads(fixed)
     except json.JSONDecodeError:
         pass
     
-    # المحاولة الثالثة: استخدام regex لاستخراج الأجزاء الرئيسية
+    # استخراج الأجزاء الرئيسية
     try:
-        # استخراج عنوان المحاضرة
         title_match = re.search(r'"title"\s*:\s*"([^"]*)"', content)
         title = title_match.group(1) if title_match else "محاضرة"
         
-        # استخراج نوع المحاضرة
         type_match = re.search(r'"lecture_type"\s*:\s*"([^"]*)"', content)
         lecture_type = type_match.group(1) if type_match else "other"
         
-        # استخراج الملخص
         summary_match = re.search(r'"summary"\s*:\s*"([^"]*)"', content)
         summary = summary_match.group(1) if summary_match else ""
         
-        # استخراج النقاط الرئيسية
-        key_points = []
-        kp_match = re.search(r'"key_points"\s*:\s*\[(.*?)\]', content, re.DOTALL)
-        if kp_match:
-            kp_text = kp_match.group(1)
-            kp_items = re.findall(r'"([^"]*)"', kp_text)
-            key_points = kp_items[:4]
-        
-        # بناء JSON أساسي
         return {
             "lecture_type": lecture_type,
             "title": title,
@@ -485,20 +574,19 @@ def _extract_valid_json(content: str) -> dict:
                     "title": f"القسم {i+1}",
                     "content": "محتوى القسم",
                     "keywords": ["مصطلح 1", "مصطلح 2", "مصطلح 3", "مصطلح 4"],
-                    "keyword_images": ["educational cartoon", "educational cartoon", "educational cartoon", "educational cartoon"],
+                    "keyword_images": ["educational"] * 4,
                     "narration": "نص الشرح",
                     "duration_estimate": 45
                 }
                 for i in range(3)
             ],
             "summary": summary,
-            "key_points": key_points or ["نقطة 1", "نقطة 2", "نقطة 3", "نقطة 4"],
+            "key_points": ["نقطة 1", "نقطة 2", "نقطة 3", "نقطة 4"],
             "total_sections": 3
         }
     except Exception:
         pass
     
-    # فشل كل شيء - إرجاع JSON افتراضي
     raise ValueError(f"Failed to parse JSON: {content[:300]}")
 
 
@@ -571,27 +659,24 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
 
 مهم: {num_sections} أقسام بالضبط. {lang_note} أرجع JSON فقط بدون أي نص إضافي."""
 
-    # محاولة التحليل حتى 3 مرات
     for attempt in range(3):
         try:
             content = await _generate_with_rotation(prompt, max_tokens=8192)
             result = _extract_valid_json(content)
             
-            # التحقق من وجود الأقسام
             if not result.get("sections"):
                 result["sections"] = [
                     {
                         "title": f"القسم {i+1}" if not is_english else f"Section {i+1}",
                         "content": "محتوى القسم",
                         "keywords": ["مصطلح 1", "مصطلح 2", "مصطلح 3", "مصطلح 4"],
-                        "keyword_images": ["educational", "educational", "educational", "educational"],
+                        "keyword_images": ["educational"] * 4,
                         "narration": "نص الشرح",
                         "duration_estimate": 45
                     }
                     for i in range(num_sections)
                 ]
             
-            # التأكد من عدد الأقسام
             while len(result["sections"]) < num_sections:
                 result["sections"].append({
                     "title": f"القسم {len(result['sections'])+1}",
@@ -610,7 +695,6 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
         except Exception as e:
             print(f"⚠️ Analysis attempt {attempt + 1} failed: {e}")
             if attempt == 2:
-                # آخر محاولة - إرجاع JSON افتراضي
                 return {
                     "lecture_type": "other",
                     "title": "المحاضرة" if not is_english else "Lecture",
@@ -619,7 +703,7 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
                             "title": f"القسم {i+1}" if not is_english else f"Section {i+1}",
                             "content": "محتوى القسم",
                             "keywords": ["مصطلح 1", "مصطلح 2", "مصطلح 3", "مصطلح 4"],
-                            "keyword_images": ["educational", "educational", "educational", "educational"],
+                            "keyword_images": ["educational"] * 4,
                             "narration": "نص الشرح الكامل للقسم",
                             "duration_estimate": 45
                         }
@@ -651,7 +735,7 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
             raise ValueError("النص المستخرج قصير جداً")
         return result
     except ImportError:
-        raise ImportError("PyPDF2 غير مثبت. قم بتثبيته: pip install PyPDF2")
+        raise ImportError("PyPDF2 غير مثبت. pip install PyPDF2")
     except Exception as e:
         raise ValueError(f"فشل في استخراج النص من PDF: {e}")
 
