@@ -12,32 +12,139 @@ from config import (
 from image_generator import fetch_image_for_keyword, generate_educational_image
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🔑 KEY POOLS & ROTATION
+# 🔑 KEY POOLS & ROTATION - تدوير المفاتيح
 # ══════════════════════════════════════════════════════════════════════════════
-_deepseek_pool = list(DEEPSEEK_API_KEYS)
+
+# DeepSeek Keys
+_deepseek_pool = list(DEEPSEEK_API_KEYS) if DEEPSEEK_API_KEYS else []
 _deepseek_idx = 0
 _deepseek_exhausted = set()
 
-_gemini_pool = list(GOOGLE_API_KEYS)
+# Gemini Keys
+_gemini_pool = list(GOOGLE_API_KEYS) if GOOGLE_API_KEYS else []
 _gemini_idx = 0
 _gemini_exhausted = set()
 _gemini_clients = {}
 
-_groq_pool = list(GROQ_API_KEYS)
+# Groq Keys
+_groq_pool = list(GROQ_API_KEYS) if GROQ_API_KEYS else []
 _groq_idx = 0
 _groq_exhausted = set()
 
-_or_pool = list(OPENROUTER_API_KEYS)
+# OpenRouter Keys
+_or_pool = list(OPENROUTER_API_KEYS) if OPENROUTER_API_KEYS else []
 _or_idx = 0
 _or_exhausted = set()
 
 
 class QuotaExhaustedError(Exception):
+    """يتم رميها عندما تنفد جميع المفاتيح لخدمة معينة"""
+    pass
+
+
+class AllServicesExhaustedError(Exception):
+    """يتم رميها عندما تنفد جميع الخدمات بما فيها البدائل المجانية"""
     pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 1️⃣ DEEPSEEK
+# 🆓 البدائل المجانية (بدون مفاتيح)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# نماذج مجانية متاحة عبر واجهات مختلفة
+FREE_MODELS = [
+    {
+        "name": "DuckDuckGo AI Chat",
+        "url": "https://duckduckgo.com/duckchat/v1/chat",
+        "model": "gpt-4o-mini",
+    },
+    {
+        "name": "ChatGPT Free",
+        "url": "https://chatgpt.com/backend-api/conversation",
+    },
+]
+
+
+async def _generate_with_duckduckgo(prompt: str) -> str:
+    """محاولة استخدام DuckDuckGo AI Chat المجاني"""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Content-Type": "application/json",
+            "Origin": "https://duckduckgo.com",
+            "Referer": "https://duckduckgo.com/",
+        }
+        payload = {
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": prompt[:4000]}],
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://duckduckgo.com/duckchat/v1/chat",
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("message", "")
+    except Exception as e:
+        print(f"⚠️ DuckDuckGo error: {e}")
+    raise Exception("DuckDuckGo failed")
+
+
+async def _generate_with_blackbox(prompt: str) -> str:
+    """محاولة استخدام Blackbox AI المجاني"""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "messages": [{"role": "user", "content": prompt[:4000]}],
+            "model": "blackboxai",
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://www.blackbox.ai/api/chat",
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.text()
+    except Exception as e:
+        print(f"⚠️ Blackbox error: {e}")
+    raise Exception("Blackbox failed")
+
+
+async def _generate_with_free_fallback(prompt: str) -> str:
+    """تجربة البدائل المجانية المتاحة بدون أي مفتاح"""
+    print("🆓 Trying free alternatives...")
+    
+    # 1. DuckDuckGo
+    try:
+        result = await _generate_with_duckduckgo(prompt)
+        if result and len(result) > 100:
+            print("✅ DuckDuckGo success (free)")
+            return result
+    except Exception:
+        pass
+    
+    # 2. Blackbox AI
+    try:
+        result = await _generate_with_blackbox(prompt)
+        if result and len(result) > 100:
+            print("✅ Blackbox AI success (free)")
+            return result
+    except Exception:
+        pass
+    
+    raise AllServicesExhaustedError("All free alternatives failed")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 1️⃣ DEEPSEEK - الأولوية الأولى
 # ══════════════════════════════════════════════════════════════════════════════
 DEEPSEEK_MODELS = ["deepseek-chat", "deepseek-reasoner"]
 
@@ -45,16 +152,13 @@ async def _generate_with_deepseek(prompt: str, max_tokens: int = 8192) -> str:
     global _deepseek_idx, _deepseek_exhausted
     
     if not _deepseek_pool:
-        raise QuotaExhaustedError("No DeepSeek keys")
+        raise QuotaExhaustedError("No DeepSeek keys configured")
     
-    for _ in range(len(_deepseek_pool)):
-        key_idx = _deepseek_idx % len(_deepseek_pool)
-        key = _deepseek_pool[key_idx]
-        _deepseek_idx += 1
-        
-        if key in _deepseek_exhausted:
-            continue
-            
+    available_keys = [k for k in _deepseek_pool if k not in _deepseek_exhausted]
+    if not available_keys:
+        raise QuotaExhaustedError("All DeepSeek keys exhausted")
+    
+    for key in available_keys:
         for model in DEEPSEEK_MODELS:
             try:
                 headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
@@ -71,19 +175,26 @@ async def _generate_with_deepseek(prompt: str, max_tokens: int = 8192) -> str:
                     ) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            print(f"✅ DeepSeek success: {model}")
+                            print(f"✅ DeepSeek success: {model} (key: {key[:12]}...)")
                             return data["choices"][0]["message"]["content"].strip()
                         elif resp.status in (429, 402, 403):
-                            _deepseek_exhausted.add(key)
-                            break
+                            body = await resp.text()
+                            if "quota" in body.lower() or "insufficient" in body.lower():
+                                print(f"⚠️ DeepSeek key exhausted: {key[:12]}...")
+                                _deepseek_exhausted.add(key)
+                                break
             except Exception as e:
-                print(f"⚠️ DeepSeek error: {e}")
+                print(f"⚠️ DeepSeek error: {str(e)[:100]}")
                 continue
-    raise QuotaExhaustedError("All DeepSeek keys exhausted")
+    
+    # إذا وصلنا هنا، كل المفاتيح المتاحة فشلت
+    if len(_deepseek_exhausted) >= len(_deepseek_pool):
+        raise QuotaExhaustedError("All DeepSeek keys exhausted")
+    raise QuotaExhaustedError("DeepSeek temporarily unavailable")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 2️⃣ GEMINI
+# 2️⃣ GEMINI - الأولوية الثانية
 # ══════════════════════════════════════════════════════════════════════════════
 def _get_gemini_client(key: str):
     if key not in _gemini_clients:
@@ -95,40 +206,46 @@ async def _generate_with_gemini(prompt: str, max_tokens: int = 8192) -> str:
     global _gemini_idx, _gemini_exhausted
     
     if not _gemini_pool:
-        raise QuotaExhaustedError("No Gemini keys")
+        raise QuotaExhaustedError("No Gemini keys configured")
     
     models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
+    available_keys = [k for k in _gemini_pool if k not in _gemini_exhausted]
     
-    for _ in range(len(_gemini_pool)):
-        key_idx = _gemini_idx % len(_gemini_pool)
-        key = _gemini_pool[key_idx]
-        _gemini_idx += 1
-        
-        if key in _gemini_exhausted:
-            continue
-            
+    if not available_keys:
+        raise QuotaExhaustedError("All Gemini keys exhausted")
+    
+    for key in available_keys:
         client = _get_gemini_client(key)
         
         for model in models:
             try:
                 response = await asyncio.to_thread(
                     client.models.generate_content,
-                    model=model, contents=prompt,
-                    config=genai_types.GenerateContentConfig(temperature=0.3, max_output_tokens=max_tokens),
+                    model=model,
+                    contents=prompt,
+                    config=genai_types.GenerateContentConfig(
+                        temperature=0.3,
+                        max_output_tokens=max_tokens
+                    ),
                 )
-                print(f"✅ Gemini success: {model}")
+                print(f"✅ Gemini success: {model} (key: {key[:12]}...)")
                 return response.text.strip()
             except Exception as e:
                 err = str(e)
-                if "quota" in err.lower() or "429" in err:
+                if "quota" in err.lower() or "exhausted" in err.lower() or "429" in err:
+                    print(f"⚠️ Gemini key exhausted: {key[:12]}...")
                     _gemini_exhausted.add(key)
                     break
+                print(f"⚠️ Gemini error: {err[:100]}")
                 continue
-    raise QuotaExhaustedError("All Gemini keys exhausted")
+    
+    if len(_gemini_exhausted) >= len(_gemini_pool):
+        raise QuotaExhaustedError("All Gemini keys exhausted")
+    raise QuotaExhaustedError("Gemini temporarily unavailable")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 3️⃣ GROQ
+# 3️⃣ GROQ - الأولوية الثالثة
 # ══════════════════════════════════════════════════════════════════════════════
 GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it", "mixtral-8x7b-32768"]
 
@@ -136,16 +253,13 @@ async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
     global _groq_idx, _groq_exhausted
     
     if not _groq_pool:
-        raise QuotaExhaustedError("No Groq keys")
+        raise QuotaExhaustedError("No Groq keys configured")
     
-    for _ in range(len(_groq_pool)):
-        key_idx = _groq_idx % len(_groq_pool)
-        key = _groq_pool[key_idx]
-        _groq_idx += 1
-        
-        if key in _groq_exhausted:
-            continue
-            
+    available_keys = [k for k in _groq_pool if k not in _groq_exhausted]
+    if not available_keys:
+        raise QuotaExhaustedError("All Groq keys exhausted")
+    
+    for key in available_keys:
         for model in GROQ_MODELS:
             try:
                 headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
@@ -162,40 +276,45 @@ async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
                     ) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            print(f"✅ Groq success: {model}")
+                            print(f"✅ Groq success: {model} (key: {key[:12]}...)")
                             return data["choices"][0]["message"]["content"].strip()
                         elif resp.status in (429, 403):
-                            _groq_exhausted.add(key)
-                            break
+                            body = await resp.text()
+                            if "quota" in body.lower() or "limit" in body.lower():
+                                print(f"⚠️ Groq key exhausted: {key[:12]}...")
+                                _groq_exhausted.add(key)
+                                break
             except Exception as e:
+                print(f"⚠️ Groq error: {str(e)[:100]}")
                 continue
-    raise QuotaExhaustedError("All Groq keys exhausted")
+    
+    if len(_groq_exhausted) >= len(_groq_pool):
+        raise QuotaExhaustedError("All Groq keys exhausted")
+    raise QuotaExhaustedError("Groq temporarily unavailable")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 4️⃣ OPENROUTER
+# 4️⃣ OPENROUTER - الأولوية الرابعة
 # ══════════════════════════════════════════════════════════════════════════════
 OR_MODELS = [
     "deepseek/deepseek-chat:free",
     "google/gemini-2.0-flash-exp:free",
     "meta-llama/llama-3.3-70b-instruct:free",
     "qwen/qwen2.5-72b-instruct:free",
+    "mistralai/mistral-7b-instruct:free",
 ]
 
 async def _generate_with_openrouter(prompt: str, max_tokens: int = 8192) -> str:
     global _or_idx, _or_exhausted
     
     if not _or_pool:
-        raise QuotaExhaustedError("No OpenRouter keys")
+        raise QuotaExhaustedError("No OpenRouter keys configured")
     
-    for _ in range(len(_or_pool)):
-        key_idx = _or_idx % len(_or_pool)
-        key = _or_pool[key_idx]
-        _or_idx += 1
-        
-        if key in _or_exhausted:
-            continue
-            
+    available_keys = [k for k in _or_pool if k not in _or_exhausted]
+    if not available_keys:
+        raise QuotaExhaustedError("All OpenRouter keys exhausted")
+    
+    for key in available_keys:
         for model in OR_MODELS:
             try:
                 headers = {
@@ -219,61 +338,102 @@ async def _generate_with_openrouter(prompt: str, max_tokens: int = 8192) -> str:
                             data = await resp.json()
                             content = data["choices"][0]["message"]["content"]
                             if content:
-                                print(f"✅ OpenRouter success: {model}")
+                                print(f"✅ OpenRouter success: {model} (key: {key[:12]}...)")
                                 return content.strip()
                         elif resp.status in (429, 402, 403):
-                            _or_exhausted.add(key)
-                            break
-            except Exception:
+                            body = await resp.text()
+                            if "quota" in body.lower() or "credits" in body.lower():
+                                print(f"⚠️ OpenRouter key exhausted: {key[:12]}...")
+                                _or_exhausted.add(key)
+                                break
+            except Exception as e:
+                print(f"⚠️ OpenRouter error: {str(e)[:100]}")
                 continue
-    raise QuotaExhaustedError("All OpenRouter keys exhausted")
+    
+    if len(_or_exhausted) >= len(_or_pool):
+        raise QuotaExhaustedError("All OpenRouter keys exhausted")
+    raise QuotaExhaustedError("OpenRouter temporarily unavailable")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🔄 دالة التوليد الرئيسية
+# 🔄 دالة التوليد الرئيسية - تدوير كامل + بدائل مجانية
 # ══════════════════════════════════════════════════════════════════════════════
 async def _generate_with_rotation(prompt: str, max_tokens: int = 8192) -> str:
     """
-    تجرب الخدمات بالترتيب:
-    1. DeepSeek
-    2. Gemini
-    3. Groq
-    4. OpenRouter
+    تجرب جميع الخدمات بالترتيب مع تدوير المفاتيح:
+    1. DeepSeek (مع تدوير 9 مفاتيح)
+    2. Gemini (مع تدوير 9 مفاتيح)
+    3. Groq (مع تدوير 9 مفاتيح)
+    4. OpenRouter (مع تدوير 9 مفاتيح)
+    5. البدائل المجانية (DuckDuckGo, Blackbox)
     """
     errors = []
     
     # 1️⃣ DeepSeek
     if _deepseek_pool:
         try:
+            print("🔄 Trying DeepSeek...")
             return await _generate_with_deepseek(prompt, max_tokens)
         except QuotaExhaustedError as e:
             errors.append(f"DeepSeek: {e}")
-            print("🔄 Switching to Gemini...")
+            print("⚠️ DeepSeek exhausted — switching to Gemini...")
+        except Exception as e:
+            errors.append(f"DeepSeek error: {e}")
+            print("⚠️ DeepSeek failed — switching to Gemini...")
+    else:
+        print("ℹ️ No DeepSeek keys configured — skipping...")
     
     # 2️⃣ Gemini
     if _gemini_pool:
         try:
+            print("🔄 Trying Gemini...")
             return await _generate_with_gemini(prompt, max_tokens)
         except QuotaExhaustedError as e:
             errors.append(f"Gemini: {e}")
-            print("🔄 Switching to Groq...")
+            print("⚠️ Gemini exhausted — switching to Groq...")
+        except Exception as e:
+            errors.append(f"Gemini error: {e}")
+            print("⚠️ Gemini failed — switching to Groq...")
+    else:
+        print("ℹ️ No Gemini keys configured — skipping...")
     
     # 3️⃣ Groq
     if _groq_pool:
         try:
+            print("🔄 Trying Groq...")
             return await _generate_with_groq(prompt, max_tokens)
         except QuotaExhaustedError as e:
             errors.append(f"Groq: {e}")
-            print("🔄 Switching to OpenRouter...")
+            print("⚠️ Groq exhausted — switching to OpenRouter...")
+        except Exception as e:
+            errors.append(f"Groq error: {e}")
+            print("⚠️ Groq failed — switching to OpenRouter...")
+    else:
+        print("ℹ️ No Groq keys configured — skipping...")
     
     # 4️⃣ OpenRouter
     if _or_pool:
         try:
+            print("🔄 Trying OpenRouter...")
             return await _generate_with_openrouter(prompt, max_tokens)
         except QuotaExhaustedError as e:
             errors.append(f"OpenRouter: {e}")
+            print("⚠️ OpenRouter exhausted — switching to free alternatives...")
+        except Exception as e:
+            errors.append(f"OpenRouter error: {e}")
+            print("⚠️ OpenRouter failed — switching to free alternatives...")
+    else:
+        print("ℹ️ No OpenRouter keys configured — skipping...")
     
-    raise QuotaExhaustedError(f"All services exhausted: {' | '.join(errors)}")
+    # 5️⃣ البدائل المجانية (بدون مفاتيح)
+    print("🔄 Trying free alternatives...")
+    try:
+        return await _generate_with_free_fallback(prompt)
+    except AllServicesExhaustedError as e:
+        errors.append(f"Free alternatives: {e}")
+    
+    # كل شيء فشل
+    raise QuotaExhaustedError(f"All services exhausted: {' | '.join(errors[-3:])}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -353,10 +513,10 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
       "content": "{content_hint}",
       "keywords": {keywords_hint},
       "keyword_images": [
-        "cartoon visual 1 — 3-5 English words describing a simple cartoon that shows exactly what the narration says about keyword1",
-        "cartoon visual 2 — matches what narration says about keyword2",
-        "cartoon visual 3 — matches what narration says about keyword3",
-        "cartoon visual 4 — matches what narration says about keyword4"
+        "cartoon visual 1 — 3-5 English words",
+        "cartoon visual 2 — 3-5 English words",
+        "cartoon visual 3 — 3-5 English words",
+        "cartoon visual 4 — 3-5 English words"
       ],
       "narration": "{narration_hint}",
       "duration_estimate": 45
@@ -370,10 +530,9 @@ async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
 مهم جداً:
 - {lang_note}
 - يجب أن تكون {num_sections} أقسام بالضبط لا أكثر ولا أقل
-- اجعل الشرح (narration) طبيعياً وطويلاً كأن معلم خبير يشرح أمام الطلاب مباشرة
-- كل قسم يجب أن يكون شرحاً وافياً ({narration_sentences} جمل)
-- keywords: 4 مصطلحات/كلمات مفتاحية أساسية
-- keyword_images: مصفوفة من 4 عناصر - وصف إنجليزي لصورة كرتونية بسيطة (3-5 كلمات)
+- اجعل الشرح (narration) طبيعياً وطويلاً
+- keywords: 4 مصطلحات أساسية
+- keyword_images: وصف إنجليزي لصورة كرتونية (3-5 كلمات)
 - أرجع JSON فقط بدون أي نص إضافي
 """
 
