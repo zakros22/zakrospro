@@ -1,137 +1,113 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-بوت المحاضرات الذكي - Webhook Mode
-"""
-
 import asyncio
 import os
 import sys
-import logging
-from aiohttp import web
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  إعداد التسجيل
+# تصحيح PIL.Image.ANTIALIAS (للتأكد من التوافق)
 # ══════════════════════════════════════════════════════════════════════════════
-logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  المتغيرات
-# ══════════════════════════════════════════════════════════════════════════════
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-PORT = int(os.getenv("PORT", 5000))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
-
-if not TOKEN:
-    logger.error("❌ TELEGRAM_BOT_TOKEN غير موجود")
-    sys.exit(1)
-
-if not WEBHOOK_URL:
-    logger.error("❌ WEBHOOK_URL غير موجود")
-    sys.exit(1)
-
-logger.info(f"✅ TOKEN: {TOKEN[:10]}...")
-logger.info(f"✅ WEBHOOK_URL: {WEBHOOK_URL}")
-logger.info(f"✅ PORT: {PORT}")
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  استيراد البوت
-# ══════════════════════════════════════════════════════════════════════════════
-from telegram import Update
-from telegram.ext import Application
-from bot import setup_handlers
-
-# المتغير العام للبوت
-bot_app = None
+try:
+    import PIL.Image as _pil
+    if not hasattr(_pil, "ANTIALIAS"):
+        _pil.ANTIALIAS = _pil.LANCZOS
+    _orig_ga = _pil.__dict__.get("__getattr__")
+    def _pil_ga(name):
+        if name == "ANTIALIAS":
+            return _pil.LANCZOS
+        if _orig_ga:
+            return _orig_ga(name)
+        raise AttributeError(f"module 'PIL.Image' has no attribute {name!r}")
+    _pil.__getattr__ = _pil_ga
+    print("[compat] ✅ PIL.Image.ANTIALIAS patch applied")
+except Exception as _e:
+    print(f"[compat] ⚠️ PIL patch failed: {_e}", file=sys.stderr)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  معالجات HTTP
-# ══════════════════════════════════════════════════════════════════════════════
-async def handle_index(request):
-    """الصفحة الرئيسية."""
-    return web.Response(text="✅ البوت يعمل", content_type="text/html")
-
-
-async def handle_health(request):
-    """فحص الصحة."""
-    return web.json_response({"status": "ok"})
-
-
-async def handle_webhook(request):
-    """استقبال تحديثات تيليجرام - هذا هو المهم."""
-    global bot_app
-    
-    if bot_app is None:
-        logger.warning("⚠️ البوت غير جاهز")
-        return web.Response(status=503, text="Bot not ready")
-    
-    try:
-        data = await request.json()
-        update = Update.de_json(data, bot_app.bot)
-        await bot_app.process_update(update)
-        logger.debug("✅ تم معالجة تحديث")
-    except Exception as e:
-        logger.error(f"❌ خطأ في المعالجة: {e}")
-    
-    return web.Response(status=200)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  الدالة الرئيسية
-# ══════════════════════════════════════════════════════════════════════════════
 async def main():
-    global bot_app
+    """الدالة الرئيسية لتشغيل البوت"""
     
-    print("=" * 50)
-    print("🎓 بوت المحاضرات الذكي - Webhook")
-    print("=" * 50)
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not token:
+        print("❌ ERROR: TELEGRAM_BOT_TOKEN not set", file=sys.stderr)
+        print("⚠️ Running web server only...", file=sys.stderr)
+        from web_server import start_web_server
+        await start_web_server()
+        await asyncio.Event().wait()
+        return
+
+    # تشغيل خادم الويب في الخلفية
+    from web_server import start_web_server
+    web_task = asyncio.create_task(start_web_server())
     
-    # 1. إنشاء البوت
-    bot_app = Application.builder().token(TOKEN).build()
-    setup_handlers(bot_app)
-    
-    await bot_app.initialize()
-    await bot_app.start()
-    logger.info("✅ تم بدء البوت")
-    
-    # 2. حذف Webhook قديم
-    await bot_app.bot.delete_webhook(drop_pending_updates=True)
-    logger.info("✅ تم حذف Webhook القديم")
-    
-    # 3. تعيين Webhook جديد
-    webhook_path = f"{WEBHOOK_URL}/telegram"
-    await bot_app.bot.set_webhook(url=webhook_path, drop_pending_updates=True)
-    logger.info(f"✅ Webhook تم تعيينه: {webhook_path}")
-    
-    # 4. بدء خادم HTTP (هذا هو المهم لاستقبال الطلبات)
-    app = web.Application()
-    app.router.add_get("/", handle_index)
-    app.router.add_get("/health", handle_health)
-    app.router.add_post("/telegram", handle_webhook)  # هذا المسار يستقبل Webhook
-    
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-    
-    logger.info(f"🌐 خادم يعمل على المنفذ {PORT}")
-    logger.info(f"   - المسار: {WEBHOOK_URL}/telegram")
-    logger.info("✅✅✅ البوت جاهز لاستقبال الرسائل! ✅✅✅")
-    
-    # 5. انتظار
-    await asyncio.Event().wait()
+    # استيراد الدالة الرئيسية للبوت
+    from bot import main as bot_main
+
+    # إعدادات إعادة التشغيل التلقائي
+    restart_delay = 5
+    consecutive_crashes = 0
+    max_crashes_before_long_wait = 5
+
+    print("=" * 60)
+    print("🤖 Zakros Lecture Bot Starting...")
+    print("=" * 60)
+    print(f"📁 Temp directory: /tmp/telegram_bot")
+    print(f"🌐 Web server port: {os.getenv('PORT', 5000)}")
+    print("=" * 60)
+
+    while True:
+        try:
+            print(f"\n🚀 Starting bot (attempt #{consecutive_crashes + 1})...")
+            await bot_main()
+            
+            # إذا وصلنا إلى هنا، البوت توقف بشكل طبيعي
+            consecutive_crashes = 0
+            print("[main] Bot stopped normally — restarting in 3s...")
+            await asyncio.sleep(3)
+
+        except asyncio.CancelledError:
+            print("\n[main] Bot cancelled — shutting down gracefully...")
+            web_task.cancel()
+            try:
+                await web_task
+            except:
+                pass
+            break
+
+        except KeyboardInterrupt:
+            print("\n[main] Keyboard interrupt — shutting down...")
+            web_task.cancel()
+            try:
+                await web_task
+            except:
+                pass
+            break
+
+        except Exception as exc:
+            consecutive_crashes += 1
+            
+            # حساب وقت الانتظار
+            if consecutive_crashes >= max_crashes_before_long_wait:
+                delay = 60  # انتظار دقيقة كاملة بعد 5 أعطال متتالية
+            else:
+                delay = min(restart_delay * consecutive_crashes, 30)
+            
+            print(
+                f"\n❌ [main] Bot crashed (#{consecutive_crashes}): {exc.__class__.__name__}: {exc}",
+                file=sys.stderr,
+            )
+            print(f"⏳ Restarting in {delay}s...", file=sys.stderr)
+            
+            # طباعة تفاصيل الخطأ للتتبع
+            import traceback
+            traceback.print_exc()
+            
+            await asyncio.sleep(delay)
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("👋 تم الإيقاف")
+        print("\n👋 Shutdown complete.")
     except Exception as e:
-        logger.error(f"❌ خطأ: {e}")
+        print(f"\n💥 Fatal error: {e}")
         sys.exit(1)
