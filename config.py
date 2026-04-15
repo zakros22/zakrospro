@@ -92,7 +92,7 @@ if not ELEVENLABS_API_KEYS:
 ELEVENLABS_API_KEY = ELEVENLABS_API_KEYS[0] if ELEVENLABS_API_KEYS else ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🖼️ STABILITY AI / REPLICATE — للصور المجانية
+# 🖼️ STABILITY AI API KEYS — Images (9 مفاتيح)
 # ══════════════════════════════════════════════════════════════════════════════
 STABILITY_API_KEYS: list[str] = []
 for i in range(1, 10):
@@ -103,11 +103,15 @@ if not STABILITY_API_KEYS:
     single = os.getenv("STABILITY_API_KEY", "").strip()
     if single:
         STABILITY_API_KEYS = [single]
+STABILITY_API_KEY = STABILITY_API_KEYS[0] if STABILITY_API_KEYS else ""
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎨 REPLICATE API TOKEN — Flux Images
+# ══════════════════════════════════════════════════════════════════════════════
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "").strip()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# تحذيرات
+# 📊 تحذيرات
 # ══════════════════════════════════════════════════════════════════════════════
 if not TELEGRAM_BOT_TOKEN:
     print("⚠️ WARNING: TELEGRAM_BOT_TOKEN not set", file=sys.stderr)
@@ -120,6 +124,9 @@ if not ELEVENLABS_API_KEYS:
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ⚙️ إعدادات البوت
+# ══════════════════════════════════════════════════════════════════════════════
 OWNER_ID = 7021542402
 BOT_USERNAME = "@zakros_probot"
 FREE_ATTEMPTS = 1
@@ -134,43 +141,21 @@ TON_WALLET = "UQBpVo1V-ZhWpJi5YzoyQeX5fWuVwNq8KgcxXJWPq1ideEeD"
 TRC20_WALLET = "TNbYTFmtoAr2CH3YYgxhCMZ3YNXNm9QLcq"
 TELEGRAM_STARS_PRICE = 50
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎤 إعدادات الصوت
+# ══════════════════════════════════════════════════════════════════════════════
 VOICES = {
-    "iraq": {
-        "name": "🇮🇶 عراقي",
-        "voice_id": "TX3LPaxmHKxFdv7VOQHJ",
-        "description": "لهجة عراقية أصيلة"
-    },
-    "egypt": {
-        "name": "🇪🇬 مصري",
-        "voice_id": "AZnzlk1XvdvUeBnXmlld",
-        "description": "لهجة مصرية مميزة"
-    },
-    "syria": {
-        "name": "🇸🇾 سوري",
-        "voice_id": "21m00Tcm4TlvDq8ikWAM",
-        "description": "لهجة شامية جميلة"
-    },
-    "gulf": {
-        "name": "🇸🇦 خليجي",
-        "voice_id": "EXAVITQu4vr4xnSDxMaL",
-        "description": "لهجة خليجية راقية"
-    },
-    "msa": {
-        "name": "📚 فصحى",
-        "voice_id": "pNInz6obpgDQGcFmaJgB",
-        "description": "عربي فصيح"
-    },
-    "english": {
-        "name": "🇺🇸 English",
-        "voice_id": "9BWtsMINqrJLrRacOk9x",
-        "description": "Professional English"
-    },
-    "british": {
-        "name": "🇬🇧 British",
-        "voice_id": "CwhRBWXzGAHq8TQ4Fs17",
-        "description": "British English accent"
-    }
+    "iraq": {"name": "🇮🇶 عراقي", "voice_id": "TX3LPaxmHKxFdv7VOQHJ"},
+    "egypt": {"name": "🇪🇬 مصري", "voice_id": "AZnzlk1XvdvUeBnXmlld"},
+    "syria": {"name": "🇸🇾 سوري", "voice_id": "21m00Tcm4TlvDq8ikWAM"},
+    "gulf": {"name": "🇸🇦 خليجي", "voice_id": "EXAVITQu4vr4xnSDxMaL"},
+    "msa": {"name": "📚 فصحى", "voice_id": "pNInz6obpgDQGcFmaJgB"},
+    "english": {"name": "🇺🇸 English", "voice_id": "9BWtsMINqrJLrRacOk9x"},
+    "british": {"name": "🇬🇧 British", "voice_id": "CwhRBWXzGAHq8TQ4Fs17"}
 }
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 📁 المجلدات المؤقتة
+# ══════════════════════════════════════════════════════════════════════════════
 TEMP_DIR = "/tmp/telegram_bot"
 os.makedirs(TEMP_DIR, exist_ok=True)
