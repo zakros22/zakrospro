@@ -797,7 +797,22 @@ async def _process_lecture(
                 except Exception:
                     pass
 
+import gc
 
+# في نهاية دالة _process_lecture بعد إرسال الفيديو، أضف:
+finally:
+    _active_jobs.pop(uid, None)
+    _active_tasks.pop(uid, None)
+    _cancel_flags.pop(uid, None)
+    if video_path and os.path.exists(video_path):
+        try:
+            os.remove(video_path)
+        except:
+            pass
+    
+    # تنظيف الذاكرة
+    gc.collect()
+    
 # ══════════════════════════════════════════════════════════════════════════════
 # 🚀 الدالة الرئيسية - POLLING MODE
 # ══════════════════════════════════════════════════════════════════════════════
