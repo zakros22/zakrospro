@@ -1,21 +1,17 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-معالجة المدفوعات - نجوم تيليجرام، ماستر كارد، عملات رقمية
-"""
-
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
 from telegram.ext import ContextTypes
-from database import create_payment, add_attempts, mark_payment_approved_without_adding
+from database import (
+    create_payment, add_attempts,
+    mark_payment_approved_without_adding
+)
 from config import (
     MASTERCARD_NUMBER, MASTERCARD_PRICE, TON_WALLET, TRC20_WALLET,
     TELEGRAM_STARS_PRICE, OWNER_ID, PAID_ATTEMPTS, OWNER_USERNAME
 )
 
 
-def get_payment_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    """لوحة مفاتيح طرق الدفع."""
-    return InlineKeyboardMarkup([
+def get_payment_keyboard(user_id: int):
+    keyboard = [
         [
             InlineKeyboardButton(
                 f"⭐ نجوم تيليجرام ({TELEGRAM_STARS_PRICE} نجمة)",
@@ -40,11 +36,11 @@ def get_payment_keyboard(user_id: int) -> InlineKeyboardMarkup:
                 callback_data="show_referral"
             )
         ],
-    ])
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
 
 async def send_payment_required_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """إرسال رسالة طلب الدفع عند نفاد المحاولات."""
     user = update.effective_user
     msg = (
         f"🔒 *انتهت محاولاتك المجانية*\n\n"
@@ -60,7 +56,7 @@ async def send_payment_required_message(update: Update, context: ContextTypes.DE
         f"  لكل 10 أصدقاء يسجلون عبر رابطك\n\n"
         f"اختر ما يناسبك:"
     )
-    
+
     await update.effective_message.reply_text(
         msg,
         parse_mode="Markdown",
@@ -69,10 +65,9 @@ async def send_payment_required_message(update: Update, context: ContextTypes.DE
 
 
 async def handle_pay_stars(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة الدفع بنجوم تيليجرام."""
     query = update.callback_query
     await query.answer()
-    
+
     try:
         await context.bot.send_invoice(
             chat_id=query.from_user.id,
@@ -81,7 +76,7 @@ async def handle_pay_stars(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"شراء {PAID_ATTEMPTS} محاولات إضافية لتحويل محاضراتك إلى فيديو تعليمي"
             ),
             payload=f"stars_{query.from_user.id}",
-            provider_token="",  # فارغ = دفع بالنجوم
+            provider_token="",
             currency="XTR",
             prices=[LabeledPrice(f"{PAID_ATTEMPTS} محاولات", TELEGRAM_STARS_PRICE)],
         )
@@ -117,7 +112,6 @@ async def handle_pay_stars(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_pay_mastercard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة الدفع بالماستر كارد."""
     query = update.callback_query
     await query.answer()
     
@@ -125,7 +119,7 @@ async def handle_pay_mastercard(update: Update, context: ContextTypes.DEFAULT_TY
     msg = (
         f"💳 *الدفع بالماستر كارد*\n\n"
         f"📱 الرقم: `{MASTERCARD_NUMBER}`\n"
-        f"💰 المبلغ: *{MASTERCARD_PRICE}$*\n\n"
+        f"💰 المبلغ: *{MASTERCARD_PRICE} ماستر*\n\n"
         f"بعد الدفع، أرسل لقطة شاشة لإثبات الدفع هنا في المحادثة، "
         f"وسيتم مراجعتها وتفعيل حسابك خلال دقائق.\n"
         f"أو تواصل مباشرة مع المالك: {OWNER_USERNAME}\n\n"
@@ -133,19 +127,16 @@ async def handle_pay_mastercard(update: Update, context: ContextTypes.DEFAULT_TY
         f"_(أرسل هذا الرقم مع لقطة الشاشة)_"
     )
     
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ أرسلت الدفع", callback_data=f"sent_mastercard_{user_id}")
-    ]])
+    keyboard = [[InlineKeyboardButton("✅ أرسلت الدفع", callback_data=f"sent_mastercard_{user_id}")]]
     
     await query.edit_message_text(
         msg,
         parse_mode="Markdown",
-        reply_markup=keyboard
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
 async def handle_pay_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة الدفع بالعملات الرقمية."""
     query = update.callback_query
     await query.answer()
     
@@ -159,19 +150,16 @@ async def handle_pay_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🆔 ID حسابك: `{user_id}`"
     )
     
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ أرسلت التحويل", callback_data=f"sent_crypto_{user_id}")
-    ]])
+    keyboard = [[InlineKeyboardButton("✅ أرسلت التحويل", callback_data=f"sent_crypto_{user_id}")]]
     
     await query.edit_message_text(
         msg,
         parse_mode="Markdown",
-        reply_markup=keyboard
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
 async def handle_payment_sent(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """تأكيد إرسال الدفع."""
     query = update.callback_query
     await query.answer()
     
@@ -213,8 +201,8 @@ async def handle_payment_sent(update: Update, context: ContextTypes.DEFAULT_TYPE
                 f"💳 الطريقة: {method_name}\n"
                 f"💰 المبلغ: {amount}\n"
                 f"🔢 رقم الطلب: #{payment_id}\n\n"
-                f"للموافقة: /approve_{payment_id}\n"
-                f"للإضافة المباشرة: /add_{user_id}_{PAID_ATTEMPTS}"
+                f"للموافقة: /approve\\_{payment_id}\n"
+                f"للإضافة المباشرة: /addattempts {user_id} {PAID_ATTEMPTS}"
             ),
             parse_mode="Markdown"
         )
@@ -223,22 +211,15 @@ async def handle_payment_sent(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def handle_pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالج ما قبل الدفع (للنجوم)."""
     query = update.pre_checkout_query
     await query.answer(ok=True)
 
 
 async def handle_successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالج الدفع الناجح (للنجوم)."""
     payment = update.message.successful_payment
     user_id = update.effective_user.id
     
-    payment_id = create_payment(
-        user_id, 
-        "telegram_stars", 
-        TELEGRAM_STARS_PRICE, 
-        payment.telegram_payment_charge_id
-    )
+    payment_id = create_payment(user_id, "telegram_stars", TELEGRAM_STARS_PRICE, payment.telegram_payment_charge_id)
     new_attempts = add_attempts(user_id, PAID_ATTEMPTS)
     mark_payment_approved_without_adding(payment_id)
     
@@ -265,40 +246,3 @@ async def handle_successful_payment(update: Update, context: ContextTypes.DEFAUL
         )
     except Exception:
         pass
-
-
-async def handle_approve_payment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر الموافقة على الدفع /approve_123"""
-    from config import OWNER_ID
-    from database import approve_payment
-    
-    if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("⛔ غير مصرح لك.")
-        return
-    
-    try:
-        # استخراج رقم الدفع من الأمر
-        cmd = update.message.text.split()[0]
-        if "_" in cmd:
-            payment_id = int(cmd.split("_")[1])
-        else:
-            await update.message.reply_text("❌ استخدم: /approve_123")
-            return
-        
-        result = approve_payment(payment_id)
-        if result:
-            await update.message.reply_text(
-                f"✅ تمت الموافقة على الدفع #{payment_id}\n"
-                f"تم إضافة {PAID_ATTEMPTS} محاولات للمستخدم {result['user_id']}"
-            )
-            try:
-                await context.bot.send_message(
-                    result['user_id'],
-                    f"🎉 تم الموافقة على دفعتك!\nتم إضافة {PAID_ATTEMPTS} محاولات لحسابك."
-                )
-            except Exception:
-                pass
-        else:
-            await update.message.reply_text(f"❌ لم يتم العثور على الدفع #{payment_id}")
-    except (ValueError, IndexError):
-        await update.message.reply_text("❌ خطأ في رقم الدفع. استخدم: /approve_123")
