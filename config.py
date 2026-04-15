@@ -1,158 +1,176 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-ملف الإعدادات والمتغيرات البيئية
-"""
-
 import os
 import sys
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  تحميل ملف .env
-# ══════════════════════════════════════════════════════════════════════════════
+
 def _load_dotenv():
-    """تحميل المتغيرات من ملف .env إذا وجد."""
+    """Load .env file — overrides any existing env var if .env has a non-empty value."""
     env_path = os.path.join(os.path.dirname(__file__), '.env')
-    if os.path.exists(env_path):
+    try:
         with open(env_path, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith('#') and '=' in line:
-                    key, val = line.split('=', 1)
-                    key = key.strip()
-                    val = val.strip()
+                    key, _, val = line.partition('=')
+                    key, val = key.strip(), val.strip()
                     if key and val:
-                        if key not in os.environ:
-                            os.environ[key] = val
+                        os.environ[key] = val
+    except FileNotFoundError:
+        pass
 
 _load_dotenv()
 
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  دالة جمع المفاتيح
+# 🔑 DEEPSEEK API KEYS — الأولوية الأولى (9 مفاتيح)
 # ══════════════════════════════════════════════════════════════════════════════
-def _collect_keys(*env_names: str) -> list:
-    """جمع المفاتيح من متغيرات البيئة."""
-    keys = []
-    for name in env_names:
-        val = os.getenv(name, "").strip()
-        if val:
-            if "," in val:
-                keys.extend([k.strip() for k in val.split(",") if k.strip()])
-            else:
-                keys.append(val)
-    
-    # إزالة التكرار مع الحفاظ على الترتيب
-    seen = set()
-    unique = []
-    for k in keys:
-        if k not in seen:
-            seen.add(k)
-            unique.append(k)
-    return unique
-
+DEEPSEEK_API_KEYS: list[str] = []
+for i in range(1, 10):
+    key = os.getenv(f"DEEPSEEK_API_KEY_{i}", "").strip()
+    if key:
+        DEEPSEEK_API_KEYS.append(key)
+if not DEEPSEEK_API_KEYS:
+    single = os.getenv("DEEPSEEK_API_KEY", "").strip()
+    if single:
+        DEEPSEEK_API_KEYS = [single]
+DEEPSEEK_API_KEY = DEEPSEEK_API_KEYS[0] if DEEPSEEK_API_KEYS else ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  تيليجرام
+# 🔑 GOOGLE API KEYS — Gemini (الأولوية الثانية - 9 مفاتيح)
 # ══════════════════════════════════════════════════════════════════════════════
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+GOOGLE_API_KEYS: list[str] = []
+for i in range(1, 10):
+    key = os.getenv(f"GOOGLE_API_KEY_{i}", "").strip()
+    if key:
+        GOOGLE_API_KEYS.append(key)
+if not GOOGLE_API_KEYS:
+    single = os.getenv("GOOGLE_API_KEY", "").strip()
+    if single:
+        GOOGLE_API_KEYS = [single]
+GOOGLE_API_KEY = GOOGLE_API_KEYS[0] if GOOGLE_API_KEYS else ""
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🚀 GROQ API KEYS — الأولوية الثالثة (9 مفاتيح)
+# ══════════════════════════════════════════════════════════════════════════════
+GROQ_API_KEYS: list[str] = []
+for i in range(1, 10):
+    key = os.getenv(f"GROQ_API_KEY_{i}", "").strip()
+    if key:
+        GROQ_API_KEYS.append(key)
+if not GROQ_API_KEYS:
+    single = os.getenv("GROQ_API_KEY", "").strip()
+    if single:
+        GROQ_API_KEYS = [single]
+GROQ_API_KEY = GROQ_API_KEYS[0] if GROQ_API_KEYS else ""
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🌐 OPENROUTER API KEYS — الأولوية الرابعة (9 مفاتيح)
+# ══════════════════════════════════════════════════════════════════════════════
+OPENROUTER_API_KEYS: list[str] = []
+for i in range(1, 10):
+    key = os.getenv(f"OPENROUTER_API_KEY_{i}", "").strip()
+    if key:
+        OPENROUTER_API_KEYS.append(key)
+if not OPENROUTER_API_KEYS:
+    single = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if single:
+        OPENROUTER_API_KEYS = [single]
+OPENROUTER_API_KEY = OPENROUTER_API_KEYS[0] if OPENROUTER_API_KEYS else ""
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎙️ ELEVENLABS API KEYS — Voice (9 مفاتيح)
+# ══════════════════════════════════════════════════════════════════════════════
+ELEVENLABS_API_KEYS: list[str] = []
+for i in range(1, 10):
+    key = os.getenv(f"ELEVENLABS_API_KEY_{i}", "").strip()
+    if key:
+        ELEVENLABS_API_KEYS.append(key)
+if not ELEVENLABS_API_KEYS:
+    single = os.getenv("ELEVENLABS_API_KEY", "").strip()
+    if single:
+        ELEVENLABS_API_KEYS = [single]
+ELEVENLABS_API_KEY = ELEVENLABS_API_KEYS[0] if ELEVENLABS_API_KEYS else ""
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🖼️ STABILITY AI / REPLICATE — للصور المجانية
+# ══════════════════════════════════════════════════════════════════════════════
+STABILITY_API_KEYS: list[str] = []
+for i in range(1, 10):
+    key = os.getenv(f"STABILITY_API_KEY_{i}", "").strip()
+    if key:
+        STABILITY_API_KEYS.append(key)
+if not STABILITY_API_KEYS:
+    single = os.getenv("STABILITY_API_KEY", "").strip()
+    if single:
+        STABILITY_API_KEYS = [single]
+
+REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "").strip()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# تحذيرات
+# ══════════════════════════════════════════════════════════════════════════════
 if not TELEGRAM_BOT_TOKEN:
-    print("❌ خطأ: TELEGRAM_BOT_TOKEN غير مضبوط في متغيرات البيئة")
+    print("⚠️ WARNING: TELEGRAM_BOT_TOKEN not set", file=sys.stderr)
+if not DEEPSEEK_API_KEYS:
+    print("⚠️ WARNING: No DeepSeek keys — get keys from platform.deepseek.com", file=sys.stderr)
+if not GOOGLE_API_KEYS:
+    print("⚠️ WARNING: No Google API keys — get free keys from aistudio.google.com", file=sys.stderr)
+if not ELEVENLABS_API_KEYS:
+    print("⚠️ WARNING: No ElevenLabs keys — voice will use gTTS fallback", file=sys.stderr)
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  المالك
-# ══════════════════════════════════════════════════════════════════════════════
-OWNER_ID = int(os.getenv("OWNER_ID", "7021542402"))
-OWNER_USERNAME = os.getenv("OWNER_USERNAME", "@zakros22bot")
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  مفاتيح الذكاء الاصطناعي
-# ══════════════════════════════════════════════════════════════════════════════
-DEEPSEEK_API_KEYS = _collect_keys("DEEPSEEK_API_KEY", "DEEPSEEK_API_KEYS")
-for i in range(1, 10):
-    k = os.getenv(f"DEEPSEEK_API_KEY_{i}", "").strip()
-    if k and k not in DEEPSEEK_API_KEYS:
-        DEEPSEEK_API_KEYS.append(k)
+OWNER_ID = 7021542402
+BOT_USERNAME = "@zakros_probot"
+FREE_ATTEMPTS = 1
+PAID_ATTEMPTS = 7
+REFERRAL_POINTS_PER_INVITE = 0.1
+REFERRAL_POINTS_PER_ATTEMPT = 1.0
+MASTERCARD_NUMBER = "4272128655"
+OWNER_USERNAME = "@zakros22bot"
+WATERMARK_TEXT = "@zakros_probot"
+MASTERCARD_PRICE = 4
+TON_WALLET = "UQBpVo1V-ZhWpJi5YzoyQeX5fWuVwNq8KgcxXJWPq1ideEeD"
+TRC20_WALLET = "TNbYTFmtoAr2CH3YYgxhCMZ3YNXNm9QLcq"
+TELEGRAM_STARS_PRICE = 50
 
-GEMINI_API_KEYS = _collect_keys("GOOGLE_API_KEY", "GOOGLE_API_KEYS", "GEMINI_API_KEY", "GEMINI_API_KEYS")
-for i in range(1, 10):
-    k = os.getenv(f"GOOGLE_API_KEY_{i}", "") or os.getenv(f"GEMINI_API_KEY_{i}", "")
-    if k.strip() and k.strip() not in GEMINI_API_KEYS:
-        GEMINI_API_KEYS.append(k.strip())
-
-OPENROUTER_API_KEYS = _collect_keys("OPENROUTER_API_KEY", "OPENROUTER_API_KEYS")
-for i in range(1, 10):
-    k = os.getenv(f"OPENROUTER_API_KEY_{i}", "").strip()
-    if k and k not in OPENROUTER_API_KEYS:
-        OPENROUTER_API_KEYS.append(k)
-
-GROQ_API_KEYS = _collect_keys("GROQ_API_KEY", "GROQ_API_KEYS")
-for i in range(1, 10):
-    k = os.getenv(f"GROQ_API_KEY_{i}", "").strip()
-    if k and k not in GROQ_API_KEYS:
-        GROQ_API_KEYS.append(k)
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  مفاتيح الصوت والصور
-# ══════════════════════════════════════════════════════════════════════════════
-ELEVENLABS_API_KEYS = _collect_keys("ELEVENLABS_API_KEY", "ELEVENLABS_API_KEYS")
-for i in range(1, 10):
-    k = os.getenv(f"ELEVENLABS_API_KEY_{i}", "").strip()
-    if k and k not in ELEVENLABS_API_KEYS:
-        ELEVENLABS_API_KEYS.append(k)
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  إعدادات البوت
-# ══════════════════════════════════════════════════════════════════════════════
-FREE_ATTEMPTS = int(os.getenv("FREE_ATTEMPTS", "1"))
-PAID_ATTEMPTS = int(os.getenv("PAID_ATTEMPTS", "7"))
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  إعدادات الإحالة
-# ══════════════════════════════════════════════════════════════════════════════
-REFERRAL_POINTS_PER_INVITE = float(os.getenv("REFERRAL_POINTS_PER_INVITE", "0.1"))
-REFERRAL_POINTS_PER_ATTEMPT = float(os.getenv("REFERRAL_POINTS_PER_ATTEMPT", "1.0"))
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  إعدادات الدفع
-# ══════════════════════════════════════════════════════════════════════════════
-MASTERCARD_NUMBER = os.getenv("MASTERCARD_NUMBER", "4272128655")
-MASTERCARD_PRICE = int(os.getenv("MASTERCARD_PRICE", "4"))
-TON_WALLET = os.getenv("TON_WALLET", "UQBpVo1V-ZhWpJi5YzoyQeX5fWuVwNq8KgcxXJWPq1ideEeD")
-TRC20_WALLET = os.getenv("TRC20_WALLET", "TNbYTFmtoAr2CH3YYgxhCMZ3YNXNm9QLcq")
-TELEGRAM_STARS_PRICE = int(os.getenv("TELEGRAM_STARS_PRICE", "50"))
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  إعدادات عامة
-# ══════════════════════════════════════════════════════════════════════════════
-WATERMARK_TEXT = os.getenv("WATERMARK_TEXT", "@zakros_probot")
-TEMP_DIR = "/tmp/telegram_bot"
-os.makedirs(TEMP_DIR, exist_ok=True)
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  إعدادات الأصوات (ElevenLabs Voice IDs)
-# ══════════════════════════════════════════════════════════════════════════════
 VOICES = {
-    "iraq":   {"name": "🇮🇶 عراقي", "voice_id": "TX3LPaxmHKxFdv7VOQHJ"},
-    "egypt":  {"name": "🇪🇬 مصري", "voice_id": "AZnzlk1XvdvUeBnXmlld"},
-    "syria":  {"name": "🇸🇾 سوري", "voice_id": "21m00Tcm4TlvDq8ikWAM"},
-    "gulf":   {"name": "🇸🇦 خليجي", "voice_id": "EXAVITQu4vr4xnSDxMaL"},
-    "msa":    {"name": "📚 فصحى", "voice_id": "pNInz6obpgDQGcFmaJgB"},
-    "english": {"name": "🇺🇸 English", "voice_id": "9BWtsMINqrJLrRacOk9x"},
-    "british": {"name": "🇬🇧 British", "voice_id": "CwhRBWXzGAHq8TQ4Fs17"},
+    "iraq": {
+        "name": "🇮🇶 عراقي",
+        "voice_id": "TX3LPaxmHKxFdv7VOQHJ",
+        "description": "لهجة عراقية أصيلة"
+    },
+    "egypt": {
+        "name": "🇪🇬 مصري",
+        "voice_id": "AZnzlk1XvdvUeBnXmlld",
+        "description": "لهجة مصرية مميزة"
+    },
+    "syria": {
+        "name": "🇸🇾 سوري",
+        "voice_id": "21m00Tcm4TlvDq8ikWAM",
+        "description": "لهجة شامية جميلة"
+    },
+    "gulf": {
+        "name": "🇸🇦 خليجي",
+        "voice_id": "EXAVITQu4vr4xnSDxMaL",
+        "description": "لهجة خليجية راقية"
+    },
+    "msa": {
+        "name": "📚 فصحى",
+        "voice_id": "pNInz6obpgDQGcFmaJgB",
+        "description": "عربي فصيح"
+    },
+    "english": {
+        "name": "🇺🇸 English",
+        "voice_id": "9BWtsMINqrJLrRacOk9x",
+        "description": "Professional English"
+    },
+    "british": {
+        "name": "🇬🇧 British",
+        "voice_id": "CwhRBWXzGAHq8TQ4Fs17",
+        "description": "British English accent"
+    }
 }
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  عرض حالة المفاتيح
-# ══════════════════════════════════════════════════════════════════════════════
-print("=" * 60)
-print("📋 حالة المفاتيح:")
-print(f"   🤖 DeepSeek: {len(DEEPSEEK_API_KEYS)} مفتاح")
-print(f"   🧠 Gemini: {len(GEMINI_API_KEYS)} مفتاح")
-print(f"   🌐 OpenRouter: {len(OPENROUTER_API_KEYS)} مفتاح")
-print(f"   ⚡ Groq: {len(GROQ_API_KEYS)} مفتاح")
-print(f"   🔊 ElevenLabs: {len(ELEVENLABS_API_KEYS)} مفتاح")
-print(f"   🎨 OpenAI: {'✅ موجود' if OPENAI_API_KEY else '❌ غير مضبوط'}")
-print("=" * 60)
+TEMP_DIR = "/tmp/telegram_bot"
+os.makedirs(TEMP_DIR, exist_ok=True)
