@@ -3,7 +3,7 @@ import os
 import sys
 
 # ══════════════════════════════════════════════════════════════════════════════
-# تصحيح PIL.Image.ANTIALIAS (للتأكد من التوافق)
+# تصحيح PIL.Image.ANTIALIAS
 # ══════════════════════════════════════════════════════════════════════════════
 try:
     import PIL.Image as _pil
@@ -34,37 +34,28 @@ async def main():
         await asyncio.Event().wait()
         return
 
-    # تشغيل خادم الويب في الخلفية
     from web_server import start_web_server
     web_task = asyncio.create_task(start_web_server())
     
-    # استيراد الدالة الرئيسية للبوت
     from bot import main as bot_main
 
-    # إعدادات إعادة التشغيل التلقائي
     restart_delay = 5
     consecutive_crashes = 0
-    max_crashes_before_long_wait = 5
 
     print("=" * 60)
     print("🤖 Zakros Lecture Bot Starting...")
-    print("=" * 60)
-    print(f"📁 Temp directory: /tmp/telegram_bot")
-    print(f"🌐 Web server port: {os.getenv('PORT', 5000)}")
     print("=" * 60)
 
     while True:
         try:
             print(f"\n🚀 Starting bot (attempt #{consecutive_crashes + 1})...")
             await bot_main()
-            
-            # إذا وصلنا إلى هنا، البوت توقف بشكل طبيعي
             consecutive_crashes = 0
             print("[main] Bot stopped normally — restarting in 3s...")
             await asyncio.sleep(3)
 
         except asyncio.CancelledError:
-            print("\n[main] Bot cancelled — shutting down gracefully...")
+            print("\n[main] Bot cancelled — shutting down...")
             web_task.cancel()
             try:
                 await web_task
@@ -83,23 +74,11 @@ async def main():
 
         except Exception as exc:
             consecutive_crashes += 1
-            
-            # حساب وقت الانتظار
-            if consecutive_crashes >= max_crashes_before_long_wait:
-                delay = 60  # انتظار دقيقة كاملة بعد 5 أعطال متتالية
-            else:
-                delay = min(restart_delay * consecutive_crashes, 30)
-            
-            print(
-                f"\n❌ [main] Bot crashed (#{consecutive_crashes}): {exc.__class__.__name__}: {exc}",
-                file=sys.stderr,
-            )
+            delay = min(restart_delay * consecutive_crashes, 60)
+            print(f"\n❌ [main] Bot crashed: {exc}", file=sys.stderr)
             print(f"⏳ Restarting in {delay}s...", file=sys.stderr)
-            
-            # طباعة تفاصيل الخطأ للتتبع
             import traceback
             traceback.print_exc()
-            
             await asyncio.sleep(delay)
 
 
