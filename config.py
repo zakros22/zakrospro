@@ -1,161 +1,107 @@
 import os
-import sys
+import random
+from typing import List, Optional
+from datetime import datetime, timedelta
+import json
 
-
-def _load_dotenv():
-    """Load .env file — overrides any existing env var if .env has a non-empty value."""
-    env_path = os.path.join(os.path.dirname(__file__), '.env')
-    try:
-        with open(env_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, _, val = line.partition('=')
-                    key, val = key.strip(), val.strip()
-                    if key and val:
-                        os.environ[key] = val
-    except FileNotFoundError:
-        pass
-
-_load_dotenv()
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 🔑 DEEPSEEK API KEYS — الأولوية الأولى (9 مفاتيح)
-# ══════════════════════════════════════════════════════════════════════════════
-DEEPSEEK_API_KEYS: list[str] = []
-for i in range(1, 10):
-    key = os.getenv(f"DEEPSEEK_API_KEY_{i}", "").strip()
-    if key:
-        DEEPSEEK_API_KEYS.append(key)
-if not DEEPSEEK_API_KEYS:
-    single = os.getenv("DEEPSEEK_API_KEY", "").strip()
-    if single:
-        DEEPSEEK_API_KEYS = [single]
-DEEPSEEK_API_KEY = DEEPSEEK_API_KEYS[0] if DEEPSEEK_API_KEYS else ""
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 🔑 GOOGLE API KEYS — Gemini (الأولوية الثانية - 9 مفاتيح)
-# ══════════════════════════════════════════════════════════════════════════════
-GOOGLE_API_KEYS: list[str] = []
-for i in range(1, 10):
-    key = os.getenv(f"GOOGLE_API_KEY_{i}", "").strip()
-    if key:
-        GOOGLE_API_KEYS.append(key)
-if not GOOGLE_API_KEYS:
-    single = os.getenv("GOOGLE_API_KEY", "").strip()
-    if single:
-        GOOGLE_API_KEYS = [single]
-GOOGLE_API_KEY = GOOGLE_API_KEYS[0] if GOOGLE_API_KEYS else ""
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 🚀 GROQ API KEYS — الأولوية الثالثة (9 مفاتيح)
-# ══════════════════════════════════════════════════════════════════════════════
-GROQ_API_KEYS: list[str] = []
-for i in range(1, 10):
-    key = os.getenv(f"GROQ_API_KEY_{i}", "").strip()
-    if key:
-        GROQ_API_KEYS.append(key)
-if not GROQ_API_KEYS:
-    single = os.getenv("GROQ_API_KEY", "").strip()
-    if single:
-        GROQ_API_KEYS = [single]
-GROQ_API_KEY = GROQ_API_KEYS[0] if GROQ_API_KEYS else ""
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 🌐 OPENROUTER API KEYS — الأولوية الرابعة (9 مفاتيح)
-# ══════════════════════════════════════════════════════════════════════════════
-OPENROUTER_API_KEYS: list[str] = []
-for i in range(1, 10):
-    key = os.getenv(f"OPENROUTER_API_KEY_{i}", "").strip()
-    if key:
-        OPENROUTER_API_KEYS.append(key)
-if not OPENROUTER_API_KEYS:
-    single = os.getenv("OPENROUTER_API_KEY", "").strip()
-    if single:
-        OPENROUTER_API_KEYS = [single]
-OPENROUTER_API_KEY = OPENROUTER_API_KEYS[0] if OPENROUTER_API_KEYS else ""
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 🎙️ ELEVENLABS API KEYS — Voice (9 مفاتيح)
-# ══════════════════════════════════════════════════════════════════════════════
-ELEVENLABS_API_KEYS: list[str] = []
-for i in range(1, 10):
-    key = os.getenv(f"ELEVENLABS_API_KEY_{i}", "").strip()
-    if key:
-        ELEVENLABS_API_KEYS.append(key)
-if not ELEVENLABS_API_KEYS:
-    single = os.getenv("ELEVENLABS_API_KEY", "").strip()
-    if single:
-        ELEVENLABS_API_KEYS = [single]
-ELEVENLABS_API_KEY = ELEVENLABS_API_KEYS[0] if ELEVENLABS_API_KEYS else ""
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 🖼️ STABILITY AI API KEYS — Images (9 مفاتيح)
-# ══════════════════════════════════════════════════════════════════════════════
-STABILITY_API_KEYS: list[str] = []
-for i in range(1, 10):
-    key = os.getenv(f"STABILITY_API_KEY_{i}", "").strip()
-    if key:
-        STABILITY_API_KEYS.append(key)
-if not STABILITY_API_KEYS:
-    single = os.getenv("STABILITY_API_KEY", "").strip()
-    if single:
-        STABILITY_API_KEYS = [single]
-STABILITY_API_KEY = STABILITY_API_KEYS[0] if STABILITY_API_KEYS else ""
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 🎨 REPLICATE API TOKEN — Flux Images
-# ══════════════════════════════════════════════════════════════════════════════
-REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "").strip()
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 📊 تحذيرات
-# ══════════════════════════════════════════════════════════════════════════════
-if not TELEGRAM_BOT_TOKEN:
-    print("⚠️ WARNING: TELEGRAM_BOT_TOKEN not set", file=sys.stderr)
-if not DEEPSEEK_API_KEYS:
-    print("⚠️ WARNING: No DeepSeek keys — get keys from platform.deepseek.com", file=sys.stderr)
-if not GOOGLE_API_KEYS:
-    print("⚠️ WARNING: No Google API keys — get free keys from aistudio.google.com", file=sys.stderr)
-if not ELEVENLABS_API_KEYS:
-    print("⚠️ WARNING: No ElevenLabs keys — voice will use gTTS fallback", file=sys.stderr)
-
-DATABASE_URL = os.getenv("DATABASE_URL", "")
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ⚙️ إعدادات البوت
-# ══════════════════════════════════════════════════════════════════════════════
-OWNER_ID = 7021542402
-BOT_USERNAME = "@zakros_probot"
-FREE_ATTEMPTS = 1
-PAID_ATTEMPTS = 7
-REFERRAL_POINTS_PER_INVITE = 0.1
-REFERRAL_POINTS_PER_ATTEMPT = 1.0
-MASTERCARD_NUMBER = "4272128655"
-OWNER_USERNAME = "@zakros22bot"
-WATERMARK_TEXT = "@zakros_probot"
-MASTERCARD_PRICE = 4
-TON_WALLET = "UQBpVo1V-ZhWpJi5YzoyQeX5fWuVwNq8KgcxXJWPq1ideEeD"
-TRC20_WALLET = "TNbYTFmtoAr2CH3YYgxhCMZ3YNXNm9QLcq"
-TELEGRAM_STARS_PRICE = 50
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 🎤 إعدادات الصوت
-# ══════════════════════════════════════════════════════════════════════════════
-VOICES = {
-    "iraq": {"name": "🇮🇶 عراقي", "voice_id": "TX3LPaxmHKxFdv7VOQHJ"},
-    "egypt": {"name": "🇪🇬 مصري", "voice_id": "AZnzlk1XvdvUeBnXmlld"},
-    "syria": {"name": "🇸🇾 سوري", "voice_id": "21m00Tcm4TlvDq8ikWAM"},
-    "gulf": {"name": "🇸🇦 خليجي", "voice_id": "EXAVITQu4vr4xnSDxMaL"},
-    "msa": {"name": "📚 فصحى", "voice_id": "pNInz6obpgDQGcFmaJgB"},
-    "english": {"name": "🇺🇸 English", "voice_id": "9BWtsMINqrJLrRacOk9x"},
-    "british": {"name": "🇬🇧 British", "voice_id": "CwhRBWXzGAHq8TQ4Fs17"}
-}
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 📁 المجلدات المؤقتة
-# ══════════════════════════════════════════════════════════════════════════════
-TEMP_DIR = "/tmp/telegram_bot"
-os.makedirs(TEMP_DIR, exist_ok=True)
+class KeyManager:
+    def __init__(self):
+        # مفاتيح تحليل النص (9 مفاتيح أساسية + بدائل مجانية)
+        self.analysis_keys = {
+            'primary': [
+                os.getenv('OPENAI_KEY_1', ''),
+                os.getenv('OPENAI_KEY_2', ''),
+                os.getenv('OPENAI_KEY_3', ''),
+                os.getenv('OPENAI_KEY_4', ''),
+                os.getenv('OPENAI_KEY_5', ''),
+                os.getenv('OPENAI_KEY_6', ''),
+                os.getenv('OPENAI_KEY_7', ''),
+                os.getenv('OPENAI_KEY_8', ''),
+                os.getenv('OPENAI_KEY_9', ''),
+            ],
+            'free_alternatives': [
+                'claude-3-haiku',  # Anthropic مجاني محدود
+                'gemini-pro',       # Google مجاني محدود
+                'llama-2-70b',      # Meta (عبر Replicate)
+                'mixtral-8x7b',     # Mistral AI مجاني
+            ]
+        }
+        
+        # مفاتيح تحويل النص إلى صوت
+        self.tts_keys = {
+            'elevenlabs': [
+                os.getenv('ELEVENLABS_KEY_1', ''),
+                os.getenv('ELEVENLABS_KEY_2', ''),
+            ],
+            'free_alternatives': [
+                'edge-tts',      # Microsoft Edge TTS مجاني
+                'gtts',          # Google TTS مجاني
+                'pyttsx3',       # TTS محلي مجاني
+                'coqui-ai',      # Coqui TTS مفتوح المصدر
+            ]
+        }
+        
+        self.current_key_index = 0
+        self.key_usage = {}
+        self.usage_file = 'key_usage.json'
+        self.load_usage()
+    
+    def load_usage(self):
+        try:
+            with open(self.usage_file, 'r') as f:
+                self.key_usage = json.load(f)
+        except:
+            self.key_usage = {}
+    
+    def save_usage(self):
+        with open(self.usage_file, 'w') as f:
+            json.dump(self.key_usage, f)
+    
+    def get_analysis_key(self) -> str:
+        """الحصول على مفتاح تحليل متاح مع التدوير"""
+        # محاولة المفاتيح الأساسية
+        for i in range(len(self.analysis_keys['primary'])):
+            idx = (self.current_key_index + i) % len(self.analysis_keys['primary'])
+            key = self.analysis_keys['primary'][idx]
+            if key and self.check_key_quota(key):
+                self.current_key_index = (idx + 1) % len(self.analysis_keys['primary'])
+                return key
+        
+        # استخدام البدائل المجانية
+        return self.get_free_alternative('analysis')
+    
+    def get_tts_key(self) -> dict:
+        """الحصول على خدمة TTS متاحة"""
+        # محاولة ElevenLabs أولاً
+        for key in self.tts_keys['elevenlabs']:
+            if key and self.check_tts_quota(key):
+                return {'service': 'elevenlabs', 'key': key}
+        
+        # استخدام البدائل المجانية
+        return {'service': random.choice(self.tts_keys['free_alternatives']), 'key': None}
+    
+    def check_key_quota(self, key: str) -> bool:
+        """فحص حصة المفتاح المتبقية"""
+        today = datetime.now().strftime('%Y-%m-%d')
+        usage = self.key_usage.get(key, {}).get(today, 0)
+        return usage < 50000  # حد الرموز اليومي
+    
+    def check_tts_quota(self, key: str) -> bool:
+        """فحص حصة TTS"""
+        today = datetime.now().strftime('%Y-%m-%d')
+        usage = self.key_usage.get(f"tts_{key}", {}).get(today, 0)
+        return usage < 10000  # حد الأحرف الشهري
+    
+    def increment_usage(self, key: str, tokens: int):
+        """زيادة عداد الاستخدام"""
+        today = datetime.now().strftime('%Y-%m-%d')
+        if key not in self.key_usage:
+            self.key_usage[key] = {}
+        self.key_usage[key][today] = self.key_usage[key].get(today, 0) + tokens
+        self.save_usage()
+    
+    def get_free_alternative(self, type_: str) -> str:
+        """الحصول على بديل مجاني"""
+        if type_ == 'analysis':
+            return random.choice(self.analysis_keys['free_alternatives'])
+        return random.choice(self.tts_keys['free_alternatives'])
