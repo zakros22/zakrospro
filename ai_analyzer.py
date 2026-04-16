@@ -3,10 +3,11 @@ import re
 import io
 import asyncio
 import aiohttp
-from PIL import Image as PILImage
+import random
+from PIL import Image as PILImage, ImageDraw, ImageFont
 
 # ══════════════════════════════════════════════════════════════════════════════
-# استيراد المفاتيح من config
+# استيراد المفاتيح من config (إن وجدت)
 # ══════════════════════════════════════════════════════════════════════════════
 try:
     from config import (
@@ -37,9 +38,8 @@ except ImportError:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🔑 KEY POOLS & ROTATION - تدوير المفاتيح
+# 🔑 KEY POOLS
 # ══════════════════════════════════════════════════════════════════════════════
-
 _deepseek_pool = list(DEEPSEEK_API_KEYS) if DEEPSEEK_API_KEYS else []
 _deepseek_exhausted = set()
 
@@ -55,111 +55,230 @@ _or_exhausted = set()
 
 
 class QuotaExhaustedError(Exception):
-    """يتم رميها عندما تنفد جميع المفاتيح لخدمة معينة"""
     pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 1️⃣ DEEPSEEK - 9 مفاتيح
+# 📊 تحليل محلي احترافي (بدون API)
 # ══════════════════════════════════════════════════════════════════════════════
-DEEPSEEK_MODELS = ["deepseek-chat", "deepseek-reasoner"]
 
-async def _generate_with_deepseek(prompt: str, max_tokens: int = 8192) -> str:
-    if not _deepseek_pool:
-        raise QuotaExhaustedError("No DeepSeek keys")
-    
-    available_keys = [k for k in _deepseek_pool if k not in _deepseek_exhausted]
-    if not available_keys:
-        raise QuotaExhaustedError("All DeepSeek keys exhausted")
-    
-    for key in available_keys:
-        for model in DEEPSEEK_MODELS:
-            try:
-                headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-                payload = {
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": min(max_tokens, 8192),
-                    "temperature": 0.3,
-                }
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        "https://api.deepseek.com/v1/chat/completions",
-                        headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=90)
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            print(f"✅ DeepSeek success: {model}")
-                            return data["choices"][0]["message"]["content"].strip()
-                        elif resp.status in (429, 402, 403):
-                            body = await resp.text()
-                            if "quota" in body.lower() or "insufficient" in body.lower():
-                                print(f"⚠️ DeepSeek key exhausted")
-                                _deepseek_exhausted.add(key)
-                                break
-            except Exception as e:
-                print(f"⚠️ DeepSeek error: {str(e)[:100]}")
-                continue
-    
-    raise QuotaExhaustedError("All DeepSeek keys exhausted")
+# قوالب عناوين حسب نوع المحاضرة
+SECTION_TEMPLATES = {
+    "medicine": {
+        "titles": ["مقدمة", "التشريح", "الفسيولوجيا", "الأمراض", "التشخيص", "العلاج", "الوقاية"],
+        "keywords": ["طبي", "تشخيص", "علاج", "أعراض", "وقاية", "جراحة", "أدوية"],
+    },
+    "science": {
+        "titles": ["مقدمة", "المبادئ الأساسية", "النظريات", "التجارب", "النتائج", "التطبيقات", "الاستنتاجات"],
+        "keywords": ["علم", "نظرية", "تجربة", "نتيجة", "تحليل", "بحث", "اكتشاف"],
+    },
+    "math": {
+        "titles": ["مقدمة", "التعريفات", "النظريات", "البراهين", "الأمثلة", "التطبيقات", "المسائل"],
+        "keywords": ["رياضيات", "معادلة", "دالة", "متغير", "حساب", "هندسة", "جبر"],
+    },
+    "computer": {
+        "titles": ["مقدمة", "المفاهيم", "الخوارزميات", "البرمجة", "قواعد البيانات", "الشبكات", "الأمن"],
+        "keywords": ["برمجة", "خوارزمية", "بيانات", "شبكة", "أمن", "تطبيق", "نظام"],
+    },
+    "other": {
+        "titles": ["مقدمة", "المفاهيم الأساسية", "التفاصيل", "الأمثلة", "التطبيقات", "الخلاصة"],
+        "keywords": ["مفهوم", "تعريف", "مثال", "تطبيق", "تحليل", "نتيجة"],
+    }
+}
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 2️⃣ GEMINI - 9 مفاتيح
-# ══════════════════════════════════════════════════════════════════════════════
-def _get_gemini_client(key: str):
-    if not GEMINI_AVAILABLE:
-        raise QuotaExhaustedError("Gemini not available")
-    if key not in _gemini_clients:
-        _gemini_clients[key] = genai.Client(api_key=key)
-    return _gemini_clients[key]
+def _detect_lecture_type(text: str) -> str:
+    """تحديد نوع المحاضرة من النص"""
+    text_lower = text.lower()
+    
+    # كلمات مفتاحية لكل نوع
+    medical_keywords = ["مرض", "علاج", "طبي", "جراحة", "دواء", "عرض", "تشخيص", "مستشفى", "قلب", "دم", "خلية"]
+    science_keywords = ["تجربة", "نظرية", "علم", "فيزياء", "كيمياء", "أحياء", "ذرة", "جزيء", "مختبر"]
+    math_keywords = ["معادلة", "رياضيات", "جبر", "هندسة", "حساب", "دالة", "متغير", "تكامل", "تفاضل"]
+    computer_keywords = ["برمجة", "حاسوب", "خوارزمية", "بيانات", "شبكة", "برنامج", "كود", "تطبيق"]
+    
+    if any(kw in text_lower for kw in medical_keywords):
+        return "medicine"
+    elif any(kw in text_lower for kw in science_keywords):
+        return "science"
+    elif any(kw in text_lower for kw in math_keywords):
+        return "math"
+    elif any(kw in text_lower for kw in computer_keywords):
+        return "computer"
+    else:
+        return "other"
 
 
-async def _generate_with_gemini(prompt: str, max_tokens: int = 8192) -> str:
-    if not GEMINI_AVAILABLE:
-        raise QuotaExhaustedError("Gemini not installed")
+def _split_text_into_sections(text: str, num_sections: int) -> list:
+    """تقسيم النص إلى أقسام"""
+    paragraphs = [p.strip() for p in text.split('\n') if p.strip() and len(p.strip()) > 50]
     
-    if not _gemini_pool:
-        raise QuotaExhaustedError("No Gemini keys")
+    if not paragraphs:
+        # إذا ما في فقرات كافية، نقسم النص بالتساوي
+        words = text.split()
+        words_per_section = len(words) // num_sections
+        sections = []
+        for i in range(num_sections):
+            start = i * words_per_section
+            end = start + words_per_section if i < num_sections - 1 else len(words)
+            sections.append(' '.join(words[start:end]))
+        return sections
     
-    models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
-    available_keys = [k for k in _gemini_pool if k not in _gemini_exhausted]
+    # توزيع الفقرات على الأقسام
+    if len(paragraphs) >= num_sections:
+        paras_per_section = len(paragraphs) // num_sections
+        sections = []
+        for i in range(num_sections):
+            start = i * paras_per_section
+            end = start + paras_per_section if i < num_sections - 1 else len(paragraphs)
+            sections.append('\n\n'.join(paragraphs[start:end]))
+        return sections
+    else:
+        # توزيع الفقرات القليلة على الأقسام
+        sections = []
+        for i in range(num_sections):
+            if i < len(paragraphs):
+                sections.append(paragraphs[i])
+            else:
+                sections.append(paragraphs[-1] if paragraphs else "محتوى إضافي")
+        return sections
+
+
+def _extract_keywords_from_text(text: str, max_keywords: int = 4) -> list:
+    """استخراج كلمات مفتاحية من النص"""
+    # قائمة كلمات شائعة للتجاهل
+    stop_words = {
+        'في', 'من', 'على', 'إلى', 'عن', 'مع', 'كان', 'هذا', 'هذه', 'الذي', 'التي',
+        'و', 'أو', 'ثم', 'حتى', 'كما', 'إذا', 'أن', 'إن', 'لم', 'لن', 'ما', 'لا',
+        'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+        'of', 'with', 'by', 'from', 'as', 'is', 'are', 'was', 'were', 'be', 'been'
+    }
     
-    if not available_keys:
-        raise QuotaExhaustedError("All Gemini keys exhausted")
+    # استخراج الكلمات الطويلة (أكثر من 3 أحرف)
+    words = re.findall(r'\b[\w\u0600-\u06FF]{4,}\b', text)
     
-    for key in available_keys:
-        client = _get_gemini_client(key)
+    # عد تكرار الكلمات
+    word_count = {}
+    for word in words:
+        word_lower = word.lower()
+        if word_lower not in stop_words:
+            word_count[word_lower] = word_count.get(word_lower, 0) + 1
+    
+    # ترتيب الكلمات حسب التكرار
+    sorted_words = sorted(word_count.items(), key=lambda x: x[1], reverse=True)
+    
+    # إرجاع الكلمات الأصلية (وليس lowercase)
+    keywords = []
+    for word_lower, _ in sorted_words[:max_keywords * 2]:
+        # البحث عن الكلمة الأصلية
+        for original in words:
+            if original.lower() == word_lower and original not in keywords:
+                keywords.append(original)
+                break
+        if len(keywords) >= max_keywords:
+            break
+    
+    # إذا ما في كلمات كافية
+    while len(keywords) < max_keywords:
+        keywords.append(f"مصطلح {len(keywords) + 1}")
+    
+    return keywords[:max_keywords]
+
+
+def _generate_summary(text: str, max_sentences: int = 5) -> str:
+    """توليد ملخص من النص"""
+    sentences = re.split(r'(?<=[.!?؟])\s+', text)
+    sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
+    
+    if not sentences:
+        return "ملخص المحاضرة"
+    
+    # اختيار جمل من بداية ووسط ونهاية النص
+    summary_sentences = []
+    if len(sentences) <= max_sentences:
+        summary_sentences = sentences
+    else:
+        # الجملة الأولى
+        summary_sentences.append(sentences[0])
+        # جمل من الوسط
+        mid = len(sentences) // 2
+        for i in range(mid - 1, mid + 2):
+            if i < len(sentences):
+                summary_sentences.append(sentences[i])
+        # الجملة الأخيرة
+        if sentences[-1] not in summary_sentences:
+            summary_sentences.append(sentences[-1])
+    
+    return ' '.join(summary_sentences[:max_sentences])
+
+
+def _local_analyze_lecture(text: str, dialect: str, num_sections: int) -> dict:
+    """تحليل محلي كامل للمحاضرة بدون API"""
+    
+    # تحديد نوع المحاضرة
+    lecture_type = _detect_lecture_type(text)
+    templates = SECTION_TEMPLATES.get(lecture_type, SECTION_TEMPLATES["other"])
+    
+    # استخراج العنوان (أول سطر أو أول 50 حرف)
+    first_line = text.split('\n')[0].strip()
+    title = first_line[:100] if first_line else "محاضرة تعليمية"
+    
+    # تقسيم النص إلى أقسام
+    sections_text = _split_text_into_sections(text, num_sections)
+    
+    # بناء الأقسام
+    sections = []
+    for i, section_text in enumerate(sections_text):
+        # عنوان القسم
+        if i < len(templates["titles"]):
+            section_title = f"{templates['titles'][i]}"
+        else:
+            section_title = f"القسم {i + 1}"
         
-        for model in models:
-            try:
-                response = await asyncio.to_thread(
-                    client.models.generate_content,
-                    model=model,
-                    contents=prompt,
-                    config=genai_types.GenerateContentConfig(
-                        temperature=0.3,
-                        max_output_tokens=max_tokens
-                    ),
-                )
-                print(f"✅ Gemini success: {model}")
-                return response.text.strip()
-            except Exception as e:
-                err = str(e)
-                if "quota" in err.lower() or "exhausted" in err.lower() or "429" in err:
-                    print(f"⚠️ Gemini key exhausted")
-                    _gemini_exhausted.add(key)
-                    break
-                print(f"⚠️ Gemini error: {err[:100]}")
-                continue
+        # استخراج كلمات مفتاحية
+        keywords = _extract_keywords_from_text(section_text, 4)
+        
+        # توليد محتوى مبسط
+        sentences = re.split(r'(?<=[.!?؟])\s+', section_text)
+        content = ' '.join(sentences[:5]) if sentences else section_text[:500]
+        
+        # نص الشرح (narration)
+        narration = section_text[:800] if len(section_text) > 800 else section_text
+        
+        # صور مقترحة
+        keyword_images = [f"educational illustration of {kw}" for kw in keywords]
+        
+        sections.append({
+            "title": section_title,
+            "content": content,
+            "keywords": keywords,
+            "keyword_images": keyword_images,
+            "narration": narration,
+            "duration_estimate": max(30, len(narration) // 15)
+        })
     
-    raise QuotaExhaustedError("All Gemini keys exhausted")
+    # توليد ملخص
+    summary = _generate_summary(text)
+    
+    # نقاط رئيسية
+    key_points = []
+    for section in sections[:4]:
+        if section["keywords"]:
+            key_points.append(f"{section['title']}: {', '.join(section['keywords'][:2])}")
+    
+    return {
+        "lecture_type": lecture_type,
+        "title": title,
+        "sections": sections,
+        "summary": summary,
+        "key_points": key_points or ["النقطة الأولى", "النقطة الثانية", "النقطة الثالثة", "النقطة الرابعة"],
+        "total_sections": num_sections
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 3️⃣ GROQ - 9 مفاتيح
+# دوال API (إن وجدت مفاتيح)
 # ══════════════════════════════════════════════════════════════════════════════
-GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it", "mixtral-8x7b-32768"]
 
 async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
     if not _groq_pool:
@@ -170,342 +289,69 @@ async def _generate_with_groq(prompt: str, max_tokens: int = 8192) -> str:
         raise QuotaExhaustedError("All Groq keys exhausted")
     
     for key in available_keys:
-        for model in GROQ_MODELS:
-            try:
-                headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-                payload = {
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": min(max_tokens, 8192),
-                    "temperature": 0.3,
-                }
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=90)
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            print(f"✅ Groq success: {model}")
-                            return data["choices"][0]["message"]["content"].strip()
-                        elif resp.status in (429, 403):
-                            body = await resp.text()
-                            if "quota" in body.lower() or "limit" in body.lower():
-                                print(f"⚠️ Groq key exhausted")
-                                _groq_exhausted.add(key)
-                                break
-            except Exception as e:
-                print(f"⚠️ Groq error: {str(e)[:100]}")
-                continue
+        try:
+            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+            payload = {
+                "model": "llama-3.3-70b-versatile",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": min(max_tokens, 8192),
+                "temperature": 0.3,
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=90)
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        print(f"✅ Groq success")
+                        return data["choices"][0]["message"]["content"].strip()
+                    elif resp.status in (429, 403):
+                        _groq_exhausted.add(key)
+                        continue
+        except Exception as e:
+            print(f"⚠️ Groq error: {str(e)[:100]}")
+            continue
     
     raise QuotaExhaustedError("All Groq keys exhausted")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 4️⃣ OPENROUTER - 9 مفاتيح
-# ══════════════════════════════════════════════════════════════════════════════
-OR_MODELS = [
-    "deepseek/deepseek-chat:free",
-    "google/gemini-2.0-flash-exp:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "qwen/qwen2.5-72b-instruct:free",
-    "mistralai/mistral-7b-instruct:free",
-    "nousresearch/hermes-3-llama-3.1-405b:free",
-]
-
-async def _generate_with_openrouter(prompt: str, max_tokens: int = 8192) -> str:
-    if not _or_pool:
-        raise QuotaExhaustedError("No OpenRouter keys")
+async def _generate_with_gemini(prompt: str, max_tokens: int = 8192) -> str:
+    if not GEMINI_AVAILABLE or not _gemini_pool:
+        raise QuotaExhaustedError("Gemini not available")
     
-    available_keys = [k for k in _or_pool if k not in _or_exhausted]
+    available_keys = [k for k in _gemini_pool if k not in _gemini_exhausted]
     if not available_keys:
-        raise QuotaExhaustedError("All OpenRouter keys exhausted")
+        raise QuotaExhaustedError("All Gemini keys exhausted")
     
     for key in available_keys:
-        for model in OR_MODELS:
-            try:
-                headers = {
-                    "Authorization": f"Bearer {key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://replit.com",
-                    "X-Title": "Lecture Bot",
-                }
-                payload = {
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": min(max_tokens, 8192),
-                    "temperature": 0.3,
-                }
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        "https://openrouter.ai/api/v1/chat/completions",
-                        headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=120)
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            content = data["choices"][0]["message"]["content"]
-                            if content:
-                                print(f"✅ OpenRouter success: {model}")
-                                return content.strip()
-                        elif resp.status in (429, 402, 403):
-                            body = await resp.text()
-                            if "quota" in body.lower() or "credits" in body.lower():
-                                print(f"⚠️ OpenRouter key exhausted")
-                                _or_exhausted.add(key)
-                                break
-            except Exception as e:
-                print(f"⚠️ OpenRouter error: {str(e)[:100]}")
+        if key not in _gemini_clients:
+            _gemini_clients[key] = genai.Client(api_key=key)
+        client = _gemini_clients[key]
+        
+        try:
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model="gemini-2.0-flash",
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    temperature=0.3,
+                    max_output_tokens=max_tokens
+                ),
+            )
+            print(f"✅ Gemini success")
+            return response.text.strip()
+        except Exception as e:
+            err = str(e)
+            if "quota" in err.lower() or "429" in err:
+                _gemini_exhausted.add(key)
                 continue
     
-    raise QuotaExhaustedError("All OpenRouter keys exhausted")
+    raise QuotaExhaustedError("All Gemini keys exhausted")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 5️⃣ بدائل مجانية - 6 خدمات مختلفة
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def _generate_with_duckduckgo(prompt: str) -> str:
-    """DuckDuckGo AI Chat - مجاني"""
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Content-Type": "application/json",
-            "Origin": "https://duckduckgo.com",
-            "Referer": "https://duckduckgo.com/",
-        }
-        payload = {
-            "model": "gpt-4o-mini",
-            "messages": [{"role": "user", "content": prompt[:4000]}],
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://duckduckgo.com/duckchat/v1/chat",
-                headers=headers,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=60),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data.get("message", "")
-    except Exception as e:
-        print(f"⚠️ DuckDuckGo error: {e}")
-    raise Exception("DuckDuckGo failed")
-
-
-async def _generate_with_blackbox(prompt: str) -> str:
-    """Blackbox AI - مجاني"""
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "messages": [{"role": "user", "content": prompt[:4000]}],
-            "model": "blackboxai",
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://www.blackbox.ai/api/chat",
-                headers=headers,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=60),
-            ) as resp:
-                if resp.status == 200:
-                    return await resp.text()
-    except Exception as e:
-        print(f"⚠️ Blackbox error: {e}")
-    raise Exception("Blackbox failed")
-
-
-async def _generate_with_huggingface(prompt: str) -> str:
-    """Hugging Face Inference API - مجاني (بدون مفتاح للنماذج المجانية)"""
-    try:
-        headers = {"Content-Type": "application/json"}
-        payload = {
-            "inputs": prompt[:2000],
-            "parameters": {"max_new_tokens": 2000, "temperature": 0.3}
-        }
-        # استخدام نموذج مجاني
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2",
-                headers=headers,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=90),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if isinstance(data, list) and data:
-                        return data[0].get("generated_text", "")
-    except Exception as e:
-        print(f"⚠️ HuggingFace error: {e}")
-    raise Exception("HuggingFace failed")
-
-
-async def _generate_with_cohere(prompt: str) -> str:
-    """Cohere - نموذج مجاني (إذا ماكو مفتاح، نستخدم endpoint العام)"""
-    try:
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-        payload = {
-            "message": prompt[:4000],
-            "model": "command-r",
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://coral.cohere.com/api/chat",
-                headers=headers,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=60),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data.get("text", "")
-    except Exception as e:
-        print(f"⚠️ Cohere error: {e}")
-    raise Exception("Cohere failed")
-
-
-async def _generate_with_perplexity(prompt: str) -> str:
-    """Perplexity API - محاولة استخدام النموذج المجاني"""
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "query": prompt[:2000],
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://www.perplexity.ai/api/chat",
-                headers=headers,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=60),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data.get("answer", "")
-    except Exception as e:
-        print(f"⚠️ Perplexity error: {e}")
-    raise Exception("Perplexity failed")
-
-
-async def _generate_with_youcom(prompt: str) -> str:
-    """You.com API - مجاني"""
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "query": prompt[:2000],
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"https://you.com/api/chat?q={prompt[:500]}",
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=60),
-            ) as resp:
-                if resp.status == 200:
-                    return await resp.text()
-    except Exception as e:
-        print(f"⚠️ You.com error: {e}")
-    raise Exception("You.com failed")
-
-
-async def _generate_with_free_fallback(prompt: str) -> str:
-    """تجربة جميع البدائل المجانية"""
-    print("🆓 Trying free alternatives...")
-    
-    # قائمة البدائل المجانية
-    fallbacks = [
-        ("DuckDuckGo", _generate_with_duckduckgo),
-        ("Blackbox AI", _generate_with_blackbox),
-        ("HuggingFace", _generate_with_huggingface),
-        ("Cohere", _generate_with_cohere),
-        ("Perplexity", _generate_with_perplexity),
-        ("You.com", _generate_with_youcom),
-    ]
-    
-    for name, func in fallbacks:
-        try:
-            print(f"🔄 Trying {name}...")
-            result = await func(prompt)
-            if result and len(result) > 100:
-                print(f"✅ {name} success (free)")
-                return result
-        except Exception as e:
-            print(f"⚠️ {name} failed: {str(e)[:50]}")
-            continue
-    
-    raise QuotaExhaustedError("All 6 free alternatives failed")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 🔄 دالة التوليد الرئيسية
-# ══════════════════════════════════════════════════════════════════════════════
-async def _generate_with_rotation(prompt: str, max_tokens: int = 8192) -> str:
-    """
-    تجرب الخدمات بالترتيب:
-    1. DeepSeek (9 مفاتيح)
-    2. Gemini (9 مفاتيح)
-    3. Groq (9 مفاتيح)
-    4. OpenRouter (9 مفاتيح)
-    5. 6 بدائل مجانية
-    """
-    errors = []
-    
-    # 1️⃣ DeepSeek
-    if _deepseek_pool:
-        try:
-            print("🔄 Trying DeepSeek...")
-            return await _generate_with_deepseek(prompt, max_tokens)
-        except QuotaExhaustedError as e:
-            errors.append(f"DeepSeek: {e}")
-            print("⚠️ DeepSeek exhausted — switching to Gemini...")
-    
-    # 2️⃣ Gemini
-    if _gemini_pool and GEMINI_AVAILABLE:
-        try:
-            print("🔄 Trying Gemini...")
-            return await _generate_with_gemini(prompt, max_tokens)
-        except QuotaExhaustedError as e:
-            errors.append(f"Gemini: {e}")
-            print("⚠️ Gemini exhausted — switching to Groq...")
-    
-    # 3️⃣ Groq
-    if _groq_pool:
-        try:
-            print("🔄 Trying Groq...")
-            return await _generate_with_groq(prompt, max_tokens)
-        except QuotaExhaustedError as e:
-            errors.append(f"Groq: {e}")
-            print("⚠️ Groq exhausted — switching to OpenRouter...")
-    
-    # 4️⃣ OpenRouter
-    if _or_pool:
-        try:
-            print("🔄 Trying OpenRouter...")
-            return await _generate_with_openrouter(prompt, max_tokens)
-        except QuotaExhaustedError as e:
-            errors.append(f"OpenRouter: {e}")
-            print("⚠️ OpenRouter exhausted — switching to free alternatives...")
-    
-    # 5️⃣ 6 بدائل مجانية
-    print("🔄 Trying 6 free alternatives...")
-    try:
-        return await _generate_with_free_fallback(prompt)
-    except QuotaExhaustedError as e:
-        errors.append(f"Free: {e}")
-    
-    raise QuotaExhaustedError(f"All services exhausted: {' | '.join(errors[-3:])}")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 📊 تحليل المحاضرة
+# 🔄 دالة التحليل الرئيسية
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _compute_lecture_scale(text: str) -> tuple:
@@ -523,197 +369,52 @@ def _compute_lecture_scale(text: str) -> tuple:
         return 7, "15-18", 8192
 
 
-def _clean_json_response(content: str) -> str:
-    """تنظيف استجابة JSON من أي نص إضافي"""
-    content = content.strip()
-    content = re.sub(r'^```json\s*', '', content)
-    content = re.sub(r'^```\s*', '', content)
-    content = re.sub(r'\s*```$', '', content)
-    
-    start_idx = content.find('{')
-    end_idx = content.rfind('}')
-    
-    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-        content = content[start_idx:end_idx + 1]
-    
-    return content.strip()
-
-
-def _extract_valid_json(content: str) -> dict:
-    """استخراج JSON صالح من النص"""
-    content = _clean_json_response(content)
-    
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        pass
-    
-    try:
-        fixed = re.sub(r',\s*}', '}', content)
-        fixed = re.sub(r',\s*]', ']', fixed)
-        return json.loads(fixed)
-    except json.JSONDecodeError:
-        pass
-    
-    # استخراج الأجزاء الرئيسية
-    try:
-        title_match = re.search(r'"title"\s*:\s*"([^"]*)"', content)
-        title = title_match.group(1) if title_match else "محاضرة"
-        
-        type_match = re.search(r'"lecture_type"\s*:\s*"([^"]*)"', content)
-        lecture_type = type_match.group(1) if type_match else "other"
-        
-        summary_match = re.search(r'"summary"\s*:\s*"([^"]*)"', content)
-        summary = summary_match.group(1) if summary_match else ""
-        
-        return {
-            "lecture_type": lecture_type,
-            "title": title,
-            "sections": [
-                {
-                    "title": f"القسم {i+1}",
-                    "content": "محتوى القسم",
-                    "keywords": ["مصطلح 1", "مصطلح 2", "مصطلح 3", "مصطلح 4"],
-                    "keyword_images": ["educational"] * 4,
-                    "narration": "نص الشرح",
-                    "duration_estimate": 45
-                }
-                for i in range(3)
-            ],
-            "summary": summary,
-            "key_points": ["نقطة 1", "نقطة 2", "نقطة 3", "نقطة 4"],
-            "total_sections": 3
-        }
-    except Exception:
-        pass
-    
-    raise ValueError(f"Failed to parse JSON: {content[:300]}")
-
-
 async def analyze_lecture(text: str, dialect: str = "msa") -> dict:
-    """تحليل المحاضرة واستخراج الأقسام والكلمات المفتاحية"""
+    """تحليل المحاضرة - يحاول استخدام API أولاً ثم يلجأ للتحليل المحلي"""
     
-    dialect_instructions = {
-        "iraq": "استخدم اللهجة العراقية في الشرح، مع كلمات عراقية أصيلة مثل (هواية، گلت، يعني، بس، هسا، چي، شلون، وين، أكو، ماكو)",
-        "egypt": "استخدم اللهجة المصرية في الشرح، مع كلمات مصرية مثل (أوي، معلش، إيه، مش، كده، بتاع، عايز، فين، ازيك، أهو)",
-        "syria": "استخدم اللهجة الشامية في الشرح، مع كلمات شامية مثل (هلق، شو، كتير، منيح، هيك، لهلق، قديش، عم، هون، كيفك)",
-        "gulf": "استخدم اللهجة الخليجية في الشرح، مع كلمات خليجية مثل (زين، وايد، عاد، هاذي، أبشر، شفيك، ليش، كيفك، إيه)",
-        "msa": "استخدم العربية الفصحى الواضحة والمبسطة",
-        "english": "Use clear, simple English. Explain like a teacher to students.",
-        "british": "Use British English with a professional, clear academic tone."
-    }
-
-    instruction = dialect_instructions.get(dialect, dialect_instructions["msa"])
-    num_sections, narration_sentences, _ = _compute_lecture_scale(text)
-    text_limit = min(len(text), 5000 + num_sections * 2000)
-
-    is_english = dialect in ("english", "british")
-
-    if is_english:
-        summary_hint = "A clear, concise summary (4-5 sentences)"
-        key_points_hint = '["Key point 1", "Key point 2", "Key point 3", "Key point 4"]'
-        title_hint = "Lecture title"
-        section_title_hint = "Section title"
-        content_hint = f"Simplified content ({narration_sentences} sentences)"
-        keywords_hint = '["keyword1", "keyword2", "keyword3", "keyword4"]'
-        narration_hint = f"Full narration ({narration_sentences} sentences)"
-        lang_note = "Write ALL text in English."
-    else:
-        summary_hint = "ملخص المحاضرة بأسلوب مبسط (4-5 جمل)"
-        key_points_hint = '["نقطة رئيسية 1", "نقطة رئيسية 2", "نقطة رئيسية 3", "نقطة رئيسية 4"]'
-        title_hint = "عنوان المحاضرة"
-        section_title_hint = "عنوان القسم"
-        content_hint = f"محتوى القسم المبسط ({narration_sentences} جمل)"
-        keywords_hint = '["مصطلح رئيسي 1", "مصطلح رئيسي 2", "مصطلح رئيسي 3", "مصطلح رئيسي 4"]'
-        narration_hint = f"نص الشرح الكامل ({narration_sentences} جمل)"
-        lang_note = "النص يجب أن يكون باللهجة المطلوبة"
-
-    prompt = f"""أنت معلم خبير. حلل المحاضرة وأرجع JSON فقط.
-
-{instruction}
-
-المحاضرة:
----
-{text[:text_limit]}
----
-
-أرجع JSON فقط بالتنسيق التالي (بالضبط {num_sections} أقسام):
-
-{{
-  "lecture_type": "medicine/science/math/literature/history/computer/business/other",
-  "title": "{title_hint}",
-  "sections": [
-    {{
-      "title": "{section_title_hint}",
-      "content": "{content_hint}",
-      "keywords": {keywords_hint},
-      "keyword_images": ["cartoon visual 1", "cartoon visual 2", "cartoon visual 3", "cartoon visual 4"],
-      "narration": "{narration_hint}",
-      "duration_estimate": 45
-    }}
-  ],
-  "summary": "{summary_hint}",
-  "key_points": {key_points_hint},
-  "total_sections": {num_sections}
-}}
-
-مهم: {num_sections} أقسام بالضبط. {lang_note} أرجع JSON فقط بدون أي نص إضافي."""
-
-    for attempt in range(3):
+    num_sections, _, _ = _compute_lecture_scale(text)
+    
+    # محاولة استخدام Groq أولاً
+    if _groq_pool:
         try:
-            content = await _generate_with_rotation(prompt, max_tokens=8192)
-            result = _extract_valid_json(content)
+            print("🔄 Trying Groq for analysis...")
+            prompt = f"""حلل المحاضرة التالية وأرجع JSON بالتنسيق المطلوب.
             
-            if not result.get("sections"):
-                result["sections"] = [
-                    {
-                        "title": f"القسم {i+1}" if not is_english else f"Section {i+1}",
-                        "content": "محتوى القسم",
-                        "keywords": ["مصطلح 1", "مصطلح 2", "مصطلح 3", "مصطلح 4"],
-                        "keyword_images": ["educational"] * 4,
-                        "narration": "نص الشرح",
-                        "duration_estimate": 45
-                    }
-                    for i in range(num_sections)
-                ]
+المحاضرة:
+{text[:4000]}
+
+المطلوب: {num_sections} أقسام.
+أرجع JSON فقط."""
             
-            while len(result["sections"]) < num_sections:
-                result["sections"].append({
-                    "title": f"القسم {len(result['sections'])+1}",
-                    "content": "محتوى إضافي",
-                    "keywords": ["مصطلح"],
-                    "keyword_images": ["educational"],
-                    "narration": "نص الشرح",
-                    "duration_estimate": 45
-                })
-            
-            result["sections"] = result["sections"][:num_sections]
-            result["total_sections"] = num_sections
-            
-            return result
-            
+            result_text = await _generate_with_groq(prompt)
+            # محاولة استخراج JSON
+            json_match = re.search(r'\{[\s\S]*\}', result_text)
+            if json_match:
+                return json.loads(json_match.group())
         except Exception as e:
-            print(f"⚠️ Analysis attempt {attempt + 1} failed: {e}")
-            if attempt == 2:
-                return {
-                    "lecture_type": "other",
-                    "title": "المحاضرة" if not is_english else "Lecture",
-                    "sections": [
-                        {
-                            "title": f"القسم {i+1}" if not is_english else f"Section {i+1}",
-                            "content": "محتوى القسم",
-                            "keywords": ["مصطلح 1", "مصطلح 2", "مصطلح 3", "مصطلح 4"],
-                            "keyword_images": ["educational"] * 4,
-                            "narration": "نص الشرح الكامل للقسم",
-                            "duration_estimate": 45
-                        }
-                        for i in range(num_sections)
-                    ],
-                    "summary": "ملخص المحاضرة" if not is_english else "Lecture summary",
-                    "key_points": ["نقطة 1", "نقطة 2", "نقطة 3", "نقطة 4"],
-                    "total_sections": num_sections
-                }
-            await asyncio.sleep(2)
+            print(f"⚠️ Groq analysis failed: {e}")
+    
+    # محاولة استخدام Gemini
+    if _gemini_pool and GEMINI_AVAILABLE:
+        try:
+            print("🔄 Trying Gemini for analysis...")
+            prompt = f"""Analyze this lecture and return JSON with {num_sections} sections.
+            
+Lecture text:
+{text[:4000]}
+
+Return only JSON."""
+            
+            result_text = await _generate_with_gemini(prompt)
+            json_match = re.search(r'\{[\s\S]*\}', result_text)
+            if json_match:
+                return json.loads(json_match.group())
+        except Exception as e:
+            print(f"⚠️ Gemini analysis failed: {e}")
+    
+    # التحليل المحلي (يعمل دائماً)
+    print("📝 Using local analysis...")
+    return _local_analyze_lecture(text, dialect, num_sections)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -745,7 +446,6 @@ async def extract_full_text_from_pdf(pdf_bytes: bytes) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _is_safe_url(url: str) -> bool:
-    """التحقق من أن الرابط آمن"""
     import ipaddress
     from urllib.parse import urlparse
 
@@ -779,7 +479,7 @@ async def extract_text_from_url(url: str) -> str:
     try:
         from bs4 import BeautifulSoup
     except ImportError:
-        raise ImportError("BeautifulSoup غير مثبت. pip install beautifulsoup4")
+        raise ImportError("BeautifulSoup غير مثبت")
 
     if not _is_safe_url(url):
         raise ValueError("الرابط غير مسموح به")
@@ -811,3 +511,64 @@ async def extract_text_from_url(url: str) -> str:
         
     except Exception as e:
         raise ValueError(f"خطأ في استخراج النص: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🖼️ دالة الصور (متوافقة)
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def fetch_image_for_keyword_local(keyword: str, section_title: str, lecture_type: str) -> bytes:
+    """توليد صورة محلية احترافية"""
+    from PIL import Image as PILImage, ImageDraw, ImageFont
+    import os
+    
+    # ألوان حسب النوع
+    colors = {
+        "medicine": {"bg": (230, 245, 255), "primary": (25, 118, 210), "accent": (255, 152, 0)},
+        "science": {"bg": (232, 245, 233), "primary": (46, 125, 50), "accent": (255, 193, 7)},
+        "math": {"bg": (243, 229, 245), "primary": (81, 45, 168), "accent": (255, 87, 34)},
+        "computer": {"bg": (227, 242, 253), "primary": (2, 119, 189), "accent": (0, 200, 83)},
+        "other": {"bg": (245, 245, 245), "primary": (63, 81, 181), "accent": (255, 64, 129)},
+    }
+    
+    c = colors.get(lecture_type, colors["other"])
+    
+    img = PILImage.new("RGB", (854, 480), c["bg"])
+    draw = ImageDraw.Draw(img)
+    
+    # إطار
+    draw.rectangle([(10, 10), (844, 470)], outline=c["primary"], width=3)
+    
+    # عنوان القسم
+    try:
+        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 24)
+        font_kw = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 36)
+    except:
+        font_title = ImageFont.load_default()
+        font_kw = font_title
+    
+    draw.text((30, 30), section_title[:40], fill=c["primary"], font=font_title)
+    
+    # الكلمة المفتاحية في المنتصف
+    try:
+        bbox = draw.textbbox((0, 0), keyword, font=font_kw)
+        tw = bbox[2] - bbox[0]
+    except:
+        tw = len(keyword) * 18
+    
+    draw.text(((854 - tw) // 2, 200), keyword, fill=c["primary"], font=font_kw)
+    
+    # خط تحت الكلمة
+    draw.rectangle([(200, 260), (654, 265)], fill=c["accent"])
+    
+    # علامة مائية
+    draw.text((700, 440), "@zakros_probot", fill=(150, 150, 150), font=font_title)
+    
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=90)
+    return buf.getvalue()
+
+
+# تصدير الدالة المناسبة
+if fetch_image_for_keyword is None:
+    fetch_image_for_keyword = fetch_image_for_keyword_local
