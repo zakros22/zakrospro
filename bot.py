@@ -21,10 +21,6 @@ LESSONS = {
     "6": {"title": "أسلوب الاستفهام", "summary": "الاستفهام طلب العلم بشيء مجهول، أدواته: الهمزة، هل، من، ما، متى، أين، كيف، كم، أي."},
     "7": {"title": "أسلوب التعجب", "summary": "التعجب حالة نفسية تعبر عن الدهشة، وله صيغتان: ما أفعله! وأفعل به!"},
     "8": {"title": "أسلوب المدح والذم", "summary": "أفعال المدح: نعم، حبذا، أفعال الذم: بئس، لا حبذا."},
-    "9": {"title": "أسلوب التمني والترجي", "summary": "التمني طلب أمر بعيد، والترجي طلب أمر ممكن. أدواتهما: ليت، لعل، عسى."},
-    "10": {"title": "أسلوب النفي", "summary": "النفي هو نفي حصول الفعل، وأدواته: ليس، ما، لم، لن، لا."},
-    "11": {"title": "أسلوب التوكيد", "summary": "التوكيد أسلوب لتقوية الكلام، أنواعه: لفظي، معنوي، بالحروف."},
-    "12": {"title": "أسلوب النداء", "summary": "النداء خطاب يوجه للمنادى، وأدواته: يا، أيا، هيا، أي."},
 }
 
 # ========== الأزرار ==========
@@ -46,10 +42,6 @@ gram_keyboard = [
     [InlineKeyboardButton("أسلوب الاستفهام", callback_data="6")],
     [InlineKeyboardButton("أسلوب التعجب", callback_data="7")],
     [InlineKeyboardButton("أسلوب المدح والذم", callback_data="8")],
-    [InlineKeyboardButton("أسلوب التمني والترجي", callback_data="9")],
-    [InlineKeyboardButton("أسلوب النفي", callback_data="10")],
-    [InlineKeyboardButton("أسلوب التوكيد", callback_data="11")],
-    [InlineKeyboardButton("أسلوب النداء", callback_data="12")],
     [InlineKeyboardButton("🔙 رجوع", callback_data="back")],
 ]
 
@@ -105,11 +97,13 @@ def main():
     
     logger.info("✅ البوت يعمل!")
     
-    # استخدام Webhook بدلاً من Polling (لـ Heroku)
+    # استخدام Webhook (الطريقة الصحيحة لـ Heroku)
     if APP_NAME:
         webhook_url = f"https://{APP_NAME}.herokuapp.com/"
+        logger.info(f"🔗 Webhook URL: {webhook_url}")
         app.run_webhook(listen="0.0.0.0", port=PORT, webhook_url=webhook_url)
     else:
+        logger.warning("⚠️ HEROKU_APP_NAME غير موجود، استخدام Polling")
         app.run_polling()
 
 if __name__ == "__main__":
