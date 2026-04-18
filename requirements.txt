@@ -1,1 +1,13 @@
 python-telegram-bot==20.7
+aiohttp==3.9.0
+beautifulsoup4==4.12.2
+g4f==0.2.7
+gTTS==2.5.1
+pydub==0.25.1
+Pillow==10.1.0
+PyPDF2==3.0.1
+psycopg2-binary==2.9.9
+moviepy==1.0.3
+reportlab==4.0.8
+arabic-reshaper==3.0.0
+python-bidi==0.4.2
