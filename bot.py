@@ -1,449 +1,493 @@
+import asyncio
 import os
+import uuid
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-import random
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-# تفعيل التسجيل
-logging.basicConfig(level=logging.INFO)
+from config import TELEGRAM_BOT_TOKEN, VOICES, FREE_ATTEMPTS, OWNER_ID, TEMP_DIR, OWNER_USERNAME
+from database import (
+    init_db, get_user, create_user, decrement_attempts, increment_total_videos,
+    is_banned, save_video_request, update_video_request, record_referral, get_referral_stats,
+    add_attempts, ban_user, get_all_users, get_stats
+)
+from ai_analyzer import analyze_lecture, extract_text_from_url, extract_text_from_pdf, fetch_image_for_keyword
+from voice_generator import generate_sections_audio, reset_tts_engine
+from video_creator import create_video_from_sections
+from pdf_generator import create_pdf_summary
+
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-TOKEN = os.environ.get("BOT_TOKEN")
+user_states = {}
 
-# ========== دروس الأدب (28 درساً) ==========
-LITERATURE_LESSONS = {
-    "lit_1": {"title": "الإصلاح ضرورة", "unit": "الوحدة السادسة"},
-    "lit_2": {"title": "المسرحية - ثانية يجيء الحسين", "unit": "الوحدة السادسة"},
-    "lit_3": {"title": "لا لتعنيف الطفل", "unit": "الوحدة السابعة"},
-    "lit_4": {"title": "القصة القصيرة - الباب الآخر", "unit": "الوحدة السابعة"},
-    "lit_5": {"title": "جائزة نوبل للآداب", "unit": "الوحدة الثامنة"},
-    "lit_6": {"title": "الرواية - نشأة وتطور", "unit": "الوحدة الثامنة"},
-    "lit_7": {"title": "الواقعية في الأدب العربي", "unit": "الوحدة الثامنة"},
-    "lit_8": {"title": "رسالة من أب إلى ابنه", "unit": "الوحدة التاسعة"},
-    "lit_9": {"title": "المقالة - بين القديم والجديد", "unit": "الوحدة التاسعة"},
-    "lit_10": {"title": "الكالسيكية في الأدب العربي", "unit": "الوحدة التاسعة"},
-    "lit_11": {"title": "حسن السيرة من الإيمان", "unit": "الوحدة العاشرة"},
-    "lit_12": {"title": "فن السيرة - الأيام لطه حسين", "unit": "الوحدة العاشرة"},
-    "lit_13": {"title": "الرمزية في الأدب العربي", "unit": "الوحدة العاشرة"},
-    "lit_14": {"title": "التضحية من أجل الوطن", "unit": "الوحدة الحادية عشرة"},
-    "lit_15": {"title": "الأمل مفتاح النجاح", "unit": "الوحدة الثانية عشرة"},
-    "lit_16": {"title": "مدرسة المهجر - ميخائيل نعيمة", "unit": "الوحدة الثانية عشرة"},
-    "lit_17": {"title": "المطر نعمة من الله", "unit": "الوحدة الثالثة عشرة"},
-    "lit_18": {"title": "الشعر الحر - بدر شاكر السياب", "unit": "الوحدة الثالثة عشرة"},
-    "lit_19": {"title": "شعر المقاومة الفلسطينية", "unit": "الوحدة الرابعة عشرة"},
-    "lit_20": {"title": "الرومانسية في الأدب العربي", "unit": "الوحدة الرابعة عشرة"},
-    "lit_21": {"title": "مدرسة الإحياء", "unit": "الوحدة الثالثة"},
-    "lit_22": {"title": "الموشحات - يا غزال الكرخ", "unit": "الوحدة الثالثة"},
-    "lit_23": {"title": "علي الشرقي - السيف والقلم", "unit": "الوحدة الثالثة"},
-    "lit_24": {"title": "حافظ إبراهيم", "unit": "الوحدة الثالثة"},
-    "lit_25": {"title": "الجواهري", "unit": "الوحدة الثالثة"},
-    "lit_26": {"title": "بدر شاكر السياب", "unit": "الوحدة الثالثة عشرة"},
-    "lit_27": {"title": "محمود درويش", "unit": "الوحدة الرابعة عشرة"},
-    "lit_28": {"title": "فدوى طوقان", "unit": "الوحدة الرابعة عشرة"},
-}
+def get_dialect_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("🇮🇶 عراقي", callback_data="dialect_iraq"),
+         InlineKeyboardButton("🇪🇬 مصري", callback_data="dialect_egypt")],
+        [InlineKeyboardButton("🇸🇾 سوري", callback_data="dialect_syria"),
+         InlineKeyboardButton("🇸🇦 خليجي", callback_data="dialect_gulf")],
+        [InlineKeyboardButton("📚 فصحى", callback_data="dialect_msa"),
+         InlineKeyboardButton("🇺🇸 English", callback_data="dialect_english")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
-# ========== دروس القواعد (12 درساً) ==========
-GRAMMAR_LESSONS = {
-    "gram_1": {"title": "أسلوب الاستفهام"},
-    "gram_2": {"title": "أسلوب التعجب"},
-    "gram_3": {"title": "أسلوب المدح والذم"},
-    "gram_4": {"title": "أسلوب التمني والترجي"},
-    "gram_5": {"title": "أسلوب العرض والتحضيض"},
-    "gram_6": {"title": "أسلوب النفي"},
-    "gram_7": {"title": "أسلوب التحذير والإغراء"},
-    "gram_8": {"title": "أسلوب التقديم والتأخير"},
-    "gram_9": {"title": "أسلوب التوكيد"},
-    "gram_10": {"title": "أسلوب النداء"},
-    "gram_11": {"title": "أسلوب القصر"},
-    "gram_12": {"title": "التوابع"},
-}
-
-# دمج جميع الدروس
-ALL_LESSONS = {**LITERATURE_LESSONS, **GRAMMAR_LESSONS}
-
-# ========== أسئلة الاختبارات ==========
-QUIZZES = {
-    "lit_1": {
-        "questions": [
-            {"q": "الإصلاح هدف رئيس من أهداف الأنبياء والأئمة", "type": "true_false", "answer": True, "correct": "صحيح"},
-            {"q": "ما هو الهدف الرئيس من الإصلاح؟", "type": "text", "answer": "عبادة الله ومحاربة الفساد", "correct": "عبادة الله ومحاربة الفساد"},
-            {"q": "من هم أبرز المصلحين؟", "options": ["الأنبياء", "الفلاسفة", "التجار", "الجنود"], "type": "choice", "answer": "الأنبياء", "correct": "الأنبياء"},
-            {"q": "الإصلاح يبدأ من ________", "type": "fill", "answer": "النفس", "correct": "النفس"}
-        ]
-    },
-    "lit_2": {
-        "questions": [
-            {"q": "المسرحية قصة تمثل على المسرح", "type": "true_false", "answer": True, "correct": "صحيح"},
-            {"q": "من رائد المسرحية الشعرية في العراق؟", "type": "text", "answer": "محمد علي الخفاجي", "correct": "محمد علي الخفاجي"},
-            {"q": "ما عنوان مسرحية محمد علي الخفاجي؟", "options": ["ثانية يجيء الحسين", "الباب الآخر", "الأيام", "زينب"], "type": "choice", "answer": "ثانية يجيء الحسين", "correct": "ثانية يجيء الحسين"},
-            {"q": "المسرحية الشعرية ظهرت في العصر ________", "type": "fill", "answer": "الحديث", "correct": "الحديث"}
-        ]
-    },
-    "lit_3": {
-        "questions": [
-            {"q": "استعمال الشدة في التعامل مع الأطفال أمر محمود", "type": "true_false", "answer": False, "correct": "خطأ"},
-            {"q": "ماذا قال النبي عن تقبيل الطفل؟", "type": "text", "answer": "من قبل ولده كتب الله له حسنة", "correct": "من قبل ولده كتب الله له حسنة"},
-            {"q": "من قال: 'لا تقسروا أولادكم على آدابكم'؟", "options": ["الإمام علي", "الإمام الحسين", "النبي محمد", "الإمام الصادق"], "type": "choice", "answer": "الإمام علي", "correct": "الإمام علي"},
-            {"q": "التعنيف يترك آثاراً ________ على الطفل", "type": "fill", "answer": "نفسية", "correct": "نفسية"}
-        ]
-    },
-    "lit_4": {
-        "questions": [
-            {"q": "القصة القصيرة عمل أدبي طويل", "type": "true_false", "answer": False, "correct": "خطأ"},
-            {"q": "من رائد القصة القصيرة في العراق؟", "type": "text", "answer": "فؤاد التكرلي", "correct": "فؤاد التكرلي"},
-            {"q": "ما عنوان قصة فؤاد التكرلي؟", "options": ["الباب الآخر", "ثانية يجيء الحسين", "الأيام", "زينب"], "type": "choice", "answer": "الباب الآخر", "correct": "الباب الآخر"},
-            {"q": "القصة القصيرة تحكي حدثاً ________", "type": "fill", "answer": "واحداً", "correct": "واحداً"}
-        ]
-    },
-    "gram_1": {
-        "questions": [
-            {"q": "الاستفهام طلب العلم بشيء مجهول", "type": "true_false", "answer": True, "correct": "صحيح"},
-            {"q": "من أدوات الاستفهام التي تسأل عن العاقل؟", "type": "text", "answer": "من", "correct": "من"},
-            {"q": "ما الأداة المناسبة للسؤال عن المكان؟", "options": ["متى", "أين", "كيف", "كم"], "type": "choice", "answer": "أين", "correct": "أين"},
-            {"q": "أداة الاستفهام ________ تسأل عن غير العاقل", "type": "fill", "answer": "ما", "correct": "ما"}
-        ]
-    },
-    "gram_2": {
-        "questions": [
-            {"q": "التعجب له صيغتان: ما أفعله! وأفعل به!", "type": "true_false", "answer": True, "correct": "صحيح"},
-            {"q": "ماذا نقول للتعجب من شيء؟", "type": "text", "answer": "ما أجمله", "correct": "ما أجمله"},
-            {"q": "أي الجمل التالية صيغة تعجب؟", "options": ["ما أجمل السماء", "السماء جميلة", "أحب السماء", "السماء زرقاء"], "type": "choice", "answer": "ما أجمل السماء", "correct": "ما أجمل السماء"},
-            {"q": "صيغة التعجب للشخص هي ________ به", "type": "fill", "answer": "أفعل", "correct": "أفعل"}
-        ]
-    },
-}
-
-# تخزين نتائج الاختبارات
-user_quiz_results = {}
-
-# ========== الأزرار ==========
-main_keyboard = [
-    [InlineKeyboardButton("📚 دروس الأدب", callback_data="section_literature")],
-    [InlineKeyboardButton("✍️ دروس القواعد", callback_data="section_grammar")],
-]
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🎓 **مرحباً بك في بوت شرح الأدب العربي!** 🎓\n\n"
-        "📚 هذا البوت يحتوي على:\n"
-        "• 28 درساً في الأدب\n"
-        "• 12 درساً في القواعد\n\n"
-        "🔽 **اختر القسم الذي تريد:**",
-        reply_markup=InlineKeyboardMarkup(main_keyboard),
-        parse_mode="Markdown"
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    is_new = get_user(user.id) is None
+    
+    # معالجة الإحالة
+    referrer_id = None
+    if context.args and context.args[0].startswith("ref_"):
+        try:
+            referrer_id = int(context.args[0][4:])
+            if referrer_id == user.id:
+                referrer_id = None
+        except:
+            pass
+    
+    if is_new:
+        create_user(user.id, user.username or "", user.full_name or "", referrer_id)
+    
+    if is_banned(user.id):
+        await update.message.reply_text("🚫 عذراً، تم حظر حسابك.")
+        return
+    
+    # مكافأة الإحالة
+    if is_new and referrer_id:
+        result = record_referral(referrer_id, user.id)
+        if not result['already_referred'] and result['attempts_granted'] > 0:
+            try:
+                await context.bot.send_message(
+                    chat_id=referrer_id,
+                    text=f"🎉 حصلت على {result['attempts_granted']} محاولة مجانية من الإحالات!"
+                )
+            except:
+                pass
+    
+    db_user = get_user(user.id)
+    attempts = db_user.get('attempts_left', FREE_ATTEMPTS)
+    
+    welcome = (
+        f"🎓 *مرحباً {user.first_name}!*\n\n"
+        f"أنا بوت تحويل المحاضرات إلى فيديوهات تعليمية 🤖\n\n"
+        f"📤 *أرسل لي:*\n"
+        f"• 📄 ملف PDF\n"
+        f"• ✍️ نص مكتوب\n"
+        f"• 🔗 رابط موقع\n\n"
+        f"🎯 *المحاولات المتبقية:* {attempts}\n\n"
+        f"ابدأ الآن! 🚀"
     )
-
-async def show_section(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
     
-    section = query.data.replace("section_", "")
+    keyboard = [
+        [InlineKeyboardButton("📊 رصيدي", callback_data="my_balance")],
+        [InlineKeyboardButton("🔗 رابط الإحالة", callback_data="my_referral")],
+    ]
     
-    if section == "literature":
-        lessons = LITERATURE_LESSONS
-        title = "📚 دروس الأدب"
-    else:
-        lessons = GRAMMAR_LESSONS
-        title = "✍️ دروس القواعد"
+    if user.id == OWNER_ID:
+        keyboard.append([InlineKeyboardButton("🎛️ لوحة التحكم", callback_data="admin_panel")])
     
-    keyboard = []
-    for key, lesson in lessons.items():
-        keyboard.append([InlineKeyboardButton(f"📖 {lesson['title']}", callback_data=f"lesson_{key}")])
-    
-    keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back")])
-    
-    await query.edit_message_text(
-        f"{title}\n\nاختر الدرس:",
+    await update.message.reply_text(
+        welcome,
+        parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-async def show_lesson_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
     
-    lesson_key = query.data.replace("lesson_", "")
-    
-    if lesson_key not in ALL_LESSONS:
-        await query.edit_message_text("❌ درس غير موجود")
+    if is_banned(user.id):
+        await update.message.reply_text("🚫 عذراً، تم حظر حسابك.")
         return
     
-    lesson = ALL_LESSONS[lesson_key]
+    db_user = get_user(user.id)
+    if not db_user:
+        db_user = create_user(user.id, user.username or "", user.full_name or "")
     
-    keyboard = [
-        [InlineKeyboardButton("🎥 فيديو الشرح", callback_data=f"video_{lesson_key}")],
-        [InlineKeyboardButton("📝 ملخص PDF", callback_data=f"pdf_{lesson_key}")],
-        [InlineKeyboardButton("📝 اختبار", callback_data=f"quiz_{lesson_key}")],
-        [InlineKeyboardButton("🔙 رجوع", callback_data="back")],
-    ]
+    text = update.message.text.strip()
     
-    unit_text = f"📂 {lesson['unit']}\n\n" if "unit" in lesson else ""
+    # أوامر المالك
+    if user.id == OWNER_ID and text.startswith('/'):
+        await handle_admin_commands(update, context)
+        return
     
-    await query.edit_message_text(
-        f"📖 **{lesson['title']}**\n\n"
-        f"{unit_text}"
-        f"🔽 **اختر ما تريد:**",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
+    if db_user.get('attempts_left', 0) <= 0:
+        await update.message.reply_text(
+            "⚠️ *نفدت محاولاتك المجانية!*\n\n"
+            "ادعُ أصدقاءك عبر رابط الإحالة لتحصل على محاولات مجانية.\n"
+            "استخدم /referral للحصول على رابطك.",
+            parse_mode="Markdown"
+        )
+        return
+    
+    if text.startswith('http://') or text.startswith('https://'):
+        input_type = 'url'
+        content_text = None
+    elif len(text) < 50:
+        await update.message.reply_text("⚠️ النص قصير جداً! أرسل 50 حرفاً على الأقل.")
+        return
+    else:
+        input_type = 'text'
+        content_text = text
+    
+    user_states[user.id] = {
+        'state': 'awaiting_dialect',
+        'input_type': input_type,
+        'content': content_text,
+        'url': text if input_type == 'url' else None
+    }
+    
+    await update.message.reply_text(
+        "🎤 *اختر لهجة الشرح:*",
+        parse_mode="Markdown",
+        reply_markup=get_dialect_keyboard()
     )
 
-async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
     
-    lesson_key = query.data.replace("video_", "")
-    lesson = ALL_LESSONS[lesson_key]
-    
-    # هنا رابط الفيديو - يجب وضع الرابط الحقيقي
-    video_text = f"""🎥 **فيديو شرح: {lesson['title']}**
-
-📖 **محتوى الفيديو:**
-━━━━━━━━━━━━━━━━━━━━━━
-📌 **المقدمة:** تعريف عام بالدرس وأهميته
-
-📌 **الأقسام:**
-• القسم الأول: شرح المفاهيم الأساسية
-• القسم الثاني: تحليل الموضوع
-• القسم الثالث: الأمثلة والتطبيقات
-
-📌 **الخاتمة:** ملخص الفيديو
-
-━━━━━━━━━━━━━━━━━━━━━━
-📹 [رابط الفيديو](https://youtube.com/...)
-
-✅ يمكنك مشاهدة الفيديو للاستفادة أكثر"""
-    
-    await query.edit_message_text(video_text, parse_mode="Markdown")
-
-async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    lesson_key = query.data.replace("pdf_", "")
-    lesson = ALL_LESSONS[lesson_key]
-    
-    pdf_text = f"""📝 **ملخص درس: {lesson['title']}**
-
-━━━━━━━━━━━━━━━━━━━━━━
-📚 **الملخص:**
-
-{get_summary(lesson_key)}
-
-━━━━━━━━━━━━━━━━━━━━━━
-✅ يمكنك حفظ هذا الملخص للمراجعة
-
-📥 **لتحميل ملف PDF:** [رابط التحميل]"""
-    
-    await query.edit_message_text(pdf_text, parse_mode="Markdown")
-
-def get_summary(lesson_key):
-    """إرجاع ملخص الدرس"""
-    summaries = {
-        "lit_1": "الإصلاح هو هدف رئيس من أهداف الأنبياء والأئمة، والمجتمعات البشرية بحاجة دائمة إلى الإصلاح وتوجيه الناس نحو عبادة الله ومحاربة الفساد وإشاعة القيم والمثل العليا.",
-        "lit_2": "المسرحية هي قصة تمثل على المسرح، والمسرحية الشعرية ظهرت في العصر الحديث، ومن روادها محمد علي الخفاجي ومسرحيته 'ثانية يجيء الحسين'.",
-        "lit_3": "استعمال الأساليب غير الإيجابية في التعامل مثل الشدة أمر مرفوض، ولها آثار نفسية بعيدة المدى على الأطفال، والإسلام أوصى بالطفل خيراً.",
-        "lit_4": "القصة القصيرة هي عمل أدبي نثري يحكي حدثاً واحداً، ومن روادها في العراق فؤاد التكرلي وقصته 'الباب الآخر'.",
-        "gram_1": "الاستفهام طلب العلم بشيء مجهول، أدواته: الهمزة، هل، من، ما، متى، أين، كيف، كم، أي.",
-        "gram_2": "التعجب حالة نفسية تعبر عن الدهشة، وله صيغتان: 'ما أفعله!' للتعجب من شيء، و'أفعل به!' للتعجب من شخص.",
-    }
-    return summaries.get(lesson_key, "ملخص الدرس غير متوفر حالياً")
-
-async def handle_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    lesson_key = query.data.replace("quiz_", "")
-    
-    if lesson_key not in QUIZZES:
-        await query.edit_message_text("📝 **لا يوجد اختبار لهذا الدرس حالياً**\n\nسيتم إضافة اختبار قريباً")
+    if is_banned(user.id):
+        await update.message.reply_text("🚫 عذراً، تم حظر حسابك.")
         return
     
-    quiz = QUIZZES[lesson_key]
+    db_user = get_user(user.id)
+    if not db_user:
+        db_user = create_user(user.id, user.username or "", user.full_name or "")
+    
+    if db_user.get('attempts_left', 0) <= 0:
+        await update.message.reply_text("⚠️ نفدت محاولاتك المجانية!")
+        return
+    
+    doc = update.message.document
+    if not doc.file_name.endswith('.pdf'):
+        await update.message.reply_text("⚠️ يرجى إرسال ملف PDF فقط.")
+        return
+    
+    status = await update.message.reply_text("⏳ جاري قراءة الملف...")
+    
+    try:
+        file = await context.bot.get_file(doc.file_id)
+        pdf_bytes = await file.download_as_bytearray()
+        await status.edit_text("📄 تم استلام الملف!")
+        
+        user_states[user.id] = {
+            'state': 'awaiting_dialect',
+            'input_type': 'pdf',
+            'content': bytes(pdf_bytes),
+            'url': None
+        }
+        
+        await update.message.reply_text(
+            "🎤 *اختر لهجة الشرح:*",
+            parse_mode="Markdown",
+            reply_markup=get_dialect_keyboard()
+        )
+    except Exception as e:
+        await status.edit_text(f"❌ خطأ: {str(e)}")
+
+async def handle_dialect_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
     user_id = query.from_user.id
     
-    # تخزين بداية الاختبار
-    user_quiz_results[user_id] = {
-        "lesson_key": lesson_key,
-        "current_question": 0,
-        "score": 0,
-        "questions": quiz["questions"]
-    }
+    await query.answer()
     
-    await send_question(update, context, user_id, query)
-
-async def send_question(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, query):
-    """إرسال سؤال الاختبار"""
-    quiz_data = user_quiz_results.get(user_id)
-    if not quiz_data:
+    dialect = query.data.replace("dialect_", "")
+    state = user_states.get(user_id, {})
+    
+    if state.get('state') != 'awaiting_dialect':
+        await query.edit_message_text("❌ انتهت الجلسة. أرسل المحاضرة مرة أخرى.")
         return
     
-    current = quiz_data["current_question"]
-    questions = quiz_data["questions"]
+    state['dialect'] = dialect
+    user_states[user_id] = state
     
-    if current >= len(questions):
-        # انتهى الاختبار
-        score = quiz_data["score"]
-        total = len(questions)
-        percentage = (score / total) * 100
-        
-        result_text = f"📊 **نتيجة الاختبار**\n\n"
-        result_text += f"✅ الإجابات الصحيحة: {score}/{total}\n"
-        result_text += f"📈 النسبة: {percentage}%\n\n"
-        
-        if percentage >= 80:
-            result_text += "🎉 ممتاز! أبدعت!"
-        elif percentage >= 60:
-            result_text += "👍 جيد، حاول مرة أخرى لتحسين نتيجتك"
+    dialect_name = VOICES.get(dialect, {}).get('name', dialect)
+    
+    await query.edit_message_text(
+        f"✅ *تم اختيار: {dialect_name}*\n\n"
+        f"⏳ جاري المعالجة... (قد يستغرق 1-3 دقائق)",
+        parse_mode="Markdown"
+    )
+    
+    asyncio.create_task(process_lecture(query, context, user_id, state, dialect_name))
+
+async def process_lecture(query, context, user_id, state, dialect_name):
+    dialect = state['dialect']
+    input_type = state['input_type']
+    
+    req_id = save_video_request(user_id, input_type, dialect)
+    reset_tts_engine()
+    
+    try:
+        # استخراج النص
+        if input_type == 'url':
+            await context.bot.send_message(chat_id=user_id, text="🌐 جاري تحميل الرابط...")
+            content_text = await extract_text_from_url(state['url'])
+        elif input_type == 'pdf':
+            await context.bot.send_message(chat_id=user_id, text="📄 جاري قراءة الملف...")
+            content_text = await extract_text_from_pdf(state['content'])
         else:
-            result_text += "📚 راجع الدرس ثم حاول مرة أخرى"
+            content_text = state['content']
         
-        await query.edit_message_text(result_text, parse_mode="Markdown")
-        del user_quiz_results[user_id]
-        return
-    
-    q = questions[current]
-    
-    if q["type"] == "true_false":
-        keyboard = [
-            [InlineKeyboardButton("✅ صحيح", callback_data=f"quiz_answer_true")],
-            [InlineKeyboardButton("❌ خطأ", callback_data=f"quiz_answer_false")],
-        ]
-        text = f"📝 **السؤال {current + 1}/{len(questions)}**\n\n{q['q']}"
+        status_msg = await context.bot.send_message(
+            chat_id=user_id,
+            text="🔄 1️⃣ تحليل المحاضرة... ⏳"
+        )
         
-    elif q["type"] == "choice":
-        keyboard = []
-        for option in q["options"]:
-            keyboard.append([InlineKeyboardButton(option, callback_data=f"quiz_answer_{option}")])
-        text = f"📝 **السؤال {current + 1}/{len(questions)}**\n\n{q['q']}"
+        # تحليل المحاضرة
+        lecture_data = await analyze_lecture(content_text, dialect)
+        sections = lecture_data.get('sections', [])
         
-    elif q["type"] == "text":
-        keyboard = [[InlineKeyboardButton("📝 أكتب إجابتك", callback_data="noop")]]
-        text = f"📝 **السؤال {current + 1}/{len(questions)}**\n\n{q['q']}\n\n✏️ أرسل إجابتك في رسالة نصية"
-        await query.edit_message_text(text, parse_mode="Markdown")
-        return
+        if not sections:
+            await context.bot.send_message(chat_id=user_id, text="❌ لم أستطع تحليل المحاضرة.")
+            user_states.pop(user_id, None)
+            return
         
-    elif q["type"] == "fill":
-        keyboard = [[InlineKeyboardButton("📝 أكمل الفراغ", callback_data="noop")]]
-        text = f"📝 **السؤال {current + 1}/{len(questions)}**\n\n{q['q']}\n\n✏️ أرسل إجابتك في رسالة نصية"
-        await query.edit_message_text(text, parse_mode="Markdown")
-        return
-    
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await status_msg.edit_text(f"🔄 1️⃣ ✅ التحليل | 2️⃣ 🖼️ جاري توليد {len(sections)} صورة...")
+        
+        # توليد الصور
+        for i, section in enumerate(sections):
+            keyword = section.get('keywords', [section.get('title', '')])[0]
+            section['_image_bytes'] = await fetch_image_for_keyword(keyword)
+        
+        await status_msg.edit_text(f"🔄 1️⃣✅ 2️⃣✅ | 3️⃣ 🎙️ جاري توليد الصوت...")
+        
+        # توليد الصوت
+        audio_response = await generate_sections_audio(sections, dialect)
+        audio_results = audio_response["results"]
+        
+        await status_msg.edit_text(f"🔄 1️⃣✅ 2️⃣✅ 3️⃣✅ | 4️⃣ 🎬 جاري إنشاء الفيديو...")
+        
+        # إنشاء الفيديو
+        video_path = os.path.join(TEMP_DIR, f"video_{user_id}_{uuid.uuid4().hex[:8]}.mp4")
+        await create_video_from_sections(sections, audio_results, lecture_data, video_path)
+        
+        await status_msg.edit_text(f"🔄 1️⃣✅ 2️⃣✅ 3️⃣✅ 4️⃣✅ | 5️⃣ 📄 جاري إنشاء PDF...")
+        
+        # إنشاء PDF
+        pdf_path = os.path.join(TEMP_DIR, f"summary_{user_id}_{uuid.uuid4().hex[:8]}.pdf")
+        create_pdf_summary(lecture_data, sections, pdf_path)
+        
+        # تحديث قاعدة البيانات
+        remaining = decrement_attempts(user_id)
+        increment_total_videos(user_id)
+        update_video_request(req_id, 'completed', video_path, pdf_path)
+        
+        await status_msg.edit_text("✅ اكتملت المعالجة! جاري إرسال الملفات...")
+        
+        # إرسال الفيديو
+        title = lecture_data.get('title', 'المحاضرة')
+        caption = f"🎓 *{title}*\n\n🎤 اللهجة: {dialect_name}\n🎯 المحاولات المتبقية: {remaining}"
+        
+        video_size = os.path.getsize(video_path) / (1024*1024)
+        
+        if video_size <= 49:
+            with open(video_path, 'rb') as vf:
+                await context.bot.send_video(
+                    chat_id=user_id,
+                    video=vf,
+                    caption=caption,
+                    parse_mode="Markdown"
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"⚠️ الفيديو كبير جداً ({video_size:.1f}MB).\nتم إرسال PDF فقط."
+            )
+        
+        # إرسال PDF
+        with open(pdf_path, 'rb') as pf:
+            await context.bot.send_document(
+                chat_id=user_id,
+                document=pf,
+                filename=f"{title[:30]}_summary.pdf",
+                caption=f"📄 ملخص: {title}"
+            )
+        
+        # تنظيف
+        try:
+            os.remove(video_path)
+            os.remove(pdf_path)
+        except:
+            pass
+        
+        user_states.pop(user_id, None)
+        
+    except Exception as e:
+        logger.error(f"Error for user {user_id}: {e}")
+        await context.bot.send_message(chat_id=user_id, text=f"❌ خطأ: {str(e)[:200]}")
+        user_states.pop(user_id, None)
+        update_video_request(req_id, 'failed')
 
-async def handle_quiz_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    
     user_id = query.from_user.id
-    quiz_data = user_quiz_results.get(user_id)
+    data = query.data
     
-    if not quiz_data:
-        await query.edit_message_text("❌ لا يوجد اختبار نشط")
+    if data.startswith("dialect_"):
+        await handle_dialect_selection(update, context)
         return
     
-    current = quiz_data["current_question"]
-    questions = quiz_data["questions"]
-    q = questions[current]
-    
-    answer_data = query.data.replace("quiz_answer_", "")
-    
-    # تصحيح الإجابة
-    is_correct = False
-    if q["type"] == "true_false":
-        user_answer = answer_data == "true"
-        is_correct = (user_answer == q["answer"])
-    elif q["type"] == "choice":
-        is_correct = (answer_data == q["answer"])
-    
-    if is_correct:
-        quiz_data["score"] += 1
-        await query.answer("✅ إجابة صحيحة!")
-    else:
-        correct_text = q.get("correct", q.get("answer", "غير معروف"))
-        await query.answer(f"❌ إجابة خاطئة! الإجابة الصحيحة: {correct_text}")
-    
-    quiz_data["current_question"] += 1
-    
-    # إرسال السؤال التالي
-    await send_question(update, context, user_id, query)
-
-async def handle_text_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة الإجابات النصية (فراغات وأسئلة مقالية)"""
-    user_id = update.effective_user.id
-    quiz_data = user_quiz_results.get(user_id)
-    
-    if not quiz_data:
-        return
-    
-    current = quiz_data["current_question"]
-    questions = quiz_data["questions"]
-    
-    if current >= len(questions):
-        return
-    
-    q = questions[current]
-    user_answer = update.message.text.strip()
-    
-    # تصحيح الإجابة
-    is_correct = (user_answer.lower() == q["answer"].lower())
-    
-    if is_correct:
-        quiz_data["score"] += 1
-        await update.message.reply_text(f"✅ إجابة صحيحة!\n\nإجابتك: {user_answer}")
-    else:
-        await update.message.reply_text(f"❌ إجابة خاطئة!\n\nالإجابة الصحيحة: {q['correct']}\n\nإجابتك: {user_answer}")
-    
-    quiz_data["current_question"] += 1
-    
-    # إرسال السؤال التالي
-    # نحتاج إلى إنشاء callback query وهمي
-    class MockQuery:
-        def __init__(self, message):
-            self.message = message
-        async def edit_message_text(self, text, reply_markup=None, parse_mode=None):
-            pass
-        async def answer(self):
-            pass
-    
-    mock_query = MockQuery(update.message)
-    await send_question(update, context, user_id, mock_query)
-
-async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
     await query.answer()
     
-    await query.edit_message_text(
-        "🎓 **مرحباً بك في بوت شرح الأدب العربي!** 🎓\n\n"
-        "📚 هذا البوت يحتوي على:\n"
-        "• 28 درساً في الأدب\n"
-        "• 12 درساً في القواعد\n\n"
-        "🔽 **اختر القسم الذي تريد:**",
-        reply_markup=InlineKeyboardMarkup(main_keyboard),
+    if data == "my_balance":
+        db_user = get_user(user_id) or create_user(user_id, query.from_user.username or "", query.from_user.full_name or "")
+        attempts = db_user.get('attempts_left', 0)
+        total = db_user.get('total_videos', 0)
+        
+        await query.edit_message_text(
+            f"📊 *رصيدك:*\n\n🎯 المحاولات: *{attempts}*\n🎬 الفيديوهات: *{total}*",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("◀️ رجوع", callback_data="back_main")
+            ]])
+        )
+    
+    elif data == "my_referral":
+        ref_stats = get_referral_stats(user_id)
+        bot_info = await context.bot.get_me()
+        link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
+        
+        await query.edit_message_text(
+            f"🔗 *رابط الإحالة:*\n`{link}`\n\n"
+            f"👥 المدعوين: *{ref_stats['total_referrals']}*\n"
+            f"⭐ النقاط: *{ref_stats['current_points']:.1f}/1.0*",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("◀️ رجوع", callback_data="back_main")
+            ]])
+        )
+    
+    elif data == "admin_panel" and user_id == OWNER_ID:
+        stats = get_stats()
+        await query.edit_message_text(
+            f"🎛️ *لوحة التحكم*\n\n"
+            f"👥 المستخدمين: *{stats['total_users']}*\n"
+            f"🆕 اليوم: *{stats['new_today']}*\n"
+            f"🎬 الفيديوهات: *{stats['total_videos']}*",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("👥 عرض المستخدمين", callback_data="admin_users")],
+                [InlineKeyboardButton("◀️ رجوع", callback_data="back_main")]
+            ])
+        )
+    
+    elif data == "admin_users" and user_id == OWNER_ID:
+        users = get_all_users(10)
+        msg = "👥 *آخر 10 مستخدمين:*\n\n"
+        for u in users:
+            status = "🚫" if u['is_banned'] else "✅"
+            msg += f"{status} `{u['user_id']}` - {u['full_name'][:20]}\n   محاولات: {u['attempts_left']} | فيديوهات: {u['total_videos']}\n\n"
+        
+        await query.edit_message_text(
+            msg,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("◀️ رجوع", callback_data="admin_panel")
+            ]])
+        )
+    
+    elif data == "back_main":
+        db_user = get_user(user_id)
+        attempts = db_user.get('attempts_left', 0) if db_user else 0
+        keyboard = [
+            [InlineKeyboardButton("📊 رصيدي", callback_data="my_balance")],
+            [InlineKeyboardButton("🔗 رابط الإحالة", callback_data="my_referral")],
+        ]
+        if user_id == OWNER_ID:
+            keyboard.append([InlineKeyboardButton("🎛️ لوحة التحكم", callback_data="admin_panel")])
+        
+        await query.edit_message_text(
+            f"🎓 *بوت المحاضرات الذكي*\n\n🎯 المحاولات: {attempts}\n\nأرسل محاضرتك للبدء!",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+async def handle_admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != OWNER_ID:
+        return
+    
+    text = update.message.text
+    parts = text.split()
+    cmd = parts[0].lower()
+    
+    if cmd == "/add" and len(parts) >= 3:
+        try:
+            target = int(parts[1])
+            count = int(parts[2])
+            new_bal = add_attempts(target, count)
+            await update.message.reply_text(f"✅ تم إضافة {count} محاولة للمستخدم {target}\nالرصيد: {new_bal}")
+        except:
+            await update.message.reply_text("❌ استخدام: /add [user_id] [count]")
+    
+    elif cmd == "/ban" and len(parts) >= 2:
+        try:
+            target = int(parts[1])
+            ban_user(target, True)
+            await update.message.reply_text(f"🚫 تم حظر {target}")
+        except:
+            await update.message.reply_text("❌ استخدام: /ban [user_id]")
+    
+    elif cmd == "/unban" and len(parts) >= 2:
+        try:
+            target = int(parts[1])
+            ban_user(target, False)
+            await update.message.reply_text(f"✅ تم فك حظر {target}")
+        except:
+            await update.message.reply_text("❌ استخدام: /unban [user_id]")
+    
+    elif cmd == "/broadcast" and len(parts) >= 2:
+        msg = ' '.join(parts[1:])
+        users = get_all_users(100)
+        sent = 0
+        for u in users:
+            try:
+                await context.bot.send_message(chat_id=u['user_id'], text=f"📢 {msg}")
+                sent += 1
+            except:
+                pass
+        await update.message.reply_text(f"✅ تم الإرسال إلى {sent} مستخدم")
+
+async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    ref_stats = get_referral_stats(user.id)
+    bot_info = await context.bot.get_me()
+    link = f"https://t.me/{bot_info.username}?start=ref_{user.id}"
+    
+    await update.message.reply_text(
+        f"🔗 *رابط الإحالة الخاص بك:*\n`{link}`\n\n"
+        f"👥 المدعوين: *{ref_stats['total_referrals']}*\n"
+        f"⭐ النقاط: *{ref_stats['current_points']:.1f}/1.0*\n\n"
+        f"💡 كل 10 أشخاص = محاولة مجانية!",
         parse_mode="Markdown"
     )
 
-# ========== التشغيل ==========
-def main():
-    if not TOKEN:
-        logger.error("❌ BOT_TOKEN غير موجود!")
-        return
+async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    db_user = get_user(user_id) or create_user(user_id, update.effective_user.username or "", update.effective_user.full_name or "")
+    await update.message.reply_text(
+        f"📊 *رصيدك:*\n🎯 المحاولات: *{db_user.get('attempts_left', 0)}*\n🎬 الفيديوهات: *{db_user.get('total_videos', 0)}*",
+        parse_mode="Markdown"
+    )
+
+async def main():
+    init_db()
     
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(show_section, pattern="^section_"))
-    app.add_handler(CallbackQueryHandler(show_lesson_menu, pattern="^lesson_"))
-    app.add_handler(CallbackQueryHandler(handle_video, pattern="^video_"))
-    app.add_handler(CallbackQueryHandler(handle_pdf, pattern="^pdf_"))
-    app.add_handler(CallbackQueryHandler(handle_quiz, pattern="^quiz_"))
-    app.add_handler(CallbackQueryHandler(handle_quiz_answer, pattern="^quiz_answer_"))
-    app.add_handler(CallbackQueryHandler(back_to_main, pattern="^back$"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_answer))
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("balance", balance_command))
+    app.add_handler(CommandHandler("referral", referral_command))
+    app.add_handler(MessageHandler(filters.Document.PDF, handle_document))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
+    app.add_handler(CallbackQueryHandler(handle_callback))
     
-    logger.info("✅ البوت يعمل!")
-    logger.info(f"📚 عدد الدروس: {len(ALL_LESSONS)}")
-    
-    app.run_polling()
+    logger.info("🤖 Bot started!")
+    await app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    from telegram.ext import MessageHandler, filters
-    main()
+    asyncio.run(main())
