@@ -2,14 +2,13 @@ import os
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+import asyncio
 
 # تفعيل التسجيل
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TOKEN = os.environ.get("BOT_TOKEN")
-PORT = int(os.environ.get("PORT", 8443))
-APP_NAME = os.environ.get("HEROKU_APP_NAME")
 
 # ========== الدروس ==========
 LESSONS = {
@@ -97,14 +96,8 @@ def main():
     
     logger.info("✅ البوت يعمل!")
     
-    # استخدام Webhook (الطريقة الصحيحة لـ Heroku)
-    if APP_NAME:
-        webhook_url = f"https://{APP_NAME}.herokuapp.com/"
-        logger.info(f"🔗 Webhook URL: {webhook_url}")
-        app.run_webhook(listen="0.0.0.0", port=PORT, webhook_url=webhook_url)
-    else:
-        logger.warning("⚠️ HEROKU_APP_NAME غير موجود، استخدام Polling")
-        app.run_polling()
+    # استخدام Polling مع إبقاء البوت نشطاً
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
